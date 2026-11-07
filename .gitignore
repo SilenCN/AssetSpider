@@ -1,0 +1,23 @@
+# 编译产物
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# 测试与覆盖率
+*.test
+*.out
+coverage.*
+
+# 本地配置
+/vendor/
+.env
+.env.local
+
+# 编辑器与系统
+.idea/
+.vscode/
+.DS_Store
