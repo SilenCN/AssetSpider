@@ -31,7 +31,16 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("打开 SQLite %q: %w", path, err)
 	}
-	if err := db.AutoMigrate(&model.Asset{}); err != nil {
+	// SQLite 是单写者数据库，限制连接数可避免批量采集并发写时出现 database is locked。
+	if sqlDB, err := db.DB(); err == nil {
+		sqlDB.SetMaxOpenConns(1)
+	}
+	if err := db.AutoMigrate(
+		&model.Asset{},
+		&model.Source{},
+		&model.Video{},
+		&model.CrawlJob{},
+	); err != nil {
 		return nil, fmt.Errorf("迁移表结构: %w", err)
 	}
 	return &Store{db: db, path: path}, nil

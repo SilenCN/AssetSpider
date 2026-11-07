@@ -8,20 +8,27 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/SilenCN/AssetSpider/internal/collector"
+	"github.com/SilenCN/AssetSpider/internal/config"
 	"github.com/SilenCN/AssetSpider/internal/model"
 	"github.com/SilenCN/AssetSpider/internal/store"
 	"github.com/gin-gonic/gin"
 )
 
-// Server 组合数据存储与前端目录。
+// Server 组合数据存储、采集编排器与前端目录。
 type Server struct {
 	store  *store.Store
+	runner *collector.Runner
 	webDir string
 }
 
-// New 创建 Server。
-func New(s *store.Store, webDir string) *Server {
-	return &Server{store: s, webDir: webDir}
+// New 创建 Server，采集器按传入配置初始化。
+func New(s *store.Store, webDir string, cc config.CollectorConfig) *Server {
+	return &Server{
+		store:  s,
+		runner: collector.NewRunner(s, cc),
+		webDir: webDir,
+	}
 }
 
 // Router 构建 Gin 路由：/api 为接口，其余交给 Vue 页面。
@@ -31,9 +38,23 @@ func (s *Server) Router() *gin.Engine {
 	api := r.Group("/api")
 	{
 		api.GET("/health", s.health)
+
+		// 资产台账（保留的通用能力）
 		api.GET("/assets", s.listAssets)
 		api.POST("/assets", s.createAsset)
 		api.DELETE("/assets/:id", s.deleteAsset)
+
+		// 采集站点配置
+		api.GET("/sources", s.listSources)
+		api.POST("/sources", s.createSource)
+		api.PUT("/sources/:id", s.updateSource)
+		api.DELETE("/sources/:id", s.deleteSource)
+		api.POST("/sources/:id/crawl", s.crawlSource)
+
+		// 批量采集、入库数据、采集记录
+		api.POST("/crawl", s.crawlAll)
+		api.GET("/videos", s.listVideos)
+		api.GET("/jobs", s.listJobs)
 	}
 
 	index := filepath.Join(s.webDir, "index.html")
@@ -62,7 +83,12 @@ func serveIndex(c *gin.Context, index string) {
 }
 
 func (s *Server) health(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "database": s.store.Path()})
+	sources, _ := s.store.ListSources()
+	_, total, _ := s.store.ListVideos(0, "", 1, 1)
+	c.JSON(http.StatusOK, gin.H{
+		"status": "ok", "database": s.store.Path(),
+		"sources": len(sources), "videos": total,
+	})
 }
 
 func (s *Server) listAssets(c *gin.Context) {

@@ -1,6 +1,7 @@
 # AssetSpider 默认配置
 # 可用 -config 指定其他配置文件；以下环境变量可覆盖同名配置项：
 #   ASSETSPIDER_SERVER_ADDR / ASSETSPIDER_DB_PATH / ASSETSPIDER_WEB_DIR
+#   ASSETSPIDER_COLLECTOR_TIMEOUT / _MAX_PAGES / _PAGE_SIZE / _DEFAULT_HOURS / _PARALLEL / _USER_AGENT
 
 server:
   # HTTP 监听地址
@@ -13,3 +14,12 @@ database:
 web:
   # Vue 构建产物目录，由 Gin 托管
   dir: "web/dist"
+
+collector:
+  # 视频站点 JSON 采集器（海洋CMS / 苹果CMS 系 api.php/provide/vod/?ac=list）
+  timeout_seconds: 20           # 单次接口请求超时（秒）
+  max_pages: 1000              # 单次采集最多遍历页数，防止失控
+  page_size: 0                 # 0 = 由站点返回决定；>0 时附加 limit 参数
+  user_agent: "AssetSpider/1.0 (+seacms-json-collector)"
+  default_incremental_hours: 24 # 站点未单独配置时的增量时间窗（对应接口 h 参数）
+  parallel: 1                  # 批量采集并发站点数，SQLite 建议保持 1

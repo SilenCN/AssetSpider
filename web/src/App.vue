@@ -1,125 +1,363 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 
-const assets = ref([])
-const dbPath = ref('')
+const tab = ref('sources')
+const health = ref({})
+const sources = ref([])
+const videos = ref([])
+const jobs = ref([])
+const busy = ref(false)
 const error = ref('')
-const loading = ref(false)
-const form = ref({ host: '', ip: '', category: 'domain' })
+const notice = ref(null)
 
-async function request(path, options) {
-  const res = await fetch(path, options)
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.error || `请求失败 (${res.status})`)
-  }
-  return res.status === 204 ? null : res.json()
+const videoQuery = ref('')
+const videoSource = ref('')
+const videoPage = ref(1)
+const videoSize = ref(20)
+const videoTotal = ref(0)
+const videoPages = computed(() => Math.max(1, Math.ceil(videoTotal.value / videoSize.value)))
+
+let noticeTimer = null
+function notify(text, type = 'ok') {
+  notice.value = { text, type }
+  clearTimeout(noticeTimer)
+  noticeTimer = setTimeout(() => { notice.value = null }, 7000)
 }
 
-async function load() {
-  loading.value = true
+async function request(path, options = {}) {
+  const res = await fetch(path, options)
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(body.error || `请求失败 (${res.status})`)
+  return body
+}
+
+function jsonOptions(method, data) {
+  return {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  }
+}
+
+async function loadHealth() {
+  health.value = await request('/api/health')
+}
+async function loadSources() {
+  sources.value = (await request('/api/sources')) || []
+}
+async function loadVideos() {
+  const p = new URLSearchParams({ page: String(videoPage.value), size: String(videoSize.value) })
+  if (videoQuery.value.trim()) p.set('q', videoQuery.value.trim())
+  if (videoSource.value) p.set('source_id', String(videoSource.value))
+  const d = await request('/api/videos?' + p.toString())
+  videos.value = d.items || []
+  videoTotal.value = d.total || 0
+  videoPage.value = d.page || 1
+  videoSize.value = d.size || 20
+}
+async function loadJobs() {
+  jobs.value = (await request('/api/jobs?limit=50')) || []
+}
+
+async function refresh() {
   error.value = ''
   try {
-    const [list, health] = await Promise.all([
-      request('/api/assets'),
-      request('/api/health'),
-    ])
-    assets.value = list || []
-    dbPath.value = health.database
+    await Promise.all([loadHealth(), loadSources(), loadVideos(), loadJobs()])
   } catch (e) {
+    error.value = e.message
+  }
+}
+
+// ---------- 站点配置 ----------
+const emptyForm = () => ({
+  id: null, name: '', apiBase: '', format: 'seacms_json', extraParams: '',
+  incrementalHours: 24, maxPages: 0, enabled: true,
+})
+const form = reactive(emptyForm())
+const editing = computed(() => !!form.id)
+
+function resetForm() { Object.assign(form, emptyForm()) }
+
+function sourcePayload(s) {
+  return {
+    name: s.name, apiBase: s.apiBase, format: s.format || 'seacms_json',
+    extraParams: s.extraParams || '', enabled: s.enabled,
+    incrementalHours: Number(s.incrementalHours) || 0,
+    maxPages: Number(s.maxPages) || 0,
+  }
+}
+
+function editSource(s) {
+  Object.assign(form, {
+    id: s.id, name: s.name, apiBase: s.apiBase, format: s.format,
+    extraParams: s.extraParams, incrementalHours: s.incrementalHours,
+    maxPages: s.maxPages, enabled: s.enabled,
+  })
+  tab.value = 'sources'
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+async function saveSource() {
+  error.value = ''
+  try {
+    const payload = sourcePayload(form)
+    if (form.id) await request(`/api/sources/${form.id}`, jsonOptions('PUT', payload))
+    else await request('/api/sources', jsonOptions('POST', payload))
+    resetForm()
+    notify('站点配置已保存')
+    await refresh()
+  } catch (e) {
+    error.value = e.message
+    notify(e.message, 'err')
+  }
+}
+
+async function removeSource(s) {
+  if (!confirm(`确认删除站点「${s.name}」？该站点的影片数据与采集记录会一并删除。`)) return
+  try {
+    await request(`/api/sources/${s.id}`, { method: 'DELETE' })
+    notify('站点已删除')
+    await refresh()
+  } catch (e) { notify(e.message, 'err') }
+}
+
+async function toggleSource(s) {
+  try {
+    await request(`/api/sources/${s.id}`,
+      jsonOptions('PUT', { ...sourcePayload(s), enabled: !s.enabled }))
+    await refresh()
+  } catch (e) { notify(e.message, 'err') }
+}
+
+// ---------- 采集 ----------
+function summarize(r) {
+  return `拉取 ${r.fetched} · 新增 ${r.new} · 更新 ${r.updated} · 未变 ${r.unchanged} · ${r.pages} 页`
+}
+
+async function crawlOne(s, mode) {
+  if (busy.value) return
+  busy.value = true
+  const label = mode === 'full' ? '全量' : '增量'
+  notify(`正在对「${s.name}」执行${label}采集…`, 'info')
+  try {
+    const r = await request(`/api/sources/${s.id}/crawl?mode=${mode}`, { method: 'POST' })
+    notify(`「${s.name}」${label}采集完成：${summarize(r)}`)
+    await refresh()
+  } catch (e) {
+    notify(`${label}采集失败：${e.message}`, 'err')
     error.value = e.message
   } finally {
-    loading.value = false
+    busy.value = false
   }
 }
 
-async function add() {
-  if (!form.value.host.trim()) return
-  error.value = ''
+async function crawlAll(mode) {
+  if (busy.value) return
+  busy.value = true
+  const label = mode === 'full' ? '全量' : '增量'
+  notify(`正在对全部启用站点执行${label}采集…`, 'info')
   try {
-    await request('/api/assets', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        host: form.value.host.trim(),
-        ip: form.value.ip.trim(),
-        category: form.value.category.trim() || 'other',
-      }),
-    })
-    form.value = { host: '', ip: '', category: 'domain' }
-    await load()
+    const d = await request(`/api/crawl?mode=${mode}`, { method: 'POST' })
+    const list = d.results || []
+    const ok = list.filter(r => r.status === 'success').length
+    const text = `${label}采集结束：${ok}/${list.length} 个站点成功`
+    notify(d.error ? `${text}；${d.error}` : text, d.error ? 'err' : 'ok')
+    await refresh()
   } catch (e) {
+    notify(`批量采集失败：${e.message}`, 'err')
     error.value = e.message
+  } finally {
+    busy.value = false
   }
 }
 
-async function remove(id) {
-  error.value = ''
-  try {
-    await request(`/api/assets/${id}`, { method: 'DELETE' })
-    await load()
-  } catch (e) {
-    error.value = e.message
-  }
+function searchVideos() { videoPage.value = 1; loadVideos().catch(e => { error.value = e.message }) }
+function gotoPage(p) {
+  if (p < 1 || p > videoPages.value) return
+  videoPage.value = p
+  loadVideos().catch(e => { error.value = e.message })
 }
 
 function formatTime(value) {
   if (!value) return '-'
-  return new Date(value).toLocaleString('zh-CN', { hour12: false })
+  const d = new Date(value)
+  return isNaN(d.getTime()) ? String(value) : d.toLocaleString('zh-CN', { hour12: false })
+}
+function modeLabel(m) { return m === 'full' ? '全量' : '增量' }
+function statusLabel(s) {
+  return { success: '成功', failed: '失败', running: '进行中', never: '未采集' }[s] || s || '-'
+}
+function short(text, n = 46) {
+  const s = String(text || '')
+  return s.length > n ? s.slice(0, n) + '…' : s
 }
 
-onMounted(load)
+onMounted(refresh)
 </script>
 
 <template>
   <main class="page">
     <header>
       <h1>AssetSpider</h1>
-      <p>资产台账 · Vue 3 + Gin + GORM/SQLite</p>
-      <code class="db">DB: {{ dbPath || '加载中…' }}</code>
+      <p>视频站点采集 · JSON 接口 · 全量 / 增量 · Vue 3 + Gin + GORM/SQLite</p>
+      <div class="stats">
+        <span class="db">DB: {{ health.database || '加载中…' }}</span>
+        <span class="stat">站点 <b>{{ health.sources ?? '-' }}</b></span>
+        <span class="stat">影片 <b>{{ health.videos ?? '-' }}</b></span>
+      </div>
     </header>
 
+    <div v-if="notice" class="notice" :class="notice.type">{{ notice.text }}</div>
     <p v-if="error" class="error">{{ error }}</p>
 
-    <section class="card">
-      <h2>新增资产</h2>
-      <form @submit.prevent="add">
-        <input v-model="form.host" placeholder="域名或主机名 *" required />
-        <input v-model="form.ip" placeholder="IP 地址" />
-        <select v-model="form.category">
-          <option value="domain">domain</option>
-          <option value="ip">ip</option>
-          <option value="service">service</option>
-          <option value="other">other</option>
-        </select>
-        <button type="submit">添加</button>
-      </form>
-    </section>
+    <nav class="tabs">
+      <button :class="{ active: tab === 'sources' }" @click="tab = 'sources'">站点配置</button>
+      <button :class="{ active: tab === 'videos' }" @click="tab = 'videos'; loadVideos()">采集数据</button>
+      <button :class="{ active: tab === 'jobs' }" @click="tab = 'jobs'; loadJobs()">采集记录</button>
+      <button class="ghost refresh" @click="refresh">刷新</button>
+    </nav>
 
-    <section class="card">
-      <div class="list-head">
-        <h2>资产列表</h2>
-        <button class="ghost" @click="load" :disabled="loading">
-          {{ loading ? '刷新中…' : '刷新' }}
-        </button>
-      </div>
-      <p v-if="!assets.length" class="empty">暂无资产，先在上方添加一条。</p>
-      <table v-else>
-        <thead>
-          <tr><th>ID</th><th>Host</th><th>IP</th><th>类型</th><th>创建时间</th><th></th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="a in assets" :key="a.id">
-            <td>{{ a.id }}</td>
-            <td class="host">{{ a.host }}</td>
-            <td>{{ a.ip || '-' }}</td>
-            <td><span class="tag">{{ a.category || '-' }}</span></td>
-            <td>{{ formatTime(a.createdAt) }}</td>
-            <td><button class="danger" @click="remove(a.id)">删除</button></td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
+    <!-- 站点配置 -->
+    <template v-if="tab === 'sources'">
+      <section class="card">
+        <div class="list-head">
+          <h2>批量采集</h2>
+          <span class="muted">对全部启用站点执行，SQLite 下串行执行</span>
+        </div>
+        <div class="actions">
+          <button @click="crawlAll('full')" :disabled="busy">全量采集全部站点</button>
+          <button class="ghost" @click="crawlAll('incremental')" :disabled="busy">增量采集全部站点</button>
+          <span v-if="busy" class="muted">采集中，请稍候…</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>{{ editing ? '编辑站点' : '新增采集站点' }}</h2>
+        <form class="source-form" @submit.prevent="saveSource">
+          <input v-model="form.name" placeholder="站点名称 *" required />
+          <input v-model="form.apiBase" class="wide" placeholder="JSON 接口地址 * 例：https://site.com/api.php/provide/vod/" required />
+          <input v-model="form.extraParams" placeholder="附加参数，如 t=1&amp;wd=电影" />
+          <label class="field">增量小时数
+            <input v-model.number="form.incrementalHours" type="number" min="0" />
+          </label>
+          <label class="field">最大页数 (0=全局)
+            <input v-model.number="form.maxPages" type="number" min="0" />
+          </label>
+          <label class="check"><input v-model="form.enabled" type="checkbox" /> 启用</label>
+          <button type="submit">{{ editing ? '保存修改' : '添加站点' }}</button>
+          <button v-if="editing" type="button" class="ghost" @click="resetForm">取消</button>
+        </form>
+        <p class="hint">采集协议：海洋CMS / 苹果CMS 系 <code>api.php/provide/vod/?ac=list</code>，返回 JSON 的 <code>page / pagecount / total / list[]</code>。增量采集附加 <code>h=&lt;小时数&gt;</code> 并按 <code>vod_time</code> 游标去重。</p>
+      </section>
+
+      <section class="card">
+        <div class="list-head"><h2>站点列表</h2><span class="muted">共 {{ sources.length }} 个</span></div>
+        <p v-if="!sources.length" class="empty">还没有站点，先在上方添加一个 JSON 采集接口。</p>
+        <div v-else class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th><th>名称</th><th>接口地址</th><th>状态</th><th>影片数</th>
+                <th>上次采集</th><th>游标 / 结果</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="s in sources" :key="s.id">
+                <td class="mono">{{ s.id }}</td>
+                <td class="host">{{ s.name }}</td>
+                <td class="url" :title="s.apiBase">{{ short(s.apiBase, 38) }}</td>
+                <td>
+                  <span class="badge" :class="s.enabled ? 'on' : 'off'">{{ s.enabled ? '启用' : '停用' }}</span>
+                </td>
+                <td class="mono">{{ s.videoCount }}</td>
+                <td class="muted">{{ formatTime(s.lastSyncAt) }}</td>
+                <td class="muted">
+                  <span class="badge" :class="s.lastStatus">{{ statusLabel(s.lastStatus) }}</span>
+                  <div class="mono tiny">{{ s.lastCursor || '-' }}</div>
+                </td>
+                <td class="ops">
+                  <button class="mini" @click="crawlOne(s, 'full')" :disabled="busy">全量</button>
+                  <button class="mini ghost" @click="crawlOne(s, 'incremental')" :disabled="busy">增量</button>
+                  <button class="mini ghost" @click="editSource(s)">编辑</button>
+                  <button class="mini ghost" @click="toggleSource(s)">{{ s.enabled ? '停用' : '启用' }}</button>
+                  <button class="mini danger" @click="removeSource(s)">删除</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </template>
+
+    <!-- 采集数据 -->
+    <template v-if="tab === 'videos'">
+      <section class="card">
+        <div class="toolbar">
+          <input v-model="videoQuery" placeholder="按影片名称搜索" @keyup.enter="searchVideos" />
+          <select v-model="videoSource" @change="searchVideos">
+            <option value="">全部站点</option>
+            <option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }}</option>
+          </select>
+          <button @click="searchVideos">搜索</button>
+          <span class="muted">共 {{ videoTotal }} 条</span>
+        </div>
+        <p v-if="!videos.length" class="empty">暂无采集数据，可到「站点配置」执行一次全量采集。</p>
+        <div v-else class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>ID</th><th>来源</th><th>VodID</th><th>影片名称</th><th>分类</th><th>备注</th><th>站点更新时间</th><th>首次入库</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="v in videos" :key="v.id">
+                <td class="mono">{{ v.id }}</td>
+                <td class="muted">{{ sources.find(s => s.id === v.sourceId)?.name || v.sourceId }}</td>
+                <td class="mono">{{ v.vodId }}</td>
+                <td class="host" :title="v.playUrl">{{ v.name || '-' }}</td>
+                <td>{{ v.typeName || '-' }}</td>
+                <td>{{ v.remarks || '-' }}</td>
+                <td class="mono">{{ v.vodTime || '-' }}</td>
+                <td class="muted">{{ formatTime(v.firstSeenAt) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-if="videoPages > 1" class="pager">
+          <button class="ghost" :disabled="videoPage <= 1" @click="gotoPage(videoPage - 1)">上一页</button>
+          <span>{{ videoPage }} / {{ videoPages }}</span>
+          <button class="ghost" :disabled="videoPage >= videoPages" @click="gotoPage(videoPage + 1)">下一页</button>
+        </div>
+      </section>
+    </template>
+
+    <!-- 采集记录 -->
+    <template v-if="tab === 'jobs'">
+      <section class="card">
+        <div class="list-head"><h2>采集记录</h2><span class="muted">最近 50 条</span></div>
+        <p v-if="!jobs.length" class="empty">暂无采集记录。</p>
+        <div v-else class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>ID</th><th>站点</th><th>模式</th><th>状态</th><th>页数</th><th>拉取</th><th>新增</th><th>更新</th><th>未变</th><th>开始时间</th><th>说明</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="j in jobs" :key="j.id">
+                <td class="mono">{{ j.id }}</td>
+                <td class="host">{{ j.sourceName }}</td>
+                <td>{{ modeLabel(j.mode) }}</td>
+                <td><span class="badge" :class="j.status">{{ statusLabel(j.status) }}</span></td>
+                <td class="mono">{{ j.pages }}</td>
+                <td class="mono">{{ j.fetched }}</td>
+                <td class="mono up">{{ j.new }}</td>
+                <td class="mono">{{ j.updated }}</td>
+                <td class="mono muted">{{ j.unchanged }}</td>
+                <td class="muted">{{ formatTime(j.startedAt) }}</td>
+                <td class="muted msg" :title="j.message">{{ short(j.message || '-', 30) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </template>
   </main>
 </template>
 
@@ -127,25 +365,57 @@ onMounted(load)
 :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
 * { box-sizing: border-box; }
 body { margin: 0; background: #f5f6f8; color: #1f2329; }
-.page { max-width: 960px; margin: 0 auto; padding: 32px 20px 64px; }
+.page { max-width: 1180px; margin: 0 auto; padding: 28px 20px 64px; }
 header h1 { margin: 0; font-size: 28px; }
 header p { margin: 6px 0 12px; color: #646a73; }
+.stats { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .db { display: inline-block; background: #eef1f5; padding: 4px 10px; border-radius: 6px; font-size: 12px; color: #4e5969; }
-.card { background: #fff; border: 1px solid #e5e6eb; border-radius: 10px; padding: 20px; margin-top: 20px; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
+.stat { background: #eef1f5; padding: 4px 10px; border-radius: 6px; font-size: 12px; color: #4e5969; }
+.stat b { color: #165dff; }
+.tabs { display: flex; gap: 8px; margin: 20px 0 0; border-bottom: 1px solid #e5e6eb; padding-bottom: 10px; }
+.tabs button { background: #f2f3f5; color: #4e5969; }
+.tabs button.active { background: #165dff; color: #fff; }
+.tabs .refresh { margin-left: auto; }
+.card { background: #fff; border: 1px solid #e5e6eb; border-radius: 10px; padding: 20px; margin-top: 18px; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
 .card h2 { margin: 0 0 14px; font-size: 16px; }
-form { display: flex; gap: 10px; flex-wrap: wrap; }
-input, select { padding: 8px 10px; border: 1px solid #c9cdd4; border-radius: 6px; font-size: 14px; }
-input { flex: 1 1 200px; }
-button { padding: 8px 16px; border: 0; border-radius: 6px; background: #165dff; color: #fff; cursor: pointer; font-size: 14px; }
-button:disabled { opacity: .6; cursor: default; }
+.list-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.list-head h2 { margin: 0; }
+.actions, .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+form, .source-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+input, select { padding: 8px 10px; border: 1px solid #c9cdd4; border-radius: 6px; font-size: 14px; background: #fff; }
+input { flex: 1 1 190px; min-width: 0; }
+input.wide { flex: 2 1 380px; }
+.field { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #4e5969; }
+.field input { width: 90px; flex: none; }
+.check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #4e5969; }
+.check input { flex: none; }
+button { padding: 8px 16px; border: 0; border-radius: 6px; background: #165dff; color: #fff; cursor: pointer; font-size: 14px; white-space: nowrap; }
+button:disabled { opacity: .55; cursor: default; }
 button.ghost { background: #f2f3f5; color: #1f2329; }
-button.danger { background: #fff1f0; color: #f53f3f; padding: 5px 10px; }
-.list-head { display: flex; align-items: center; justify-content: space-between; }
-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #f0f1f3; }
+button.mini { padding: 5px 9px; font-size: 12px; }
+button.danger { background: #fff1f0; color: #f53f3f; }
+.hint { margin: 12px 0 0; font-size: 12px; color: #86909c; line-height: 1.8; }
+code { background: #f2f3f5; padding: 1px 5px; border-radius: 4px; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #f0f1f3; white-space: nowrap; }
 th { color: #86909c; font-weight: 500; }
 .host { font-weight: 600; }
-.tag { background: #e8f3ff; color: #165dff; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+.url, .msg { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.tiny { font-size: 11px; margin-top: 3px; color: #86909c; }
+.muted { color: #86909c; }
+.mono.up { color: #00b42a; font-weight: 600; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; background: #f2f3f5; color: #4e5969; }
+.badge.on, .badge.success { background: #e8ffea; color: #00b42a; }
+.badge.off { background: #f2f3f5; color: #86909c; }
+.badge.failed { background: #fff1f0; color: #f53f3f; }
+.badge.running { background: #e8f3ff; color: #165dff; }
+.ops { display: flex; gap: 5px; }
+.pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 16px; font-size: 13px; color: #4e5969; }
 .empty { color: #86909c; margin: 8px 0; }
 .error { background: #fff1f0; color: #f53f3f; padding: 10px 14px; border-radius: 6px; margin-top: 16px; }
+.notice { padding: 10px 14px; border-radius: 6px; margin-top: 16px; background: #e8ffea; color: #009a29; font-size: 13px; }
+.notice.err { background: #fff1f0; color: #f53f3f; }
+.notice.info { background: #e8f3ff; color: #165dff; }
 </style>

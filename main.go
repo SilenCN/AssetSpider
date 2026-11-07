@@ -11,7 +11,7 @@ import (
 	"github.com/SilenCN/AssetSpider/internal/store"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 func main() {
 	configPath := flag.String("config", "conf/config.yaml", "配置文件路径")
@@ -33,9 +33,10 @@ func main() {
 	}
 	defer st.Close()
 
-	log.Printf("AssetSpider v%s 启动 | 监听 %s | 数据库 %s | 页面 %s",
-		version, cfg.Server.Addr, cfg.Database.Path, cfg.Web.Dir)
-	if err := server.New(st, cfg.Web.Dir).Router().Run(cfg.Server.Addr); err != nil {
+	log.Printf("AssetSpider v%s 启动 | 监听 %s | 数据库 %s | 页面 %s | 采集超时 %ds / 最大 %d 页",
+		version, cfg.Server.Addr, cfg.Database.Path, cfg.Web.Dir,
+		cfg.Collector.TimeoutSeconds, cfg.Collector.MaxPages)
+	if err := server.New(st, cfg.Web.Dir, cfg.Collector).Router().Run(cfg.Server.Addr); err != nil {
 		log.Fatalf("服务启动失败: %v", err)
 	}
 }

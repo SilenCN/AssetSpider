@@ -1,0 +1,234 @@
+package store
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/SilenCN/AssetSpider/internal/model"
+	"gorm.io/gorm"
+)
+
+// ---------- 站点配置 ----------
+
+// ListSources 返回全部站点配置，按 ID 正序。
+func (s *Store) ListSources() ([]model.Source, error) {
+	var items []model.Source
+	if err := s.db.Order("id ASC").Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// ListEnabledSources 返回所有启用站点。
+func (s *Store) ListEnabledSources() ([]model.Source, error) {
+	var items []model.Source
+	if err := s.db.Where("enabled = ?", true).Order("id ASC").Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// GetSource 按 ID 读取站点配置。
+func (s *Store) GetSource(id uint) (*model.Source, error) {
+	var src model.Source
+	if err := s.db.First(&src, id).Error; err != nil {
+		return nil, err
+	}
+	return &src, nil
+}
+
+// CreateSource 新增站点配置。
+func (s *Store) CreateSource(src *model.Source) error {
+	return s.db.Create(src).Error
+}
+
+// UpdateSource 按 ID 全量更新站点配置的可编辑字段。
+// 采集状态字段（Last*）不由前端修改，予以保留。
+func (s *Store) UpdateSource(id uint, in *model.Source) (*model.Source, error) {
+	src, err := s.GetSource(id)
+	if err != nil {
+		return nil, err
+	}
+	src.Name = in.Name
+	src.APIBase = in.APIBase
+	src.Format = in.Format
+	src.ExtraParams = in.ExtraParams
+	src.Enabled = in.Enabled
+	src.IncrementalHours = in.IncrementalHours
+	src.MaxPages = in.MaxPages
+	if err := s.db.Save(src).Error; err != nil {
+		return nil, err
+	}
+	return src, nil
+}
+
+// DeleteSource 删除站点配置，并级联清理其影片与采集记录。
+func (s *Store) DeleteSource(id uint) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("source_id = ?", id).Delete(&model.Video{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("source_id = ?", id).Delete(&model.CrawlJob{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&model.Source{}, id).Error
+	})
+}
+
+// UpdateSourceResult 采集完成后回写站点状态与增量游标。
+func (s *Store) UpdateSourceResult(id uint, mode, status, cursor, errMsg string, at time.Time) error {
+	updates := map[string]interface{}{
+		"last_mode":    mode,
+		"last_status":  status,
+		"last_error":   errMsg,
+		"last_sync_at": at,
+	}
+	if cursor != "" {
+		updates["last_cursor"] = cursor
+	}
+	if mode == model.ModeFull && status == model.JobSuccess {
+		updates["last_full_sync_at"] = at
+	}
+	return s.db.Model(&model.Source{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// ---------- 影片数据 ----------
+
+// UpsertStats 是一次批量写入的统计。
+type UpsertStats struct {
+	New       int `json:"new"`
+	Updated   int `json:"updated"`
+	Unchanged int `json:"unchanged"`
+}
+
+// UpsertVideos 按 (source_id, vod_id) 批量去重写入。
+// 内容指纹未变化则跳过更新，仅刷新 LastSeenAt。
+func (s *Store) UpsertVideos(items []model.Video) (UpsertStats, error) {
+	var stats UpsertStats
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		for i := range items {
+			v := &items[i]
+			var existing model.Video
+			// 用 Find 而非 First，避免 GORM 为"记录不存在"打印 warn 日志。
+			found := tx.Where("source_id = ? AND vod_id = ?", v.SourceID, v.VodID).
+				Limit(1).Find(&existing)
+			if found.Error != nil {
+				return found.Error
+			}
+			switch {
+			case found.RowsAffected == 0:
+				now := time.Now()
+				v.FirstSeenAt, v.LastSeenAt = now, now
+				if err := tx.Create(v).Error; err != nil {
+					return fmt.Errorf("新增影片 %d/%s: %w", v.SourceID, v.VodID, err)
+				}
+				stats.New++
+			case existing.Hash == v.Hash:
+				stats.Unchanged++
+				if err := tx.Model(&existing).Update("last_seen_at", time.Now()).Error; err != nil {
+					return err
+				}
+			default:
+				updates := map[string]interface{}{
+					"name": v.Name, "type_id": v.TypeID, "type_name": v.TypeName,
+					"en": v.En, "pic": v.Pic, "remarks": v.Remarks,
+					"play_from": v.PlayFrom, "area": v.Area, "lang": v.Lang,
+					"year": v.Year, "serial": v.Serial, "actor": v.Actor,
+					"director": v.Director, "content": v.Content,
+					"play_url": v.PlayURL, "down_url": v.DownURL,
+					"vod_time": v.VodTime, "hash": v.Hash, "raw": v.Raw,
+					"last_seen_at": time.Now(),
+				}
+				if err := tx.Model(&existing).Updates(updates).Error; err != nil {
+					return err
+				}
+				stats.Updated++
+			}
+		}
+		return nil
+	})
+	return stats, err
+}
+
+// ListVideos 分页查询影片，支持按站点过滤与名称模糊搜索。
+func (s *Store) ListVideos(sourceID uint, keyword string, page, size int) ([]model.Video, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 200 {
+		size = 20
+	}
+	q := s.db.Model(&model.Video{})
+	if sourceID > 0 {
+		q = q.Where("source_id = ?", sourceID)
+	}
+	if keyword != "" {
+		q = q.Where("name LIKE ?", "%"+keyword+"%")
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var items []model.Video
+	if err := q.Order("id DESC").Offset((page - 1) * size).Limit(size).Find(&items).Error; err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
+// CountVideosBySource 返回每个站点的影片数量。
+func (s *Store) CountVideosBySource() (map[uint]int64, error) {
+	type row struct {
+		SourceID uint
+		Cnt      int64
+	}
+	var rows []row
+	if err := s.db.Model(&model.Video{}).
+		Select("source_id, count(*) as cnt").Group("source_id").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[uint]int64, len(rows))
+	for _, r := range rows {
+		out[r.SourceID] = r.Cnt
+	}
+	return out, nil
+}
+
+// ---------- 采集任务 ----------
+
+// CreateJob 创建一条 running 状态的任务记录。
+func (s *Store) CreateJob(job *model.CrawlJob) error {
+	return s.db.Create(job).Error
+}
+
+// FinishJob 更新任务终态。
+func (s *Store) FinishJob(job *model.CrawlJob, status, message string) error {
+	now := time.Now()
+	return s.db.Model(job).Updates(map[string]interface{}{
+		"status":      status,
+		"message":     message,
+		"fetched":     job.Fetched,
+		"new":         job.New,
+		"updated":     job.Updated,
+		"unchanged":   job.Unchanged,
+		"pages":       job.Pages,
+		"total":       job.Total,
+		"finished_at": now,
+	}).Error
+}
+
+// ListJobs 返回最近的采集记录。
+func (s *Store) ListJobs(sourceID uint, limit int) ([]model.CrawlJob, error) {
+	if limit < 1 || limit > 200 {
+		limit = 50
+	}
+	q := s.db.Model(&model.CrawlJob{})
+	if sourceID > 0 {
+		q = q.Where("source_id = ?", sourceID)
+	}
+	var items []model.CrawlJob
+	if err := q.Order("id DESC").Limit(limit).Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}

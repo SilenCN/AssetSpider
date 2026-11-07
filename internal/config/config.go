@@ -4,15 +4,17 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Config 是应用的完整配置。
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	Database DatabaseConfig `yaml:"database"`
-	Web      WebConfig      `yaml:"web"`
+	Server    ServerConfig    `yaml:"server"`
+	Database  DatabaseConfig  `yaml:"database"`
+	Web       WebConfig       `yaml:"web"`
+	Collector CollectorConfig `yaml:"collector"`
 }
 
 // ServerConfig 描述 HTTP 服务。
@@ -30,12 +32,30 @@ type WebConfig struct {
 	Dir string `yaml:"dir"`
 }
 
+// CollectorConfig 描述视频站点 JSON 采集器。
+type CollectorConfig struct {
+	TimeoutSeconds int    `yaml:"timeout_seconds"`           // 单次 HTTP 请求超时（秒）
+	MaxPages       int    `yaml:"max_pages"`                 // 单次采集最多遍历的页数，防止失控
+	PageSize       int    `yaml:"page_size"`                 // 0 表示由站点返回决定；>0 时附加 limit 参数
+	UserAgent      string `yaml:"user_agent"`                // 请求 UA
+	DefaultHours   int    `yaml:"default_incremental_hours"` // 站点未配置时默认增量时间窗
+	Parallel       int    `yaml:"parallel"`                  // 批量采集的并发站点数，建议保持 1
+}
+
 // Default 返回开箱即用的默认配置。
 func Default() *Config {
 	return &Config{
 		Server:   ServerConfig{Addr: ":8080"},
 		Database: DatabaseConfig{Path: "data/assetspider.db"},
 		Web:      WebConfig{Dir: "web/dist"},
+		Collector: CollectorConfig{
+			TimeoutSeconds: 20,
+			MaxPages:       1000,
+			PageSize:       0,
+			UserAgent:      "AssetSpider/1.0 (+seacms-json-collector)",
+			DefaultHours:   24,
+			Parallel:       1,
+		},
 	}
 }
 
@@ -62,11 +82,41 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("ASSETSPIDER_WEB_DIR"); v != "" {
 		cfg.Web.Dir = v
 	}
+	if v := os.Getenv("ASSETSPIDER_COLLECTOR_USER_AGENT"); v != "" {
+		cfg.Collector.UserAgent = v
+	}
+	for _, item := range []struct {
+		name string
+		dst  *int
+	}{
+		{"ASSETSPIDER_COLLECTOR_TIMEOUT", &cfg.Collector.TimeoutSeconds},
+		{"ASSETSPIDER_COLLECTOR_MAX_PAGES", &cfg.Collector.MaxPages},
+		{"ASSETSPIDER_COLLECTOR_PAGE_SIZE", &cfg.Collector.PageSize},
+		{"ASSETSPIDER_COLLECTOR_DEFAULT_HOURS", &cfg.Collector.DefaultHours},
+		{"ASSETSPIDER_COLLECTOR_PARALLEL", &cfg.Collector.Parallel},
+	} {
+		if err := envInt(item.name, item.dst); err != nil {
+			return nil, err
+		}
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+func envInt(name string, dst *int) error {
+	v := os.Getenv(name)
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Errorf("环境变量 %s 需要整数值，实际 %q", name, v)
+	}
+	*dst = n
+	return nil
 }
 
 // Validate 校验必填配置项。
@@ -79,6 +129,22 @@ func (c *Config) Validate() error {
 	}
 	if c.Web.Dir == "" {
 		return fmt.Errorf("web.dir 不能为空")
+	}
+	cc := c.Collector
+	if cc.TimeoutSeconds <= 0 {
+		return fmt.Errorf("collector.timeout_seconds 必须大于 0")
+	}
+	if cc.MaxPages <= 0 {
+		return fmt.Errorf("collector.max_pages 必须大于 0")
+	}
+	if cc.PageSize < 0 {
+		return fmt.Errorf("collector.page_size 不能为负")
+	}
+	if cc.DefaultHours <= 0 {
+		return fmt.Errorf("collector.default_incremental_hours 必须大于 0")
+	}
+	if cc.Parallel <= 0 {
+		return fmt.Errorf("collector.parallel 必须大于 0")
 	}
 	return nil
 }
