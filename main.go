@@ -1,38 +1,46 @@
-// AssetSpider 是资产信息采集工具的命令行入口。
+// AssetSpider 是资产信息采集工具的服务入口。
 package main
 
 import (
 	"flag"
 	"fmt"
-	"os"
+	"log"
+
+	"github.com/SilenCN/AssetSpider/internal/config"
+	"github.com/SilenCN/AssetSpider/internal/server"
+	"github.com/SilenCN/AssetSpider/internal/store"
 )
 
-// version 是当前版本号，发布时按需更新。
-const version = "0.1.0"
+const version = "0.2.0"
 
 func main() {
-	target := flag.String("target", "", "采集目标，例如域名或 IP 段")
+	configPath := flag.String("config", "conf/config.yaml", "配置文件路径")
 	showVersion := flag.Bool("version", false, "输出版本号")
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println(banner(""))
+		fmt.Println(banner())
 		return
 	}
-	if *target == "" {
-		fmt.Fprintln(os.Stderr, "请通过 -target 指定采集目标")
-		flag.Usage()
-		os.Exit(2)
-	}
 
-	fmt.Println(banner(*target))
-	// TODO: 在这里接入实际的采集逻辑
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		log.Fatalf("加载配置失败: %v", err)
+	}
+	st, err := store.Open(cfg.Database.Path)
+	if err != nil {
+		log.Fatalf("初始化数据库失败: %v", err)
+	}
+	defer st.Close()
+
+	log.Printf("AssetSpider v%s 启动 | 监听 %s | 数据库 %s | 页面 %s",
+		version, cfg.Server.Addr, cfg.Database.Path, cfg.Web.Dir)
+	if err := server.New(st, cfg.Web.Dir).Router().Run(cfg.Server.Addr); err != nil {
+		log.Fatalf("服务启动失败: %v", err)
+	}
 }
 
-// banner 返回启动提示信息，便于在采集逻辑尚未实现时验证程序运行。
-func banner(target string) string {
-	if target == "" {
-		return fmt.Sprintf("AssetSpider v%s", version)
-	}
-	return fmt.Sprintf("AssetSpider v%s | target: %s (采集逻辑待实现)", version, target)
+// banner 返回版本信息。
+func banner() string {
+	return fmt.Sprintf("AssetSpider v%s", version)
 }

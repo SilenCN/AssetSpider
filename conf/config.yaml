@@ -1,0 +1,15 @@
+# AssetSpider 默认配置
+# 可用 -config 指定其他配置文件；以下环境变量可覆盖同名配置项：
+#   ASSETSPIDER_SERVER_ADDR / ASSETSPIDER_DB_PATH / ASSETSPIDER_WEB_DIR
+
+server:
+  # HTTP 监听地址
+  addr: ":8080"
+
+database:
+  # SQLite 数据库文件路径，支持相对路径（相对工作目录）或绝对路径
+  path: "data/assetspider.db"
+
+web:
+  # Vue 构建产物目录，由 Gin 托管
+  dir: "web/dist"

@@ -1,0 +1,151 @@
+<script setup>
+import { onMounted, ref } from 'vue'
+
+const assets = ref([])
+const dbPath = ref('')
+const error = ref('')
+const loading = ref(false)
+const form = ref({ host: '', ip: '', category: 'domain' })
+
+async function request(path, options) {
+  const res = await fetch(path, options)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.error || `请求失败 (${res.status})`)
+  }
+  return res.status === 204 ? null : res.json()
+}
+
+async function load() {
+  loading.value = true
+  error.value = ''
+  try {
+    const [list, health] = await Promise.all([
+      request('/api/assets'),
+      request('/api/health'),
+    ])
+    assets.value = list || []
+    dbPath.value = health.database
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    loading.value = false
+  }
+}
+
+async function add() {
+  if (!form.value.host.trim()) return
+  error.value = ''
+  try {
+    await request('/api/assets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        host: form.value.host.trim(),
+        ip: form.value.ip.trim(),
+        category: form.value.category.trim() || 'other',
+      }),
+    })
+    form.value = { host: '', ip: '', category: 'domain' }
+    await load()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+async function remove(id) {
+  error.value = ''
+  try {
+    await request(`/api/assets/${id}`, { method: 'DELETE' })
+    await load()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+function formatTime(value) {
+  if (!value) return '-'
+  return new Date(value).toLocaleString('zh-CN', { hour12: false })
+}
+
+onMounted(load)
+</script>
+
+<template>
+  <main class="page">
+    <header>
+      <h1>AssetSpider</h1>
+      <p>资产台账 · Vue 3 + Gin + GORM/SQLite</p>
+      <code class="db">DB: {{ dbPath || '加载中…' }}</code>
+    </header>
+
+    <p v-if="error" class="error">{{ error }}</p>
+
+    <section class="card">
+      <h2>新增资产</h2>
+      <form @submit.prevent="add">
+        <input v-model="form.host" placeholder="域名或主机名 *" required />
+        <input v-model="form.ip" placeholder="IP 地址" />
+        <select v-model="form.category">
+          <option value="domain">domain</option>
+          <option value="ip">ip</option>
+          <option value="service">service</option>
+          <option value="other">other</option>
+        </select>
+        <button type="submit">添加</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <div class="list-head">
+        <h2>资产列表</h2>
+        <button class="ghost" @click="load" :disabled="loading">
+          {{ loading ? '刷新中…' : '刷新' }}
+        </button>
+      </div>
+      <p v-if="!assets.length" class="empty">暂无资产，先在上方添加一条。</p>
+      <table v-else>
+        <thead>
+          <tr><th>ID</th><th>Host</th><th>IP</th><th>类型</th><th>创建时间</th><th></th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="a in assets" :key="a.id">
+            <td>{{ a.id }}</td>
+            <td class="host">{{ a.host }}</td>
+            <td>{{ a.ip || '-' }}</td>
+            <td><span class="tag">{{ a.category || '-' }}</span></td>
+            <td>{{ formatTime(a.createdAt) }}</td>
+            <td><button class="danger" @click="remove(a.id)">删除</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</template>
+
+<style>
+:root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #f5f6f8; color: #1f2329; }
+.page { max-width: 960px; margin: 0 auto; padding: 32px 20px 64px; }
+header h1 { margin: 0; font-size: 28px; }
+header p { margin: 6px 0 12px; color: #646a73; }
+.db { display: inline-block; background: #eef1f5; padding: 4px 10px; border-radius: 6px; font-size: 12px; color: #4e5969; }
+.card { background: #fff; border: 1px solid #e5e6eb; border-radius: 10px; padding: 20px; margin-top: 20px; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
+.card h2 { margin: 0 0 14px; font-size: 16px; }
+form { display: flex; gap: 10px; flex-wrap: wrap; }
+input, select { padding: 8px 10px; border: 1px solid #c9cdd4; border-radius: 6px; font-size: 14px; }
+input { flex: 1 1 200px; }
+button { padding: 8px 16px; border: 0; border-radius: 6px; background: #165dff; color: #fff; cursor: pointer; font-size: 14px; }
+button:disabled { opacity: .6; cursor: default; }
+button.ghost { background: #f2f3f5; color: #1f2329; }
+button.danger { background: #fff1f0; color: #f53f3f; padding: 5px 10px; }
+.list-head { display: flex; align-items: center; justify-content: space-between; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #f0f1f3; }
+th { color: #86909c; font-weight: 500; }
+.host { font-weight: 600; }
+.tag { background: #e8f3ff; color: #165dff; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+.empty { color: #86909c; margin: 8px 0; }
+.error { background: #fff1f0; color: #f53f3f; padding: 10px 14px; border-radius: 6px; margin-top: 16px; }
+</style>

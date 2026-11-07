@@ -21,3 +21,12 @@ coverage.*
 .idea/
 .vscode/
 .DS_Store
+
+# 运行时 SQLite 数据库
+/data/
+*.db
+*.db-shm
+*.db-wal
+
+# 前端依赖
+/web/node_modules/
