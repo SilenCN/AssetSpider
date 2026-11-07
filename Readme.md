@@ -1,6 +1,6 @@
 # AssetSpider
 
-视频站点采集工具。把**海洋CMS / 苹果CMS 系资源站的 JSON 采集接口**配置进数据库，按需执行**全量**或**增量**采集，结果去重后写入 SQLite，并提供 Vue 管理页面。
+视频站点采集工具。把**海洋CMS / 苹果CMS 系资源站的 JSON 采集接口**配置进数据库，按需执行**全量**或**增量**采集，把接口返回的**全部字段**去重后写入 SQLite，并提供 Vue 管理页面。
 
 后端 Go + Gin + GORM/SQLite，前端 Vue 3 + Vite，构建产物由 Gin 直接托管。
 
@@ -47,15 +47,28 @@ go build -o bin/assetspider .
       "vod_id": 1001, "vod_name": "影片名", "type_id": 1, "type_name": "动作片",
       "vod_time": "2026-11-07 10:00:00", "vod_remarks": "HD",
       "vod_pic": "...", "vod_play_from": "youku", "vod_play_url": "正片$https://...",
-      "vod_area": "大陆", "vod_lang": "国语", "vod_year": "2026",
-      "vod_actor": "...", "vod_director": "...", "vod_content": "...",
-      "vod_down_url": "...", "vod_en": "...", "vod_serial": "0"
+      "vod_down_url": "...", "vod_actor": "...", "vod_content": "...",
+      "vod_score": "8.5", "vod_custom_flag": "站点私有字段"
     }
   ]
 }
 ```
 
-解析做了兼容：`vod_id` / `type_id` 等字段既可以是数字也可以是字符串，`limit` 可以是 `"20"`，`pagecount` 也接受 `page_count` 别名。
+解析做了兼容：`vod_id` / `type_id` 等字段既可以是数字也可以是字符串，`limit` 可以是 `"20"`，`pagecount` 也接受 `page_count` 别名；`null` 转空串，对象与数组按紧凑 JSON 文本保留。
+
+### 全字段保留（重点）
+
+资源站的字段因版本、二次开发、自定义模板差异很大，因此**不使用固定结构体反序列化**（那会静默丢弃未定义字段）。每条 `list[]` 记录在解析时同时保留三份数据：
+
+| 层 | 落地位置 | 说明 |
+| --- | --- | --- |
+| 结构化标准列 | `videos` 表的 91 个 `vod_*` 列 | 依据 MacCMS V10 官方「视频字段」表，覆盖基础信息、图片、演职、上映、属性、统计、时间、来源、密码、播放/下载、分集剧情等 14 组；便于 SQL 查询与前端展示 |
+| 原始记录全文 | `videos.raw` | 接口返回的该条记录原始 JSON 全文（紧凑化、未裁剪），可还原任意字段 |
+| 扩展字段 | `videos.extra` | 接口返回但不在标准清单内的字段（站点自定义字段、嵌套对象、数组等），按**原始 JSON 值**保存 |
+
+字段清单 `internal/model/video_fields.go` 的 `VodFields` 是唯一数据源：采集映射、入库更新、字段元数据接口、前端详情展示全部由它驱动，新增字段只需追加清单 + 实体字段。`model` 包的一致性测试会校验清单与实体、列名、json tag 严格对应，避免改动时漏字段。
+
+内容指纹由该条记录的**全部键值**（含扩展字段）排序后计算，因此任何字段变化都会触发更新；仅字段顺序或空白变化不会误判。更新时用全字段 map 写回，接口把某字段清空也能正确同步。
 
 ### 全量采集
 
@@ -67,13 +80,13 @@ go build -o bin/assetspider .
 
 1. **接口侧时间窗**：附加 `h=<小时数>` 参数，取「站点 `incrementalHours`」与「距上次采集经过的小时数 + 2」的较大者；
 2. **本地时间游标**：站点表 `last_cursor` 记录已采到的最大 `vod_time`，增量时过滤掉游标之前的旧记录；
-3. **入库去重**：`(source_id, vod_id)` 复合唯一索引 + 内容指纹，重复数据不产生新行，内容变化才更新。
+3. **入库去重**：`(source_id, vod_id)` 复合唯一索引 + 全字段内容指纹，重复数据不产生新行，内容变化才更新。
 
 > 海洋CMS 系站点更新影片会同步刷新 `vod_time`，因此游标过滤是安全的；若某站点不刷新 `vod_time`，可调大增量小时数或改用全量采集。
 
 ### 数据入库
 
-`videos` 表保存影片名称、分类、图片、备注、播放/下载地址、演员、导演、简介、站点更新时间、内容指纹与原始 JSON，并记录首次/最近入库时间。每次采集生成一条 `crawl_jobs` 记录（模式、状态、页数、拉取/新增/更新/未变条数、耗时、错误信息），站点表回写上次采集状态与游标。
+`videos` 表保存全部标准字段、原始 JSON、扩展字段、内容指纹与首次/最近入库时间。每次采集生成一条 `crawl_jobs` 记录（模式、状态、页数、拉取/新增/更新/未变条数、耗时、错误信息），站点表回写上次采集状态与游标。
 
 ## 配置
 
@@ -126,7 +139,9 @@ collector:
 | DELETE | `/api/sources/:id` | 删除站点，级联清理其影片与采集记录 |
 | POST | `/api/sources/:id/crawl?mode=full\|incremental` | 单站点采集，同步返回结果摘要 |
 | POST | `/api/crawl?mode=full\|incremental` | 对全部启用站点批量采集 |
-| GET | `/api/videos?source_id=&q=&page=&size=` | 分页查询入库影片，支持名称搜索 |
+| GET | `/api/videos?source_id=&q=&page=&size=` | 分页查询入库影片（返回全部字段、raw、extra），`q` 匹配名称/别名/演员/导演/分类 |
+| GET | `/api/videos/:id` | 单条影片完整记录 |
+| GET | `/api/meta/fields` | 全字段元数据：`total`、`groups`、`fields[]`（`key` 原始键、`json` 前端键、`desc` 中文含义、`group`、`label`、`long`） |
 | GET | `/api/jobs?source_id=&limit=` | 采集记录 |
 
 `mode` 也可放在 JSON body：`{"mode":"incremental"}`；缺省为 `incremental`。示例：
@@ -138,6 +153,7 @@ curl -X POST http://localhost:8080/api/sources \
 
 curl -X POST 'http://localhost:8080/api/sources/1/crawl?mode=full'
 curl 'http://localhost:8080/api/videos?page=1&size=20'
+curl 'http://localhost:8080/api/meta/fields'
 ```
 
 ## 前端开发
@@ -149,7 +165,7 @@ npm run dev      # Vite 开发服务器，/api 代理到 :8080
 npm run build    # 产物输出到 web/dist，由 Gin 托管
 ```
 
-页面分三块：**站点配置**（增删改、启用开关、单站点全量/增量采集、一键批量采集）、**采集数据**（分页/搜索影片）、**采集记录**（每次采集的统计与状态）。`web/dist` 已随仓库提供，clone 后无需构建前端即可运行；未知前端路由由 Gin 回退到 `index.html`。
+页面分三块：**站点配置**（增删改、启用开关、单站点全量/增量采集、一键批量采集）、**采集数据**（分页/搜索影片，点「详情」按 14 个分组查看全部标准字段，并可切换查看扩展字段与原始 JSON，支持「只看非空」）、**采集记录**（每次采集的统计与状态）。`web/dist` 已随仓库提供，clone 后无需构建前端即可运行；未知前端路由由 Gin 回退到 `index.html`。
 
 ## 目录结构
 
@@ -159,8 +175,10 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 ├── internal/
 │   ├── config/               # 配置加载与校验
 │   ├── model/                # GORM 模型（Asset / Source / Video / CrawlJob）
-│   ├── store/                # SQLite 数据访问与去重 upsert
-│   ├── collector/            # JSON 接口解析、分页、全量/增量编排
+│   │   ├── video.go          # 全字段 Video 实体
+│   │   └── video_fields.go   # VodFields 字段清单（唯一数据源）
+│   ├── store/                # SQLite 数据访问与全字段去重 upsert
+│   ├── collector/            # 零丢失 JSON 解析、分页、全量/增量编排
 │   └── server/               # Gin 路由、API 与静态托管
 ├── web/
 │   ├── src/                  # Vue 3 源码
@@ -172,7 +190,9 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 
 ## 测试
 
-`go test ./...` 覆盖配置加载、站点/影片/任务 CRUD、去重 upsert、JSON 字段兼容解析、URL 拼装、全量/增量/游标/去重/失败回写，以及通过 HTTP 接口触发采集的完整链路。采集器测试用本地 HTTP 模拟站点，不依赖外网。
+`go test ./...` 覆盖配置加载、站点/影片/任务 CRUD、去重 upsert、**字段清单与实体一致性**、**全字段零丢失解析（数字/字符串/null/对象/数组/自定义字段）**、**全字段指纹与全字段写回**、URL 拼装、全量/增量/游标/去重/失败回写，以及通过 HTTP 接口触发采集与字段元数据/详情接口的完整链路。采集器测试用本地 HTTP 模拟站点，不依赖外网。
+
+端到端可用模拟站点验证：91 个标准字段全部落库（`videos` 表 100 列）、`raw` 保留原始 JSON 全文、`extra` 保留自定义字段与嵌套对象、只改一个冷门字段也能触发更新、全量/增量/去重/幂等/批量采集与 Vue 页面托管均正常。
 
 ## 计划
 

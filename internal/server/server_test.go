@@ -264,3 +264,90 @@ func TestSourceAndCrawlAPI(t *testing.T) {
 		t.Fatalf("删除站点后影片未级联清理: %s", w.Body.String())
 	}
 }
+
+func TestVideoFieldMetaAndDetailAPI(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	// 1. 字段元数据：覆盖全部标准字段，且带中文分组信息
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/meta/fields", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("字段元数据接口异常: %d %s", w.Code, w.Body.String())
+	}
+	var meta struct {
+		Total  int                  `json:"total"`
+		Fields []model.VodFieldMeta `json:"fields"`
+		Groups []struct {
+			Key   string `json:"key"`
+			Label string `json:"label"`
+		} `json:"groups"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta.Total < 90 || len(meta.Fields) != meta.Total || len(meta.Groups) == 0 {
+		t.Fatalf("字段元数据不完整: total=%d fields=%d groups=%d", meta.Total, len(meta.Fields), len(meta.Groups))
+	}
+	foundPlayURL := false
+	for _, f := range meta.Fields {
+		if f.Key == "vod_play_url" {
+			foundPlayURL = f.Json == "vodPlayUrl" && f.Label != ""
+		}
+	}
+	if !foundPlayURL {
+		t.Fatal("vod_play_url 元数据缺失或前端键不正确")
+	}
+
+	// 2. 采集一条数据，确认 API 返回完整字段、原始 JSON 与详情接口
+	site := newMockVideoSite(t)
+	w = doJSON(r, http.MethodPost, "/api/sources", map[string]interface{}{
+		"name": "字段测试站", "apiBase": site.URL + "/api.php/provide/vod/",
+		"format": "seacms_json", "enabled": true, "incrementalHours": 24,
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("创建站点失败: %d %s", w.Code, w.Body.String())
+	}
+	w = doJSON(r, http.MethodPost, "/api/sources/1/crawl?mode=full", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("采集失败: %d %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos", nil))
+	var list struct {
+		Items []map[string]interface{} `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 2 {
+		t.Fatalf("入库条数异常: %d", len(list.Items))
+	}
+	v := list.Items[0]
+	if v["vodName"] == nil || v["vodId"] == nil {
+		t.Errorf("响应缺少结构化字段: %+v", v)
+	}
+	raw, _ := v["raw"].(string)
+	if !strings.Contains(raw, "vod_name") || !strings.Contains(raw, "vod_id") {
+		t.Errorf("响应未返回原始 JSON: %q", raw)
+	}
+	hasPlayURL := false
+	for _, item := range list.Items {
+		if r, _ := item["raw"].(string); strings.Contains(r, "vod_play_url") {
+			hasPlayURL = true
+		}
+	}
+	if !hasPlayURL {
+		t.Error("原始 JSON 未保留播放地址字段")
+	}
+
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/1", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"raw"`) {
+		t.Fatalf("详情接口异常: %d %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/9999", nil))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("不存在的影片应返回 404，实际 %d", w.Code)
+	}
+}

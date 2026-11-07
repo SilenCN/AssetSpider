@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -263,43 +265,62 @@ func (r *Runner) crawl(ctx context.Context, src *model.Source, mode string, res 
 	return nil
 }
 
-// toVideo 把接口记录转换为入库模型并计算内容指纹。
+// toVideo 把接口记录全量转换为入库模型并计算内容指纹。
+//
+// 映射完全由 model.VodFields 驱动，新增字段只需改清单与实体，无需改动这里；
+// 清单之外的字段（站点自定义字段、嵌套对象等）按原始 JSON 值写入 Extra，
+// 原始单条 JSON 全文写入 Raw，因此接口返回的任何字段都不会丢失。
 func toVideo(sourceID uint, item VideoItem) model.Video {
-	v := model.Video{
-		SourceID: sourceID,
-		VodID:    item.VodID.String(),
-		Name:     item.VodName.String(),
-		TypeID:   item.TypeID.String(),
-		TypeName: item.TypeName.String(),
-		En:       item.VodEn.String(),
-		VodTime:  normalizeTime(item.VodTime.String()),
-		Remarks:  item.VodRemarks.String(),
-		PlayFrom: item.VodPlayFrom.String(),
-		Pic:      item.VodPic.String(),
-		Area:     item.VodArea.String(),
-		Lang:     item.VodLang.String(),
-		Year:     item.VodYear.String(),
-		Serial:   item.VodSerial.String(),
-		Actor:    item.VodActor.String(),
-		Director: item.VodDirector.String(),
-		Content:  item.VodContent.String(),
-		PlayURL:  item.VodPlayURL.String(),
-		DownURL:  item.VodDownURL.String(),
+	v := model.Video{SourceID: sourceID}
+	rv := reflect.ValueOf(&v).Elem()
+	for _, f := range model.VodFields {
+		val, ok := item.Fields[f.Key]
+		if !ok {
+			continue
+		}
+		fv := rv.FieldByName(f.Go)
+		if fv.IsValid() && fv.CanSet() && fv.Kind() == reflect.String {
+			fv.SetString(val)
+		} else {
+			// 清单与实体脱节属于代码错误，宁可显式失败也不静默丢字段。
+			panic(fmt.Sprintf("Video 缺少字段 %s（接口键 %s）", f.Go, f.Key))
+		}
 	}
-	if raw, err := json.Marshal(item); err == nil {
-		v.Raw = string(raw)
+
+	extra := make(map[string]json.RawMessage)
+	for k, raw := range item.RawFields {
+		if !model.IsVodField(k) {
+			extra[k] = raw
+		}
 	}
-	v.Hash = fingerprint(v)
+	if len(extra) > 0 {
+		if b, err := json.Marshal(extra); err == nil {
+			v.Extra = string(b)
+		}
+	}
+
+	v.VodTime = normalizeTime(v.VodTime) // 游标需要可字典序比较的时间
+	v.Raw = item.RawJSON
+	v.Hash = fingerprint(item)
 	return v
 }
 
-func fingerprint(v model.Video) string {
-	parts := []string{
-		v.Name, v.TypeID, v.TypeName, v.En, v.Pic, v.Remarks, v.PlayFrom,
-		v.Area, v.Lang, v.Year, v.Serial, v.Actor, v.Director,
-		v.Content, v.PlayURL, v.DownURL, v.VodTime,
+// fingerprint 基于该条记录的全部键值（含未映射的自定义字段）计算指纹。
+// 键排序后拼接，字段顺序或空白变化不会误判为内容更新。
+func fingerprint(item VideoItem) string {
+	keys := make([]string, 0, len(item.Fields))
+	for k := range item.Fields {
+		keys = append(keys, k)
 	}
-	sum := sha256.Sum256([]byte(strings.Join(parts, "\x1f")))
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(item.Fields[k])
+		b.WriteByte('\x1f')
+	}
+	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:16])
 }
 

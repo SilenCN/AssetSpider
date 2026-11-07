@@ -231,6 +231,34 @@ func (s *Server) listVideos(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": items, "total": total, "page": page, "size": size})
 }
 
+// listVideoFields 返回 Video 实体的全字段元数据，供前端详情按分组展示。
+func (s *Server) listVideoFields(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"groups": model.VodGroupLabels,
+		"fields": model.VodFieldMetas(),
+		"total":  len(model.VodFields),
+	})
+}
+
+// getVideo 返回单条影片的完整记录（含原始 JSON 与扩展字段）。
+func (s *Server) getVideo(c *gin.Context) {
+	id, err := parseUintParam(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	v, err := s.store.GetVideo(id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "影片不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, v)
+}
+
 func (s *Server) listJobs(c *gin.Context) {
 	sourceID, _ := strconv.ParseUint(c.Query("source_id"), 10, 64)
 	limit, _ := strconv.Atoi(c.Query("limit"))

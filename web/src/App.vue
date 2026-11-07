@@ -68,6 +68,54 @@ async function refresh() {
   }
 }
 
+// ---------- 全字段详情 ----------
+const fieldMeta = ref({ groups: [], fields: [], total: 0 })
+const detail = ref(null)
+const detailTab = ref('fields')
+const onlyNonEmpty = ref(true)
+
+async function loadFieldMeta() {
+  try { fieldMeta.value = await request('/api/meta/fields') } catch (e) { /* 元数据不影响主流程 */ }
+}
+
+function hasValue(v) {
+  return v !== null && v !== undefined && String(v).trim() !== ''
+}
+
+const nonEmptyCount = computed(() => {
+  if (!detail.value) return 0
+  return (fieldMeta.value.fields || []).filter(f => hasValue(detail.value[f.json])).length
+})
+
+const groupedFields = computed(() => {
+  const groups = fieldMeta.value.groups || []
+  const fields = fieldMeta.value.fields || []
+  return groups.map(g => ({
+    key: g.key,
+    label: g.label,
+    items: fields.filter(f => f.group === g.key && (!onlyNonEmpty.value || hasValue(detail.value?.[f.json]))),
+  })).filter(g => g.items.length)
+})
+
+const extraPairs = computed(() => {
+  if (!detail.value?.extra) return []
+  try {
+    const obj = JSON.parse(detail.value.extra)
+    return Object.entries(obj).map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)])
+  } catch (e) { return [] }
+})
+
+function prettyRaw(raw) {
+  try { return JSON.stringify(JSON.parse(raw), null, 2) } catch (e) { return raw || '' }
+}
+
+async function openDetail(v) {
+  detail.value = v
+  detailTab.value = 'fields'
+  onlyNonEmpty.value = true
+  if (!fieldMeta.value.fields?.length) await loadFieldMeta()
+}
+
 // ---------- 站点配置 ----------
 const emptyForm = () => ({
   id: null, name: '', apiBase: '', format: 'seacms_json', extraParams: '',
@@ -192,18 +240,19 @@ function short(text, n = 46) {
   return s.length > n ? s.slice(0, n) + '…' : s
 }
 
-onMounted(refresh)
+onMounted(() => { refresh(); loadFieldMeta() })
 </script>
 
 <template>
   <main class="page">
     <header>
       <h1>AssetSpider</h1>
-      <p>视频站点采集 · JSON 接口 · 全量 / 增量 · Vue 3 + Gin + GORM/SQLite</p>
+      <p>视频站点采集 · JSON 接口 · 全量 / 增量 · 全字段入库 · Vue 3 + Gin + GORM/SQLite</p>
       <div class="stats">
         <span class="db">DB: {{ health.database || '加载中…' }}</span>
         <span class="stat">站点 <b>{{ health.sources ?? '-' }}</b></span>
         <span class="stat">影片 <b>{{ health.videos ?? '-' }}</b></span>
+        <span class="stat">字段 <b>{{ fieldMeta.total || '-' }}</b></span>
       </div>
     </header>
 
@@ -247,7 +296,7 @@ onMounted(refresh)
           <button type="submit">{{ editing ? '保存修改' : '添加站点' }}</button>
           <button v-if="editing" type="button" class="ghost" @click="resetForm">取消</button>
         </form>
-        <p class="hint">采集协议：海洋CMS / 苹果CMS 系 <code>api.php/provide/vod/?ac=list</code>，返回 JSON 的 <code>page / pagecount / total / list[]</code>。增量采集附加 <code>h=&lt;小时数&gt;</code> 并按 <code>vod_time</code> 游标去重。</p>
+        <p class="hint">采集协议：海洋CMS / 苹果CMS 系 <code>api.php/provide/vod/?ac=list</code>，返回 JSON 的 <code>page / pagecount / total / list[]</code>。增量采集附加 <code>h=&lt;小时数&gt;</code> 并按 <code>vod_time</code> 游标去重。接口返回的<strong>全部标准字段</strong>结构化入库，站点自定义字段存入 <code>extra</code>，原始记录全文存入 <code>raw</code>，不丢字段。</p>
       </section>
 
       <section class="card">
@@ -293,7 +342,7 @@ onMounted(refresh)
     <template v-if="tab === 'videos'">
       <section class="card">
         <div class="toolbar">
-          <input v-model="videoQuery" placeholder="按影片名称搜索" @keyup.enter="searchVideos" />
+          <input v-model="videoQuery" placeholder="按名称 / 别名 / 演员 / 导演 / 分类搜索" @keyup.enter="searchVideos" />
           <select v-model="videoSource" @change="searchVideos">
             <option value="">全部站点</option>
             <option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }}</option>
@@ -305,18 +354,19 @@ onMounted(refresh)
         <div v-else class="table-wrap">
           <table>
             <thead>
-              <tr><th>ID</th><th>来源</th><th>VodID</th><th>影片名称</th><th>分类</th><th>备注</th><th>站点更新时间</th><th>首次入库</th></tr>
+              <tr><th>ID</th><th>来源</th><th>VodID</th><th>影片名称</th><th>分类</th><th>备注</th><th>站点更新时间</th><th>首次入库</th><th>字段</th></tr>
             </thead>
             <tbody>
               <tr v-for="v in videos" :key="v.id">
                 <td class="mono">{{ v.id }}</td>
                 <td class="muted">{{ sources.find(s => s.id === v.sourceId)?.name || v.sourceId }}</td>
                 <td class="mono">{{ v.vodId }}</td>
-                <td class="host" :title="v.playUrl">{{ v.name || '-' }}</td>
+                <td class="host" :title="v.vodPlayUrl">{{ v.vodName || '-' }}</td>
                 <td>{{ v.typeName || '-' }}</td>
-                <td>{{ v.remarks || '-' }}</td>
+                <td>{{ v.vodRemarks || '-' }}</td>
                 <td class="mono">{{ v.vodTime || '-' }}</td>
                 <td class="muted">{{ formatTime(v.firstSeenAt) }}</td>
+                <td><button class="mini ghost" @click="openDetail(v)">详情</button></td>
               </tr>
             </tbody>
           </table>
@@ -358,6 +408,50 @@ onMounted(refresh)
         </div>
       </section>
     </template>
+
+    <!-- 全字段详情 -->
+    <div v-if="detail" class="modal-mask" @click.self="detail = null">
+      <div class="modal">
+        <div class="modal-head">
+          <div>
+            <h3>{{ detail.vodName || detail.vodId }}</h3>
+            <p class="muted">全字段明细 · 标准字段 {{ fieldMeta.total }} 个，本条有值 {{ nonEmptyCount }} 个 · VodID {{ detail.vodId }} · 来源 {{ detail.sourceId }}</p>
+          </div>
+          <button class="ghost" @click="detail = null">关闭</button>
+        </div>
+        <div class="modal-tabs">
+          <button :class="{ active: detailTab === 'fields' }" @click="detailTab = 'fields'">标准字段</button>
+          <button :class="{ active: detailTab === 'extra' }" @click="detailTab = 'extra'">扩展字段 ({{ extraPairs.length }})</button>
+          <button :class="{ active: detailTab === 'raw' }" @click="detailTab = 'raw'">原始 JSON</button>
+          <label v-if="detailTab === 'fields'" class="check"><input v-model="onlyNonEmpty" type="checkbox" /> 只看非空</label>
+        </div>
+        <div class="modal-body">
+          <template v-if="detailTab === 'fields'">
+            <section v-for="g in groupedFields" :key="g.key" class="field-group">
+              <h4>{{ g.label }} <span class="muted">{{ g.items.length }} 项</span></h4>
+              <div class="field-grid">
+                <div v-for="f in g.items" :key="f.key" class="field-item" :class="{ long: f.long }">
+                  <div class="field-k"><code>{{ f.key }}</code> {{ f.desc }}</div>
+                  <div class="field-v" :title="String(detail[f.json] ?? '')">{{ detail[f.json] ?? '-' }}</div>
+                </div>
+              </div>
+            </section>
+            <p v-if="!groupedFields.length" class="empty">没有可显示的字段。</p>
+          </template>
+          <template v-else-if="detailTab === 'extra'">
+            <p class="hint">接口返回但不在标准字段清单内的字段（站点自定义字段、嵌套对象、数组等），按原始 JSON 值保存，确保不丢失。</p>
+            <p v-if="!extraPairs.length" class="empty">该站点未返回扩展字段。</p>
+            <table v-else class="kv-table">
+              <tbody><tr v-for="[k, val] in extraPairs" :key="k"><th><code>{{ k }}</code></th><td>{{ val }}</td></tr></tbody>
+            </table>
+          </template>
+          <template v-else>
+            <p class="hint">接口返回的该条记录原始 JSON 全文，未经裁剪，可用于还原任意字段。</p>
+            <pre class="raw-json">{{ prettyRaw(detail.raw) }}</pre>
+          </template>
+        </div>
+      </div>
+    </div>
   </main>
 </template>
 
@@ -418,4 +512,27 @@ th { color: #86909c; font-weight: 500; }
 .notice { padding: 10px 14px; border-radius: 6px; margin-top: 16px; background: #e8ffea; color: #009a29; font-size: 13px; }
 .notice.err { background: #fff1f0; color: #f53f3f; }
 .notice.info { background: #e8f3ff; color: #165dff; }
+.modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 50; }
+.modal { background: #fff; border-radius: 12px; width: min(960px, 100%); max-height: 88vh; display: flex; flex-direction: column; box-shadow: 0 12px 40px rgba(0,0,0,.2); }
+.modal-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 18px 22px; border-bottom: 1px solid #e5e6eb; }
+.modal-head h3 { margin: 0 0 6px; font-size: 17px; }
+.modal-head p { margin: 0; font-size: 12px; }
+.modal-tabs { display: flex; gap: 8px; align-items: center; padding: 12px 22px; border-bottom: 1px solid #e5e6eb; flex-wrap: wrap; }
+.modal-tabs button { padding: 5px 12px; background: #f2f3f5; color: #4e5969; font-size: 13px; }
+.modal-tabs button.active { background: #165dff; color: #fff; }
+.modal-tabs .check { margin-left: auto; }
+.modal-body { overflow-y: auto; padding: 6px 22px 22px; }
+.field-group { margin-top: 16px; }
+.field-group h4 { margin: 0 0 10px; font-size: 14px; color: #165dff; }
+.field-group h4 span { font-weight: 400; font-size: 12px; }
+.field-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 8px 16px; }
+.field-item { border-bottom: 1px dashed #f0f1f3; padding-bottom: 6px; min-width: 0; }
+.field-item.long { grid-column: 1 / -1; }
+.field-k { font-size: 11px; color: #86909c; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.field-v { font-size: 13px; word-break: break-all; white-space: pre-wrap; max-height: 66px; overflow: hidden; }
+.field-item.long .field-v { max-height: 130px; }
+.kv-table { width: 100%; }
+.kv-table th { width: 240px; text-align: left; }
+.kv-table td { white-space: pre-wrap; word-break: break-all; }
+.raw-json { background: #1f2329; color: #e8eaed; padding: 14px; border-radius: 8px; font-size: 12px; line-height: 1.6; overflow: auto; max-height: 58vh; white-space: pre-wrap; word-break: break-all; }
 </style>

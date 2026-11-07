@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/SilenCN/AssetSpider/internal/model"
@@ -129,17 +130,7 @@ func (s *Store) UpsertVideos(items []model.Video) (UpsertStats, error) {
 					return err
 				}
 			default:
-				updates := map[string]interface{}{
-					"name": v.Name, "type_id": v.TypeID, "type_name": v.TypeName,
-					"en": v.En, "pic": v.Pic, "remarks": v.Remarks,
-					"play_from": v.PlayFrom, "area": v.Area, "lang": v.Lang,
-					"year": v.Year, "serial": v.Serial, "actor": v.Actor,
-					"director": v.Director, "content": v.Content,
-					"play_url": v.PlayURL, "down_url": v.DownURL,
-					"vod_time": v.VodTime, "hash": v.Hash, "raw": v.Raw,
-					"last_seen_at": time.Now(),
-				}
-				if err := tx.Model(&existing).Updates(updates).Error; err != nil {
+				if err := tx.Model(&existing).Updates(videoUpdateMap(*v)).Error; err != nil {
 					return err
 				}
 				stats.Updated++
@@ -150,7 +141,35 @@ func (s *Store) UpsertVideos(items []model.Video) (UpsertStats, error) {
 	return stats, err
 }
 
-// ListVideos 分页查询影片，支持按站点过滤与名称模糊搜索。
+// videoUpdateMap 生成覆盖全部标准字段列的更新 map。
+// 用 map 而非 struct，确保接口字段被清空（零值）时也能正确写回；
+// 列名与取值都由 model.VodFields 驱动，避免手写几十列造成遗漏。
+func videoUpdateMap(v model.Video) map[string]interface{} {
+	rv := reflect.ValueOf(v)
+	m := make(map[string]interface{}, len(model.VodFields)+4)
+	for _, f := range model.VodFields {
+		fv := rv.FieldByName(f.Go)
+		if fv.IsValid() && fv.Kind() == reflect.String {
+			m[f.Column] = fv.String()
+		}
+	}
+	m["hash"] = v.Hash
+	m["raw"] = v.Raw
+	m["extra"] = v.Extra
+	m["last_seen_at"] = time.Now()
+	return m
+}
+
+// GetVideo 按主键读取单条影片的完整记录（含 Raw 原始 JSON 与 Extra 扩展字段）。
+func (s *Store) GetVideo(id uint) (*model.Video, error) {
+	var v model.Video
+	if err := s.db.First(&v, id).Error; err != nil {
+		return nil, err
+	}
+	return &v, nil
+}
+
+// ListVideos 分页查询影片，支持按站点过滤与多字段模糊搜索。
 func (s *Store) ListVideos(sourceID uint, keyword string, page, size int) ([]model.Video, int64, error) {
 	if page < 1 {
 		page = 1
@@ -163,7 +182,11 @@ func (s *Store) ListVideos(sourceID uint, keyword string, page, size int) ([]mod
 		q = q.Where("source_id = ?", sourceID)
 	}
 	if keyword != "" {
-		q = q.Where("name LIKE ?", "%"+keyword+"%")
+		kw := "%" + keyword + "%"
+		q = q.Where(
+			"vod_name LIKE ? OR vod_en LIKE ? OR vod_actor LIKE ? OR vod_director LIKE ? OR vod_class LIKE ?",
+			kw, kw, kw, kw, kw,
+		)
 	}
 	var total int64
 	if err := q.Count(&total).Error; err != nil {

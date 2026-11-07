@@ -2,6 +2,7 @@
 package collector
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -69,25 +70,68 @@ func (i *flexInt) UnmarshalJSON(b []byte) error {
 func (i flexInt) Int() int { return int(i) }
 
 // VideoItem 是采集接口 list[] 中的一条影片记录。
+//
+// 这里不使用固定结构体的 json.Unmarshal：那会静默丢弃接口返回的未定义字段，
+// 而资源站字段因版本、二次开发、自定义模板差异极大，必须做到零丢失。
+// 因此一次解析同时保留三份数据：
+//   - RawJSON：该条记录原始 JSON 全文（紧凑化），可还原任意字段；
+//   - RawFields：每个键的原始 JSON 值（数字/对象/数组保持原样），用于 Extra 兜底；
+//   - Fields：每个键统一字符串化后的值，用于映射到实体列与计算内容指纹。
 type VideoItem struct {
-	VodID       flexString `json:"vod_id"`
-	VodName     flexString `json:"vod_name"`
-	TypeID      flexString `json:"type_id"`
-	TypeName    flexString `json:"type_name"`
-	VodEn       flexString `json:"vod_en"`
-	VodTime     flexString `json:"vod_time"`
-	VodRemarks  flexString `json:"vod_remarks"`
-	VodPlayFrom flexString `json:"vod_play_from"`
-	VodPic      flexString `json:"vod_pic"`
-	VodArea     flexString `json:"vod_area"`
-	VodLang     flexString `json:"vod_lang"`
-	VodYear     flexString `json:"vod_year"`
-	VodSerial   flexString `json:"vod_serial"`
-	VodActor    flexString `json:"vod_actor"`
-	VodDirector flexString `json:"vod_director"`
-	VodContent  flexString `json:"vod_content"`
-	VodPlayURL  flexString `json:"vod_play_url"`
-	VodDownURL  flexString `json:"vod_down_url"`
+	RawJSON   string
+	RawFields map[string]json.RawMessage
+	Fields    map[string]string
+}
+
+// UnmarshalJSON 在解析单条记录时保留全部原始信息。
+func (it *VideoItem) UnmarshalJSON(b []byte) error {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, b); err != nil {
+		return fmt.Errorf("紧凑化影片记录: %w", err)
+	}
+	it.RawJSON = buf.String()
+
+	it.RawFields = map[string]json.RawMessage{}
+	// list 中偶尔会混入 null 或非对象项，此时视为空记录而不是让整页解析失败。
+	if err := json.Unmarshal(b, &it.RawFields); err != nil {
+		it.RawFields = map[string]json.RawMessage{}
+	}
+	it.Fields = make(map[string]string, len(it.RawFields))
+	for k, v := range it.RawFields {
+		it.Fields[k] = stringifyValue(v)
+	}
+	return nil
+}
+
+// Get 返回某个字段的字符串值，字段不存在时返回空字符串。
+func (it VideoItem) Get(key string) string { return it.Fields[key] }
+
+// stringifyValue 把任意 JSON 值转换成可入库的字符串，且不丢失信息：
+// 字符串解码、数字/布尔保留原文、null 转空串、对象/数组保留紧凑 JSON 文本。
+func stringifyValue(raw json.RawMessage) string {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return ""
+	}
+	switch s[0] {
+	case '"':
+		var v string
+		if err := json.Unmarshal(raw, &v); err == nil {
+			return v
+		}
+		return s
+	case '{', '[':
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, raw); err == nil {
+			return buf.String()
+		}
+		return s
+	default:
+		if n, err := json.Number(s).Int64(); err == nil {
+			return strconv.FormatInt(n, 10)
+		}
+		return s
+	}
 }
 
 // ListResponse 对应 api.php/provide/vod/?ac=list 的 JSON 响应。

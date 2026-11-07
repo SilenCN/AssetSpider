@@ -54,6 +54,8 @@ func (s *Server) Router() *gin.Engine {
 		// 批量采集、入库数据、采集记录
 		api.POST("/crawl", s.crawlAll)
 		api.GET("/videos", s.listVideos)
+		api.GET("/videos/:id", s.getVideo)
+		api.GET("/meta/fields", s.listVideoFields)
 		api.GET("/jobs", s.listJobs)
 	}
 
