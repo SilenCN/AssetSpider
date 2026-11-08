@@ -115,14 +115,108 @@ function activeTaskOf(sourceId) {
   return tasks.value.find(t =>
     t.sourceId === sourceId && (t.status === 'running' || t.status === 'queued')) || null
 }
-function sourceName(id) {
-  return sources.value.find(s => s.id === id)?.name || id
-}
 function showCategoryVideos(c) {
   videoCategory.value = String(c.id)
   videoPage.value = 1
   tab.value = 'videos'
   loadVideos().catch(e => { error.value = e.message })
+}
+
+// ---------- 分类树（站点 → 一级分类 → 二级分类）----------
+// 分类按站点隔离（source_id + cat_key 唯一），因此顶层用资源站点名分组，
+// 站点下再挂一级分类，一级分类下挂二级分类，构成最多三层的树。
+const catCollapsed = reactive(new Set())
+
+function isCatCollapsed(key) { return catCollapsed.has(key) }
+function toggleCat(key) {
+  if (catCollapsed.has(key)) catCollapsed.delete(key)
+  else catCollapsed.add(key)
+}
+// 虚拟分组节点没有分类 ID，用自身的 key 作为折叠标识
+function catKey(node) { return node.virtual ? node.key : `cat-${node.id}` }
+
+function siteNameOf(id) {
+  return sources.value.find(s => s.id === id)?.name || `站点 #${id}`
+}
+
+const categoryForest = computed(() => {
+  const sites = new Map()
+  for (const node of categoryTree.value) {
+    const sid = node.sourceId || 0
+    if (!sites.has(sid)) {
+      sites.set(sid, {
+        key: `site-${sid}`, sourceId: sid, name: siteNameOf(sid),
+        children: [], catCount: 0, videoCount: 0,
+      })
+    }
+    sites.get(sid).children.push(node)
+  }
+  const order = new Map(sources.value.map((s, i) => [s.id, i]))
+  return [...sites.values()]
+    .map(site => {
+      // 后端把「找不到父分类」的二级分类当成根节点一并返回（父分类可能没被采到，
+      // 例如站点只返回了二级分类的影片）。这类节点不直接铺在站点下，否则看起来
+      // 像是站点的一级分类，统一收进「未归类」分组。
+      const roots = []
+      const orphans = []
+      for (const node of site.children) {
+        if (node.level === 2) orphans.push(node)
+        else roots.push(node)
+      }
+      let catCount = 0
+      let videoCount = 0
+      const walk = n => {
+        catCount++
+        videoCount += n.videoCount || 0
+        for (const ch of n.children || []) walk(ch)
+      }
+      roots.forEach(walk)
+      orphans.forEach(walk)
+      if (orphans.length) {
+        roots.push({
+          key: `orphan-${site.sourceId}`, virtual: true, name: '未归类',
+          hint: '父分类未采集到，暂挂在此', videoCount: orphans.reduce((n, c) => n + (c.videoCount || 0), 0),
+          children: orphans,
+        })
+      }
+      site.children = roots
+      site.catCount = catCount
+      site.videoCount = videoCount
+      return site
+    })
+    .sort((a, b) => (order.get(a.sourceId) ?? 1e6) - (order.get(b.sourceId) ?? 1e6))
+})
+
+const catTotal = computed(() => categoryForest.value.reduce(
+  (n, s) => n + s.catCount, 0))
+
+// 分类下拉里带上层级路径（一级 / 二级），避免不同站点的同名分类难以区分
+const catPath = computed(() => {
+  const m = new Map()
+  const walk = (n, prefix) => {
+    const path = prefix ? `${prefix} / ${n.name}` : n.name
+    m.set(n.id, path)
+    for (const ch of n.children || []) walk(ch, path)
+  }
+  categoryTree.value.forEach(n => walk(n, ''))
+  return m
+})
+
+function catLabel(c) {
+  return `${siteNameOf(c.sourceId)} · ${catPath.value.get(c.id) || c.name}`
+}
+
+function toggleAllCats() {
+  const allOpen = categoryForest.value.every(s => !isCatCollapsed(s.key))
+  for (const site of categoryForest.value) {
+    const keys = [site.key]
+    const walk = n => { if (n.children?.length) keys.push(catKey(n)); (n.children || []).forEach(walk) }
+    site.children.forEach(walk)
+    for (const k of keys) {
+      if (allOpen) catCollapsed.add(k)
+      else catCollapsed.delete(k)
+    }
+  }
 }
 
 // ---------- 全字段详情 ----------
@@ -695,26 +789,47 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
       <section class="card">
         <div class="list-head">
           <h2>视频分类</h2>
-          <span class="muted">按资源站自动归档，共 {{ categories.length }} 个分类（支持二级）</span>
+          <span class="muted">
+            {{ categoryForest.length }} 个站点 · {{ catTotal }} 个分类（支持二级）
+            <button class="mini ghost" @click="toggleAllCats">展开 / 收起</button>
+          </span>
         </div>
         <p class="hint">采集时按接口返回的 type_id / type_name 自动创建分类并关联影片，每个资源站各自一套；依据苹果CMS 的 type_pid 模型支持二级分类：视频的 <code>type_id_1</code> 即所属一级分类 ID，二级分类会挂到对应一级分类之下。点「查看影片」可按分类（含其子分类）筛选影片。</p>
-        <p v-if="!categoryTree.length" class="empty">还没有分类，执行一次采集后会自动生成。</p>
-        <div v-else class="cat-tree">
-          <div v-for="node in categoryTree" :key="node.id" class="cat-node">
-            <div class="cat-row">
-              <span class="badge" :class="node.level === 1 ? 'on' : 'off'">{{ node.level === 1 ? '一级' : '二级' }}</span>
-              <b>{{ node.name }}</b>
-              <span class="muted">站点ID {{ node.typeId || '-' }}</span>
-              <span class="muted">{{ node.videoCount }} 部</span>
-              <button class="mini ghost" @click="showCategoryVideos(node)">查看影片</button>
+        <p v-if="!categoryForest.length" class="empty">还没有分类，执行一次采集后会自动生成。</p>
+        <div v-else class="tree">
+          <div v-for="site in categoryForest" :key="site.key" class="tree-site">
+            <div class="tree-row site" @click="toggleCat(site.key)">
+              <span class="twisty" :class="{ open: !isCatCollapsed(site.key) }">▶</span>
+              <b class="tree-title">{{ site.name }}</b>
+              <span class="muted">{{ site.catCount }} 个分类 · {{ site.videoCount }} 部影片</span>
             </div>
-            <div v-if="node.children && node.children.length" class="cat-children">
-              <div v-for="ch in node.children" :key="ch.id" class="cat-row child">
-                <span class="badge off">二级</span>
-                <b>{{ ch.name }}</b>
-                <span class="muted">站点ID {{ ch.typeId || '-' }}</span>
-                <span class="muted">{{ ch.videoCount }} 部</span>
-                <button class="mini ghost" @click="showCategoryVideos(ch)">查看影片</button>
+            <div v-show="!isCatCollapsed(site.key)" class="tree-kids">
+              <div v-for="node in site.children" :key="node.key || node.id" class="tree-branch">
+                <div class="tree-row" :class="{ group: node.virtual }">
+                  <span
+                    class="twisty"
+                    :class="{ open: !isCatCollapsed(catKey(node)), empty: !(node.children && node.children.length) }"
+                    @click.stop="node.children && node.children.length && toggleCat(catKey(node))"
+                  >▶</span>
+                  <span class="badge" :class="node.virtual ? 'queued' : (node.level === 1 ? 'on' : 'off')">{{ node.virtual ? '分组' : (node.level === 1 ? '一级' : '二级') }}</span>
+                  <b class="tree-title">{{ node.name }}</b>
+                  <span v-if="!node.virtual" class="muted hide-sm">站点ID {{ node.typeId || '-' }}</span>
+                  <span v-if="node.virtual" class="muted">{{ node.hint }}</span>
+                  <span class="muted">{{ node.videoCount }} 部</span>
+                  <span class="tree-gap"></span>
+                  <button v-if="!node.virtual" class="mini ghost" @click="showCategoryVideos(node)">查看影片</button>
+                </div>
+                <div v-if="node.children && node.children.length" v-show="!isCatCollapsed(catKey(node))" class="tree-kids">
+                  <div v-for="ch in node.children" :key="ch.id" class="tree-row leaf">
+                    <span class="twisty empty"></span>
+                    <span class="badge off">二级</span>
+                    <b class="tree-title">{{ ch.name }}</b>
+                    <span class="muted hide-sm">站点ID {{ ch.typeId || '-' }}</span>
+                    <span class="muted">{{ ch.videoCount }} 部</span>
+                    <span class="tree-gap"></span>
+                    <button class="mini ghost" @click="showCategoryVideos(ch)">查看影片</button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -729,7 +844,7 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
           <input v-model="videoQuery" placeholder="按视频名称 / 别名 / 演员 / 导演搜索" @keyup.enter="searchVideos" />
           <select v-model="videoCategory" @change="searchVideos" title="按分类筛选">
             <option value="">全部分类</option>
-            <option v-for="c in categories" :key="c.id" :value="c.id">{{ sourceName(c.sourceId) }} · {{ c.name }}</option>
+            <option v-for="c in categories" :key="c.id" :value="c.id">{{ catLabel(c) }}</option>
           </select>
           <select v-model="videoArea" @change="searchVideos" title="按地域筛选">
             <option value="">全部地域</option>
@@ -1122,12 +1237,27 @@ th { color: #86909c; font-weight: 500; }
 .group-tabs, .ep-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .ep-chips { max-height: 168px; overflow-y: auto; padding: 2px; }
 .play-url { margin: 10px 0 0; font-size: 11px; color: #86909c; word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.cat-tree { display: flex; flex-direction: column; gap: 10px; }
-.cat-node { border: 1px solid #e5e6eb; border-radius: 8px; overflow: hidden; }
-.cat-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; flex-wrap: wrap; }
-.cat-row.child { background: #fafbfc; border-top: 1px solid #f0f1f3; padding-left: 34px; }
-.cat-row b { font-size: 14px; }
-.cat-children { }
+/* 分类树：资源站点 → 一级分类 → 二级分类 */
+.tree { display: flex; flex-direction: column; gap: 12px; }
+.tree-site { border: 1px solid #e5e6eb; border-radius: 8px; overflow: hidden; }
+.tree-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; flex-wrap: wrap; }
+.tree-row.site { background: #f7f8fa; cursor: pointer; user-select: none; }
+.tree-row.site:hover { background: #eef1f6; }
+.tree-row.group { background: #fbfbfe; }
+.tree-row.group b.tree-title { color: #4e5969; font-weight: 600; }
+.tree-row b.tree-title { font-size: 14px; }
+.tree-gap { flex: 1 1 0; min-width: 0; }
+.twisty {
+  width: 12px; flex: none; font-size: 10px; line-height: 1; color: #86909c;
+  display: inline-block; transition: transform .15s ease; transform: rotate(0deg);
+}
+.twisty.open { transform: rotate(90deg); }
+.twisty.empty { visibility: hidden; }
+.tree-kids { border-top: 1px solid #f0f1f3; }
+.tree-kids .tree-row { padding-left: 28px; }
+.tree-kids .tree-kids { border-top: 1px dashed #eef1f5; }
+.tree-kids .tree-kids .tree-row { padding-left: 46px; background: #fafbfc; }
+.tree-kids .tree-kids .tree-row:hover { background: #f5f7fa; }
 
 /* ---------- 手机端适配（≤760px） ---------- */
 /* 策略：表格保留横滚、隐藏次要列；表单与工具栏单列；弹窗与播放器铺满宽度。 */
@@ -1206,9 +1336,11 @@ th { color: #86909c; font-weight: 500; }
   .res-info h4 { font-size: 12px; }
   .res-meta, .res-time { font-size: 10px; }
 
-  .cat-row { padding: 9px 10px; gap: 6px; }
-  .cat-row.child { padding-left: 18px; }
-  .cat-row b { font-size: 13px; }
+  /* 分类树：收窄缩进，标题行允许换行不挤压按钮 */
+  .tree-row { padding: 9px 10px; gap: 6px; }
+  .tree-row b.tree-title { font-size: 13px; }
+  .tree-kids .tree-row { padding-left: 20px; }
+  .tree-kids .tree-kids .tree-row { padding-left: 34px; }
   .ep-name { min-width: 0; }
   .ep-list { padding-left: 16px; }
   .pager { gap: 10px; font-size: 12px; }
