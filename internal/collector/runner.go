@@ -129,14 +129,34 @@ func (r *Runner) RunOne(ctx context.Context, id uint, mode string) (*RunResult, 
 	return res, nil
 }
 
-// RunAll 对所有启用站点执行同一模式的采集。
+// RunAll 对所有启用站点执行同一模式的采集（管理员视角）。
 func (r *Runner) RunAll(ctx context.Context, mode string) ([]RunResult, error) {
+	return r.RunAllForSources(ctx, mode, nil)
+}
+
+// RunAllForSources 对指定的启用站点执行采集。
+// allowed == nil 表示全部启用站点；非 nil（含空切片）时只采集集合内的启用站点，
+// 供普通用户把批量采集严格限制在自己可见的站点范围内。
+func (r *Runner) RunAllForSources(ctx context.Context, mode string, allowed []uint) ([]RunResult, error) {
 	if mode != model.ModeFull && mode != model.ModeIncremental {
 		return nil, fmt.Errorf("不支持的采集模式 %q（可选 full / incremental）", mode)
 	}
 	srcs, err := r.st.ListEnabledSources()
 	if err != nil {
 		return nil, err
+	}
+	if allowed != nil {
+		set := make(map[uint]bool, len(allowed))
+		for _, id := range allowed {
+			set[id] = true
+		}
+		filtered := make([]model.Source, 0, len(srcs))
+		for _, src := range srcs {
+			if set[src.ID] {
+				filtered = append(filtered, src)
+			}
+		}
+		srcs = filtered
 	}
 	parallel := r.cfg.Parallel
 	if parallel < 1 {

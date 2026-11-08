@@ -1,6 +1,6 @@
 # AssetSpider
 
-视频站点采集工具。把**海洋CMS / 苹果CMS 系资源站的 JSON 采集接口**配置进数据库，按需执行**全量**或**增量**采集，把接口返回的**全部字段**去重后写入 SQLite，并提供 Vue 管理页面。
+视频站点采集工具。把**海洋CMS / 苹果CMS 系资源站的 JSON 采集接口**配置进数据库，按需执行**全量**或**增量**采集，把接口返回的**全部字段**去重后写入 SQLite，并提供带**登录与站点级权限**的 Vue 管理页面。
 
 后端 Go + Gin + GORM/SQLite，前端 Vue 3 + Vite，构建产物由 Gin 直接托管。
 
@@ -10,6 +10,7 @@
 | --- | --- |
 | Web 框架 | Gin |
 | ORM / 数据库 | GORM + SQLite（官方 CGO 驱动） |
+| 认证 | bcrypt 密码哈希 + 数据库会话令牌（SHA-256 摘要存储） |
 | 前端 | Vue 3 + Vite |
 | 配置 | `conf/config.yaml`（YAML） |
 | 采集协议 | 海洋CMS / 苹果CMS `api.php/provide/vod/?ac=list` JSON |
@@ -30,7 +31,38 @@ go test ./...
 go build -o bin/assetspider .
 ```
 
-浏览器打开 http://localhost:8080 ，在「站点配置」里添加一个 JSON 接口，点「全量」即可采集入库。数据库默认创建在 `data/assetspider.db`（父目录自动创建）。
+浏览器打开 http://localhost:8080 。**系统初始没有任何账号**：第一个在登录页输入用户名密码并登录的人，会自动注册为**管理员**并拥有全部权限。之后由管理员在「用户管理」里创建账号、分配可见站点。数据库默认创建在 `data/assetspider.db`（父目录自动创建）。
+
+## 登录与权限（重点）
+
+### 首个登录用户自动成为管理员
+
+`POST /api/auth/login` 在账号表为空时，会用本次提交的用户名/密码直接创建账号，`role=admin`、`enabled=true`，响应里 `firstUser=true`。一旦有了账号，陌生用户名不再自动注册（返回 401），新账号只能由管理员创建。用户名唯一索引兜住并发下的重复注册。
+
+### 角色与权限矩阵
+
+| 能力 | 管理员 | 普通用户 |
+| --- | --- | --- |
+| 登录 / 查看自己 / 修改密码 / 登出 | ✓ | ✓ |
+| 用户管理（创建、编辑、删除、分配可见站点） | ✓ | ✗ `403` |
+| 站点配置增删改、启停、资产台账写入 | ✓ | ✗ `403` |
+| 查看站点列表 | 全部站点 | **仅有权限的站点** |
+| 查看影片、单条详情、采集记录、字段元数据 | 全部 | **仅有权限站点的** |
+| 触发单站点采集 | 任意站点 | **仅有权限站点**（否则 `404`） |
+| 批量采集 | 全部启用站点 | **仅有权限的启用站点** |
+
+> 「只能看见」在数据层严格生效：`sources` / `videos` / `videos/:id` / `jobs` 全部按当前用户的可见站点 ID 集合过滤；未授权站点返回 404 而非 403，避免暴露其存在性。批量采集会由编排器按白名单裁剪，不会触及无权限站点。
+
+### 站点可见性授权
+
+`user_sources` 表记录「普通用户 ↔ 可见站点」的多对多关系。管理员在「用户管理」里勾选站点即可授权，**每个请求都会重新读取授权关系，因此调整后无需用户重新登录即生效**。管理员不需要授权记录，默认可见全部站点。站点被删除时会级联清理对应授权。
+
+### 会话安全
+
+- 密码用 **bcrypt** 哈希存储（强度 `auth.bcrypt_cost` 可配），响应体永不返回 `password_hash`。
+- 登录令牌是 32 字节随机数，**数据库只保存其 SHA-256 摘要**；令牌有效期由 `auth.token_ttl_hours` 配置（默认 168 小时）。
+- 令牌过期、账号被**停用/删除/改密/变更角色**时，相关会话立即失效（`GetSessionUser` 会校验 `users.enabled` 与 `sessions.expires_at`）。
+- 系统保证始终保留**至少一名启用状态的管理员**：不能删除自己，也不能停用或降级唯一的管理员。
 
 ## 采集能力
 
@@ -106,10 +138,14 @@ collector:
   user_agent: "AssetSpider/1.0 (+seacms-json-collector)"
   default_incremental_hours: 24  # 站点未配置时的增量时间窗
   parallel: 1                    # 批量采集并发数，SQLite 建议保持 1
+auth:
+  token_ttl_hours: 168           # 登录令牌有效期（小时）
+  bcrypt_cost: 10                # 密码哈希强度（4..31）
 ```
 
-环境变量覆盖：`ASSETSPIDER_SERVER_ADDR`、`ASSETSPIDER_DB_PATH`、`ASSETSPIDER_WEB_DIR`，以及
-`ASSETSPIDER_COLLECTOR_TIMEOUT` / `_MAX_PAGES` / `_PAGE_SIZE` / `_DEFAULT_HOURS` / `_PARALLEL` / `_USER_AGENT`。
+环境变量覆盖：`ASSETSPIDER_SERVER_ADDR`、`ASSETSPIDER_DB_PATH`、`ASSETSPIDER_WEB_DIR`，
+`ASSETSPIDER_COLLECTOR_TIMEOUT` / `_MAX_PAGES` / `_PAGE_SIZE` / `_DEFAULT_HOURS` / `_PARALLEL` / `_USER_AGENT`，
+以及 `ASSETSPIDER_AUTH_TOKEN_TTL_HOURS` / `ASSETSPIDER_AUTH_BCRYPT_COST`。
 `-config` 指定其他配置文件，未填写的字段沿用默认值。
 
 ### 站点配置字段（存在数据库 `sources` 表）
@@ -128,32 +164,53 @@ collector:
 
 ## API
 
+除标注为「公开」的接口外，所有 `/api/*` 请求都需带 `Authorization: Bearer <token>`；`401` 表示未登录/会话失效，`403` 表示非管理员越权。
+
+### 认证与用户（用户管理仅管理员）
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/auth/status` | 公开 | `{initialized, userCount}`，登录页据此提示「首用户将成为管理员」 |
+| POST | `/api/auth/login` | 公开 | `{username,password}` → `{token,expiresAt,firstUser,isAdmin,user}`；账号表为空时自动注册管理员 |
+| POST | `/api/auth/logout` | 登录 | 吊销当前令牌 |
+| GET | `/api/auth/me` | 登录 | 当前账号、是否管理员、可见站点 ID |
+| POST | `/api/auth/password` | 登录 | `{oldPassword,newPassword}` 改自己密码，返回新令牌并吊销该账号其他会话 |
+| GET | `/api/users` | 管理员 | 用户列表，含每个用户的 `sourceIds` |
+| POST | `/api/users` | 管理员 | 创建用户：`username/password/role/enabled/sourceIds` |
+| PUT | `/api/users/:id` | 管理员 | 修改密码、角色、启用状态、可见站点；字段缺省即不修改 |
+| DELETE | `/api/users/:id` | 管理员 | 删除用户，级联清理会话与站点授权 |
+
+### 采集与数据（读取按可见站点过滤；站点写操作仅管理员）
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/health` | 状态、数据库路径、站点数与影片数 |
-| GET / POST | `/api/assets` | 通用资产台账（保留能力） |
-| DELETE | `/api/assets/:id` | 删除资产 |
-| GET | `/api/sources` | 站点列表，附带每个站点已入库影片数 |
-| POST | `/api/sources` | 新增站点 |
-| PUT | `/api/sources/:id` | 修改站点 |
-| DELETE | `/api/sources/:id` | 删除站点，级联清理其影片与采集记录 |
-| POST | `/api/sources/:id/crawl?mode=full\|incremental` | 单站点采集，同步返回结果摘要 |
-| POST | `/api/crawl?mode=full\|incremental` | 对全部启用站点批量采集 |
-| GET | `/api/videos?source_id=&q=&page=&size=` | 分页查询入库影片（返回全部字段、raw、extra），`q` 匹配名称/别名/演员/导演/分类 |
-| GET | `/api/videos/:id` | 单条影片完整记录 |
-| GET | `/api/meta/fields` | 全字段元数据：`total`、`groups`、`fields[]`（`key` 原始键、`json` 前端键、`desc` 中文含义、`group`、`label`、`long`） |
-| GET | `/api/jobs?source_id=&limit=` | 采集记录 |
+| GET | `/api/health` | 公开探活，仅返回状态与数据库路径，不泄露站点/影片数量 |
+| GET | `/api/sources` | 站点列表（按权限过滤），附带每个站点已入库影片数 |
+| POST / PUT / DELETE | `/api/sources`、`/api/sources/:id` | 仅管理员：新增 / 修改 / 删除站点（删除级联清理影片、采集记录与用户授权） |
+| POST | `/api/sources/:id/crawl?mode=full\|incremental` | 单站点采集；非管理员仅可采集可见站点（否则 404） |
+| POST | `/api/crawl?mode=full\|incremental` | 批量采集；非管理员自动限定在可见的启用站点 |
+| GET | `/api/videos?source_id=&q=&page=&size=` | 分页查询影片（按权限过滤，返回全部字段、raw、extra） |
+| GET | `/api/videos/:id` | 单条影片完整记录（越权返回 404） |
+| GET | `/api/meta/fields` | 全字段元数据：`total`、`groups`、`fields[]` |
+| GET | `/api/jobs?source_id=&limit=` | 采集记录（按权限过滤） |
+| GET | `/api/assets` | 通用资产台账（登录用户） |
+| POST / DELETE | `/api/assets`、`/api/assets/:id` | 仅管理员：资产台账写入 |
 
 `mode` 也可放在 JSON body：`{"mode":"incremental"}`；缺省为 `incremental`。示例：
 
 ```bash
-curl -X POST http://localhost:8080/api/sources \
+# 1. 首次登录（自动注册为管理员）
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"name":"测试资源站","apiBase":"https://site.com/api.php/provide/vod/","enabled":true,"incrementalHours":24}'
+  -d '{"username":"admin","password":"admin123"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
 
-curl -X POST 'http://localhost:8080/api/sources/1/crawl?mode=full'
-curl 'http://localhost:8080/api/videos?page=1&size=20'
-curl 'http://localhost:8080/api/meta/fields'
+# 2. 带令牌调用业务接口
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/sources
+
+# 3. 创建用户并授权站点 1、2
+curl -X POST http://localhost:8080/api/users -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"viewer","password":"viewer123","role":"user","sourceIds":[1,2]}'
 ```
 
 ## 前端开发
@@ -165,23 +222,38 @@ npm run dev      # Vite 开发服务器，/api 代理到 :8080
 npm run build    # 产物输出到 web/dist，由 Gin 托管
 ```
 
-页面分三块：**站点配置**（增删改、启用开关、单站点全量/增量采集、一键批量采集）、**采集数据**（分页/搜索影片，点「详情」按 14 个分组查看全部标准字段，并可切换查看扩展字段与原始 JSON，支持「只看非空」）、**采集记录**（每次采集的统计与状态）。`web/dist` 已随仓库提供，clone 后无需构建前端即可运行；未知前端路由由 Gin 回退到 `index.html`。
+未登录时显示**登录页**（首用户会看到「将自动注册为管理员」的提示）；登录后顶部显示账号、角色、修改密码与退出登录。页面分四块：
+
+- **站点配置**：管理员可增删改、启停、单站点/批量全量与增量采集；普通用户只读，且仅能看到被授权的站点（仍可对其采集）。
+- **采集数据**：分页/搜索影片，点「详情」按 14 个分组查看全部标准字段，并可切换查看扩展字段与原始 JSON。
+- **采集记录**：每次采集的统计与状态（仅可见站点）。
+- **用户管理**（仅管理员）：创建用户、勾选可见站点、改角色/密码/启用状态、删除；系统会阻止删除自己与停用/降级唯一管理员。
+
+令牌保存在浏览器 `localStorage`，`401` 时自动清除登录态并回到登录页。`web/dist` 已随仓库提供，clone 后无需构建前端即可运行；未知前端路由由 Gin 回退到 `index.html`。
 
 ## 目录结构
 
 ```
 .
-├── conf/config.yaml          # 运行配置
+├── conf/config.yaml          # 运行配置（含 auth 段）
 ├── internal/
-│   ├── config/               # 配置加载与校验
-│   ├── model/                # GORM 模型（Asset / Source / Video / CrawlJob）
+│   ├── config/               # 配置加载与校验（含 AuthConfig）
+│   ├── model/                # GORM 模型
 │   │   ├── video.go          # 全字段 Video 实体
-│   │   └── video_fields.go   # VodFields 字段清单（唯一数据源）
-│   ├── store/                # SQLite 数据访问与全字段去重 upsert
+│   │   ├── video_fields.go   # VodFields 字段清单（唯一数据源）
+│   │   └── user.go           # User / Session / UserSource
+│   ├── store/                # SQLite 数据访问
+│   │   ├── auth.go           # 用户、会话、站点授权
+│   │   ├── scope.go          # 按可见站点集合过滤的查询
+│   │   └── crawl.go          # 站点/影片/任务 CRUD 与全字段去重 upsert
 │   ├── collector/            # 零丢失 JSON 解析、分页、全量/增量编排
-│   └── server/               # Gin 路由、API 与静态托管
+│   └── server/               # Gin 路由与 API
+│       ├── auth.go           # 登录、令牌、鉴权中间件
+│       ├── users.go          # 管理员用户管理
+│       ├── crawl.go          # 采集与数据接口（权限过滤）
+│       └── server.go         # 路由分组与静态托管
 ├── web/
-│   ├── src/                  # Vue 3 源码
+│   ├── src/                  # Vue 3 源码（登录、用户管理、数据视图）
 │   └── dist/                 # 构建产物（Gin 托管，随仓库提交）
 ├── main.go                   # 服务入口
 ├── go.mod / go.sum
@@ -190,12 +262,13 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 
 ## 测试
 
-`go test ./...` 覆盖配置加载、站点/影片/任务 CRUD、去重 upsert、**字段清单与实体一致性**、**全字段零丢失解析（数字/字符串/null/对象/数组/自定义字段）**、**全字段指纹与全字段写回**、URL 拼装、全量/增量/游标/去重/失败回写，以及通过 HTTP 接口触发采集与字段元数据/详情接口的完整链路。采集器测试用本地 HTTP 模拟站点，不依赖外网。
+`go test ./...` 覆盖配置加载、站点/影片/任务 CRUD、去重 upsert、**字段清单与实体一致性**、**全字段零丢失解析**、**全字段指纹与全字段写回**、URL 拼装、全量/增量/游标/失败回写，以及**认证与权限**：首用户自动注册管理员、错误密码/陌生账号拒绝、401/403 拦截、可见站点隔离（列表/影片/详情/记录/批量采集）、授权变更即时生效、管理员保护、改密/停用/删除后会话失效、登出。采集器与接口测试用本地 HTTP 模拟站点，不依赖外网。
 
-端到端可用模拟站点验证：91 个标准字段全部落库（`videos` 表 100 列）、`raw` 保留原始 JSON 全文、`extra` 保留自定义字段与嵌套对象、只改一个冷门字段也能触发更新、全量/增量/去重/幂等/批量采集与 Vue 页面托管均正常。
+端到端可用模拟站点验证：91 个标准字段全部落库（`videos` 表 100 列）、`raw`/`extra` 零丢失、只改一个冷门字段也能触发更新；登录链路可验证「管理员建两个站点 → 创建只授权 A 的普通用户 → 该用户看不到 B 的任何数据且越权操作被拒 → 改授权即时切换 → 停用/删除即时失效」，并直接查 SQLite 确认 `users` / `sessions` / `user_sources` 三张表与 bcrypt 哈希落盘。
 
 ## 计划
 
+- [x] 用户登录、管理员与站点可见性权限
 - [ ] 支持 XML 格式采集接口
 - [ ] 定时自动增量采集（cron）
 - [ ] 采集结果导出（CSV / JSON）与站点分类绑定

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/SilenCN/AssetSpider/internal/model"
+	"github.com/SilenCN/AssetSpider/internal/store"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -66,7 +67,7 @@ type sourceView struct {
 }
 
 func (s *Server) sourceViews(c *gin.Context) ([]sourceView, bool) {
-	srcs, err := s.store.ListSources()
+	srcs, err := s.store.ListSourcesVisible(visibleSources(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return nil, false
@@ -180,6 +181,11 @@ func (s *Server) crawlSource(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// 非管理员只能采集自己被授权的站点；返回 404 避免暴露站点的存在性。
+	if !store.InVisibleSources(visibleSources(c), id) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "站点不存在"})
+		return
+	}
 	if _, err := s.store.GetSource(id); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "站点不存在"})
@@ -206,6 +212,10 @@ func (s *Server) crawlAll(c *gin.Context) {
 		return
 	}
 	results, err := s.runner.RunAll(c.Request.Context(), mode)
+	if visible := visibleSources(c); visible != nil {
+		// 普通用户：批量采集严格限定在其可见站点内。
+		results, err = s.runner.RunAllForSources(c.Request.Context(), mode, visible)
+	}
 	body := gin.H{"mode": mode, "results": results}
 	if err != nil {
 		body["error"] = err.Error()
@@ -217,7 +227,8 @@ func (s *Server) listVideos(c *gin.Context) {
 	sourceID, _ := strconv.ParseUint(c.Query("source_id"), 10, 64)
 	page, _ := strconv.Atoi(c.Query("page"))
 	size, _ := strconv.Atoi(c.Query("size"))
-	items, total, err := s.store.ListVideos(uint(sourceID), strings.TrimSpace(c.Query("q")), page, size)
+	items, total, err := s.store.ListVideosVisible(uint(sourceID), strings.TrimSpace(c.Query("q")),
+		page, size, visibleSources(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -256,13 +267,17 @@ func (s *Server) getVideo(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if !store.InVisibleSources(visibleSources(c), v.SourceID) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "影片不存在"})
+		return
+	}
 	c.JSON(http.StatusOK, v)
 }
 
 func (s *Server) listJobs(c *gin.Context) {
 	sourceID, _ := strconv.ParseUint(c.Query("source_id"), 10, 64)
 	limit, _ := strconv.Atoi(c.Query("limit"))
-	items, err := s.store.ListJobs(uint(sourceID), limit)
+	items, err := s.store.ListJobsVisible(uint(sourceID), limit, visibleSources(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

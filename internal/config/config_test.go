@@ -24,6 +24,42 @@ func TestDefault(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("默认配置校验失败: %v", err)
 	}
+	if cfg.Auth.TokenTTLHours != 168 || cfg.Auth.BCryptCost != 10 {
+		t.Errorf("认证默认值异常: %+v", cfg.Auth)
+	}
+}
+
+func TestAuthYAMLAndEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	body := "auth:\n  token_ttl_hours: 12\n  bcrypt_cost: 6\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Auth.TokenTTLHours != 12 || cfg.Auth.BCryptCost != 6 {
+		t.Fatalf("YAML 认证配置未生效: %+v", cfg.Auth)
+	}
+	if cfg.Collector.TimeoutSeconds != 20 {
+		t.Errorf("未提供的配置段应保留默认值，实际 %d", cfg.Collector.TimeoutSeconds)
+	}
+
+	t.Setenv("ASSETSPIDER_AUTH_BCRYPT_COST", "3")
+	if _, err := Load(path); err == nil {
+		t.Fatal("bcrypt_cost=3 应校验失败")
+	}
+	t.Setenv("ASSETSPIDER_AUTH_BCRYPT_COST", "8")
+	t.Setenv("ASSETSPIDER_AUTH_TOKEN_TTL_HOURS", "48")
+	overridden, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overridden.Auth.TokenTTLHours != 48 || overridden.Auth.BCryptCost != 8 {
+		t.Fatalf("环境变量覆盖异常: %+v", overridden.Auth)
+	}
 }
 
 func TestLoadYAMLAndEnvOverride(t *testing.T) {

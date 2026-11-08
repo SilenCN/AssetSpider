@@ -16,7 +16,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func newTestRouter(t *testing.T) (*gin.Engine, string) {
+// newTestServer 返回未经认证的原始路由，供鉴权与权限隔离测试直接使用。
+func newTestServer(t *testing.T) (*gin.Engine, string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	dbPath := filepath.Join(t.TempDir(), "api.db")
@@ -31,7 +32,49 @@ func newTestRouter(t *testing.T) (*gin.Engine, string) {
 		[]byte("<div id=\"app\">AssetSpider</div>"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return New(s, webDir, config.Default().Collector).Router(), dbPath
+	cfg := config.Default()
+	cfg.Web.Dir = webDir
+	cfg.Auth.BCryptCost = 4 // 加快测试中的密码哈希
+	return New(s, cfg).Router(), dbPath
+}
+
+// authedHandler 自动为 /api 请求附加管理员令牌，
+// 让原有业务测试无需逐个改动即可通过鉴权（鉴权本身由 auth_test.go 单独验证）。
+type authedHandler struct {
+	http.Handler
+	token string
+}
+
+func (h *authedHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if strings.HasPrefix(req.URL.Path, "/api/") && req.Header.Get("Authorization") == "" {
+		req.Header.Set("Authorization", "Bearer "+h.token)
+	}
+	h.Handler.ServeHTTP(w, req)
+}
+
+func loginForToken(t *testing.T, r http.Handler, username, password string) string {
+	t.Helper()
+	w := doAuthJSON(r, http.MethodPost, "/api/auth/login", "",
+		map[string]string{"username": username, "password": password})
+	if w.Code != http.StatusOK {
+		t.Fatalf("登录失败: %d %s", w.Code, w.Body.String())
+	}
+	var d struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Token == "" {
+		t.Fatal("登录响应缺少 token")
+	}
+	return d.Token
+}
+
+func newTestRouter(t *testing.T) (http.Handler, string) {
+	t.Helper()
+	r, dbPath := newTestServer(t)
+	return &authedHandler{Handler: r, token: loginForToken(t, r, "admin", "pass123")}, dbPath
 }
 
 func jsonBody(v interface{}) *strings.Reader {
@@ -39,9 +82,17 @@ func jsonBody(v interface{}) *strings.Reader {
 	return strings.NewReader(string(b))
 }
 
-func doJSON(r *gin.Engine, method, path string, body interface{}) *httptest.ResponseRecorder {
+func doJSON(r http.Handler, method, path string, body interface{}) *httptest.ResponseRecorder {
+	return doAuthJSON(r, method, path, "", body)
+}
+
+// doAuthJSON 发起带可选令牌的 JSON 请求。token 为空表示不带认证头。
+func doAuthJSON(r http.Handler, method, path, token string, body interface{}) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, jsonBody(body))
 	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	return w

@@ -11,13 +11,10 @@ import (
 
 // ---------- 站点配置 ----------
 
-// ListSources 返回全部站点配置，按 ID 正序。
+// ListSources 返回全部站点配置（管理员视角），按 ID 正序。
+// 需要按用户权限过滤时改用 ListSourcesVisible。
 func (s *Store) ListSources() ([]model.Source, error) {
-	var items []model.Source
-	if err := s.db.Order("id ASC").Find(&items).Error; err != nil {
-		return nil, err
-	}
-	return items, nil
+	return s.ListSourcesVisible(nil)
 }
 
 // ListEnabledSources 返回所有启用站点。
@@ -70,6 +67,10 @@ func (s *Store) DeleteSource(id uint) error {
 			return err
 		}
 		if err := tx.Where("source_id = ?", id).Delete(&model.CrawlJob{}).Error; err != nil {
+			return err
+		}
+		// 站点删除后同步清理所有用户对该站点的可见性授权。
+		if err := tx.Where("source_id = ?", id).Delete(&model.UserSource{}).Error; err != nil {
 			return err
 		}
 		return tx.Delete(&model.Source{}, id).Error
@@ -169,34 +170,10 @@ func (s *Store) GetVideo(id uint) (*model.Video, error) {
 	return &v, nil
 }
 
-// ListVideos 分页查询影片，支持按站点过滤与多字段模糊搜索。
+// ListVideos 分页查询影片（管理员视角），支持按站点过滤与多字段模糊搜索。
+// 需要按用户权限过滤时改用 ListVideosVisible。
 func (s *Store) ListVideos(sourceID uint, keyword string, page, size int) ([]model.Video, int64, error) {
-	if page < 1 {
-		page = 1
-	}
-	if size < 1 || size > 200 {
-		size = 20
-	}
-	q := s.db.Model(&model.Video{})
-	if sourceID > 0 {
-		q = q.Where("source_id = ?", sourceID)
-	}
-	if keyword != "" {
-		kw := "%" + keyword + "%"
-		q = q.Where(
-			"vod_name LIKE ? OR vod_en LIKE ? OR vod_actor LIKE ? OR vod_director LIKE ? OR vod_class LIKE ?",
-			kw, kw, kw, kw, kw,
-		)
-	}
-	var total int64
-	if err := q.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-	var items []model.Video
-	if err := q.Order("id DESC").Offset((page - 1) * size).Limit(size).Find(&items).Error; err != nil {
-		return nil, 0, err
-	}
-	return items, total, nil
+	return s.ListVideosVisible(sourceID, keyword, page, size, nil)
 }
 
 // CountVideosBySource 返回每个站点的影片数量。
@@ -240,18 +217,8 @@ func (s *Store) FinishJob(job *model.CrawlJob, status, message string) error {
 	}).Error
 }
 
-// ListJobs 返回最近的采集记录。
+// ListJobs 返回最近的采集记录（管理员视角）。
+// 需要按用户权限过滤时改用 ListJobsVisible。
 func (s *Store) ListJobs(sourceID uint, limit int) ([]model.CrawlJob, error) {
-	if limit < 1 || limit > 200 {
-		limit = 50
-	}
-	q := s.db.Model(&model.CrawlJob{})
-	if sourceID > 0 {
-		q = q.Where("source_id = ?", sourceID)
-	}
-	var items []model.CrawlJob
-	if err := q.Order("id DESC").Limit(limit).Find(&items).Error; err != nil {
-		return nil, err
-	}
-	return items, nil
+	return s.ListJobsVisible(sourceID, limit, nil)
 }

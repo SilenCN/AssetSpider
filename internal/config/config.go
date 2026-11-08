@@ -15,6 +15,7 @@ type Config struct {
 	Database  DatabaseConfig  `yaml:"database"`
 	Web       WebConfig       `yaml:"web"`
 	Collector CollectorConfig `yaml:"collector"`
+	Auth      AuthConfig      `yaml:"auth"`
 }
 
 // ServerConfig 描述 HTTP 服务。
@@ -42,6 +43,12 @@ type CollectorConfig struct {
 	Parallel       int    `yaml:"parallel"`                  // 批量采集的并发站点数，建议保持 1
 }
 
+// AuthConfig 描述登录与会话安全参数。
+type AuthConfig struct {
+	TokenTTLHours int `yaml:"token_ttl_hours"` // 登录令牌有效期（小时）
+	BCryptCost    int `yaml:"bcrypt_cost"`     // bcrypt 哈希强度（4..31，越大越慢）
+}
+
 // Default 返回开箱即用的默认配置。
 func Default() *Config {
 	return &Config{
@@ -55,6 +62,10 @@ func Default() *Config {
 			UserAgent:      "AssetSpider/1.0 (+seacms-json-collector)",
 			DefaultHours:   24,
 			Parallel:       1,
+		},
+		Auth: AuthConfig{
+			TokenTTLHours: 168, // 7 天
+			BCryptCost:    10,
 		},
 	}
 }
@@ -94,6 +105,8 @@ func Load(path string) (*Config, error) {
 		{"ASSETSPIDER_COLLECTOR_PAGE_SIZE", &cfg.Collector.PageSize},
 		{"ASSETSPIDER_COLLECTOR_DEFAULT_HOURS", &cfg.Collector.DefaultHours},
 		{"ASSETSPIDER_COLLECTOR_PARALLEL", &cfg.Collector.Parallel},
+		{"ASSETSPIDER_AUTH_TOKEN_TTL_HOURS", &cfg.Auth.TokenTTLHours},
+		{"ASSETSPIDER_AUTH_BCRYPT_COST", &cfg.Auth.BCryptCost},
 	} {
 		if err := envInt(item.name, item.dst); err != nil {
 			return nil, err
@@ -145,6 +158,12 @@ func (c *Config) Validate() error {
 	}
 	if cc.Parallel <= 0 {
 		return fmt.Errorf("collector.parallel 必须大于 0")
+	}
+	if c.Auth.TokenTTLHours <= 0 {
+		return fmt.Errorf("auth.token_ttl_hours 必须大于 0")
+	}
+	if c.Auth.BCryptCost < 4 || c.Auth.BCryptCost > 31 {
+		return fmt.Errorf("auth.bcrypt_cost 需在 4..31 之间")
 	}
 	return nil
 }

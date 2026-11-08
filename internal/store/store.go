@@ -40,6 +40,9 @@ func Open(path string) (*Store, error) {
 		&model.Source{},
 		&model.Video{},
 		&model.CrawlJob{},
+		&model.User{},
+		&model.Session{},
+		&model.UserSource{},
 	); err != nil {
 		return nil, fmt.Errorf("迁移表结构: %w", err)
 	}

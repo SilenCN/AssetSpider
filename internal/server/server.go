@@ -20,43 +20,73 @@ type Server struct {
 	store  *store.Store
 	runner *collector.Runner
 	webDir string
+	auth   config.AuthConfig
 }
 
-// New 创建 Server，采集器按传入配置初始化。
-func New(s *store.Store, webDir string, cc config.CollectorConfig) *Server {
+// New 创建 Server，采集器与登录会话参数按传入配置初始化。
+func New(s *store.Store, cfg *config.Config) *Server {
 	return &Server{
 		store:  s,
-		runner: collector.NewRunner(s, cc),
-		webDir: webDir,
+		runner: collector.NewRunner(s, cfg.Collector),
+		webDir: cfg.Web.Dir,
+		auth:   cfg.Auth,
 	}
 }
 
-// Router 构建 Gin 路由：/api 为接口，其余交给 Vue 页面。
+// Router 构建 Gin 路由。
+//
+// 权限分层：
+//   - 公开：/api/health、/api/auth/status、/api/auth/login
+//   - 登录用户：读取类接口（按站点可见性过滤）、对可见站点触发采集
+//   - 管理员：用户管理、站点配置增删改、资产台账写入
 func (s *Server) Router() *gin.Engine {
 	r := gin.Default()
 
 	api := r.Group("/api")
 	{
 		api.GET("/health", s.health)
+		api.GET("/auth/status", s.authStatus)
+		api.POST("/auth/login", s.login)
 
-		// 资产台账（保留的通用能力）
-		api.GET("/assets", s.listAssets)
-		api.POST("/assets", s.createAsset)
-		api.DELETE("/assets/:id", s.deleteAsset)
+		protected := api.Group("")
+		protected.Use(s.authRequired())
+		{
+			protected.POST("/auth/logout", s.logout)
+			protected.GET("/auth/me", s.me)
+			protected.POST("/auth/password", s.changePassword)
 
-		// 采集站点配置
-		api.GET("/sources", s.listSources)
-		api.POST("/sources", s.createSource)
-		api.PUT("/sources/:id", s.updateSource)
-		api.DELETE("/sources/:id", s.deleteSource)
-		api.POST("/sources/:id/crawl", s.crawlSource)
+			// 资产台账（保留的通用能力）
+			protected.GET("/assets", s.listAssets)
 
-		// 批量采集、入库数据、采集记录
-		api.POST("/crawl", s.crawlAll)
-		api.GET("/videos", s.listVideos)
-		api.GET("/videos/:id", s.getVideo)
-		api.GET("/meta/fields", s.listVideoFields)
-		api.GET("/jobs", s.listJobs)
+			// 采集站点：读取按权限过滤，写操作仅管理员
+			protected.GET("/sources", s.listSources)
+
+			// 批量采集、入库数据、采集记录：按权限过滤
+			protected.GET("/videos", s.listVideos)
+			protected.GET("/videos/:id", s.getVideo)
+			protected.GET("/meta/fields", s.listVideoFields)
+			protected.GET("/jobs", s.listJobs)
+
+			// 采集触发：登录用户仅能作用于自己可见的站点
+			protected.POST("/sources/:id/crawl", s.crawlSource)
+			protected.POST("/crawl", s.crawlAll)
+
+			admin := protected.Group("")
+			admin.Use(s.adminOnly())
+			{
+				admin.POST("/assets", s.createAsset)
+				admin.DELETE("/assets/:id", s.deleteAsset)
+
+				admin.POST("/sources", s.createSource)
+				admin.PUT("/sources/:id", s.updateSource)
+				admin.DELETE("/sources/:id", s.deleteSource)
+
+				admin.GET("/users", s.listUsers)
+				admin.POST("/users", s.createUser)
+				admin.PUT("/users/:id", s.updateUser)
+				admin.DELETE("/users/:id", s.deleteUser)
+			}
+		}
 	}
 
 	index := filepath.Join(s.webDir, "index.html")
@@ -84,12 +114,10 @@ func serveIndex(c *gin.Context, index string) {
 	c.File(index)
 }
 
+// health 只暴露通用状态；站点/影片数量属于受限数据，不在公开接口里返回。
 func (s *Server) health(c *gin.Context) {
-	sources, _ := s.store.ListSources()
-	_, total, _ := s.store.ListVideos(0, "", 1, 1)
 	c.JSON(http.StatusOK, gin.H{
 		"status": "ok", "database": s.store.Path(),
-		"sources": len(sources), "videos": total,
 	})
 }
 

@@ -2,6 +2,7 @@
 # 可用 -config 指定其他配置文件；以下环境变量可覆盖同名配置项：
 #   ASSETSPIDER_SERVER_ADDR / ASSETSPIDER_DB_PATH / ASSETSPIDER_WEB_DIR
 #   ASSETSPIDER_COLLECTOR_TIMEOUT / _MAX_PAGES / _PAGE_SIZE / _DEFAULT_HOURS / _PARALLEL / _USER_AGENT
+#   ASSETSPIDER_AUTH_TOKEN_TTL_HOURS / ASSETSPIDER_AUTH_BCRYPT_COST
 
 server:
   # HTTP 监听地址
@@ -23,3 +24,8 @@ collector:
   user_agent: "AssetSpider/1.0 (+seacms-json-collector)"
   default_incremental_hours: 24 # 站点未单独配置时的增量时间窗（对应接口 h 参数）
   parallel: 1                  # 批量采集并发站点数，SQLite 建议保持 1
+
+auth:
+  # 登录与会话：第一个成功登录的账号自动注册为管理员
+  token_ttl_hours: 168         # 登录令牌有效期（小时），过期需重新登录
+  bcrypt_cost: 10              # 密码哈希强度（4..31，越大越慢越安全）
