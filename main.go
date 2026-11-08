@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/SilenCN/AssetSpider/internal/app"
 	"github.com/SilenCN/AssetSpider/internal/config"
-	"github.com/SilenCN/AssetSpider/internal/server"
-	"github.com/SilenCN/AssetSpider/internal/store"
 )
 
 const version = "0.3.0"
@@ -27,17 +26,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("加载配置失败: %v", err)
 	}
-	st, err := store.Open(cfg.Database.Path)
+	application, err := app.New(cfg)
 	if err != nil {
-		log.Fatalf("初始化数据库失败: %v", err)
+		log.Fatalf("%v", err)
 	}
-	defer st.Close()
+	defer application.Close()
 
 	log.Printf("AssetSpider v%s 启动 | 监听 %s | 数据库 %s | 页面 %s | 采集超时 %ds / 最大 %d 页",
 		version, cfg.Server.Addr, cfg.Database.Path, cfg.Web.Dir,
 		cfg.Collector.TimeoutSeconds, cfg.Collector.MaxPages)
-	if err := server.New(st, cfg.Web.Dir, cfg.Collector).Router().Run(cfg.Server.Addr); err != nil {
-		log.Fatalf("服务启动失败: %v", err)
+	// 不用 Fatalf：保证上面的 defer 能正常关闭数据库。
+	if err := application.Engine.Run(cfg.Server.Addr); err != nil {
+		log.Printf("服务启动失败: %v", err)
 	}
 }
 

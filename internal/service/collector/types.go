@@ -1,4 +1,6 @@
-// Package collector 实现海洋CMS / 苹果CMS 系视频站点的 JSON 采集。
+// Package collector 是 service 层内部的采集协议客户端，实现苹果CMS V10
+// Provide 接口（api.php/provide/vod/?ac=videolist）的 JSON 抓取与零丢失解析。
+// 它不访问数据库，也不感知 HTTP 服务端。
 package collector
 
 import (
@@ -7,6 +9,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/SilenCN/AssetSpider/internal/utils"
 )
 
 // flexString 兼容接口字段既可能是字符串也可能是数字的情况。
@@ -98,7 +102,7 @@ func (it *VideoItem) UnmarshalJSON(b []byte) error {
 	}
 	it.Fields = make(map[string]string, len(it.RawFields))
 	for k, v := range it.RawFields {
-		it.Fields[k] = stringifyValue(v)
+		it.Fields[k] = utils.StringifyJSONValue(v)
 	}
 	return nil
 }
@@ -106,35 +110,10 @@ func (it *VideoItem) UnmarshalJSON(b []byte) error {
 // Get 返回某个字段的字符串值，字段不存在时返回空字符串。
 func (it VideoItem) Get(key string) string { return it.Fields[key] }
 
-// stringifyValue 把任意 JSON 值转换成可入库的字符串，且不丢失信息：
-// 字符串解码、数字/布尔保留原文、null 转空串、对象/数组保留紧凑 JSON 文本。
-func stringifyValue(raw json.RawMessage) string {
-	s := strings.TrimSpace(string(raw))
-	if s == "" || s == "null" {
-		return ""
-	}
-	switch s[0] {
-	case '"':
-		var v string
-		if err := json.Unmarshal(raw, &v); err == nil {
-			return v
-		}
-		return s
-	case '{', '[':
-		var buf bytes.Buffer
-		if err := json.Compact(&buf, raw); err == nil {
-			return buf.String()
-		}
-		return s
-	default:
-		if n, err := json.Number(s).Int64(); err == nil {
-			return strconv.FormatInt(n, 10)
-		}
-		return s
-	}
-}
-
-// ListResponse 对应 api.php/provide/vod/?ac=list 的 JSON 响应。
+// ListResponse 对应 api.php/provide/vod/?ac=videolist 的 JSON 响应。
+//
+// 苹果CMS V10 的 Provide 接口约定：code == 1 表示成功；pagecount 为总分页数；
+// list 为影片数组，ac=videolist 时包含 vod_play_from / vod_play_url 等完整字段。
 type ListResponse struct {
 	Code      flexInt     `json:"code"`
 	Msg       flexString  `json:"msg"`
@@ -159,6 +138,10 @@ func ParseList(data []byte) (*ListResponse, error) {
 		if err := json.Unmarshal(data, &alias); err == nil {
 			r.PageCount = alias.PageCount
 		}
+	}
+	// 苹果CMS 约定 code != 1 为失败（如 -1 参数错误、-2 暂无数据、0 未授权）。
+	if r.Code != 1 {
+		return nil, fmt.Errorf("采集接口返回非成功状态 code=%d msg=%s", r.Code, r.Msg.String())
 	}
 	return &r, nil
 }

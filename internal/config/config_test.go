@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -29,7 +30,9 @@ func TestDefault(t *testing.T) {
 func TestLoadYAMLAndEnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	body := "server:\n  addr: \"127.0.0.1:9090\"\ndatabase:\n  path: \"" + filepath.Join(dir, "custom.db") + "\"\n"
+	// Windows 路径含反斜杠，YAML 双引号标量会把它当作转义序列；用 strconv.Quote 转义。
+	body := "server:\n  addr: \"127.0.0.1:9090\"\ndatabase:\n  path: " +
+		strconv.Quote(filepath.Join(dir, "custom.db")) + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

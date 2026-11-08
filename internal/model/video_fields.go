@@ -10,7 +10,7 @@ import (
 // 字段清单依据 MacCMS V10 官方「视频字段」表（application/install/sql/install.sql），
 // 并补充资源站接口常见的 type_name / type / vod_play_list / vod_down_list。
 // 这份清单是采集解析、入库更新、API 元数据与前端展示的唯一数据源，放在 model 包
-// 是为了避免 collector 与 store 之间产生循环依赖。
+// 作为横切领域定义，避免 service/collector 与 repository 之间产生循环依赖。
 type VodField struct {
 	Key    string // 接口 JSON 键，如 vod_name
 	Go     string // Video 结构体字段名

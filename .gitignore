@@ -30,3 +30,4 @@ coverage.*
 
 # 前端依赖
 /web/node_modules/
+/.workbuddy/

@@ -4,8 +4,8 @@ package config
 import (
 	"fmt"
 	"os"
-	"strconv"
 
+	"github.com/SilenCN/AssetSpider/internal/utils"
 	"gopkg.in/yaml.v3"
 )
 
@@ -36,7 +36,7 @@ type WebConfig struct {
 type CollectorConfig struct {
 	TimeoutSeconds int    `yaml:"timeout_seconds"`           // 单次 HTTP 请求超时（秒）
 	MaxPages       int    `yaml:"max_pages"`                 // 单次采集最多遍历的页数，防止失控
-	PageSize       int    `yaml:"page_size"`                 // 0 表示由站点返回决定；>0 时附加 limit 参数
+	PageSize       int    `yaml:"page_size"`                 // 0 表示由站点返回决定；>0 时附加苹果CMS 的 pagesize 参数（通常上限 100）
 	UserAgent      string `yaml:"user_agent"`                // 请求 UA
 	DefaultHours   int    `yaml:"default_incremental_hours"` // 站点未配置时默认增量时间窗
 	Parallel       int    `yaml:"parallel"`                  // 批量采集的并发站点数，建议保持 1
@@ -52,7 +52,7 @@ func Default() *Config {
 			TimeoutSeconds: 20,
 			MaxPages:       1000,
 			PageSize:       0,
-			UserAgent:      "AssetSpider/1.0 (+seacms-json-collector)",
+			UserAgent:      "AssetSpider/1.0 (+maccms-json-collector)",
 			DefaultHours:   24,
 			Parallel:       1,
 		},
@@ -95,7 +95,7 @@ func Load(path string) (*Config, error) {
 		{"ASSETSPIDER_COLLECTOR_DEFAULT_HOURS", &cfg.Collector.DefaultHours},
 		{"ASSETSPIDER_COLLECTOR_PARALLEL", &cfg.Collector.Parallel},
 	} {
-		if err := envInt(item.name, item.dst); err != nil {
+		if err := utils.EnvInt(item.name, item.dst); err != nil {
 			return nil, err
 		}
 	}
@@ -104,19 +104,6 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return cfg, nil
-}
-
-func envInt(name string, dst *int) error {
-	v := os.Getenv(name)
-	if v == "" {
-		return nil
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return fmt.Errorf("环境变量 %s 需要整数值，实际 %q", name, v)
-	}
-	*dst = n
-	return nil
 }
 
 // Validate 校验必填配置项。

@@ -5,6 +5,7 @@ const tab = ref('sources')
 const health = ref({})
 const sources = ref([])
 const videos = ref([])
+const categories = ref([])
 const jobs = ref([])
 const busy = ref(false)
 const error = ref('')
@@ -12,6 +13,7 @@ const notice = ref(null)
 
 const videoQuery = ref('')
 const videoSource = ref('')
+const videoCategory = ref('')
 const videoPage = ref(1)
 const videoSize = ref(20)
 const videoTotal = ref(0)
@@ -40,32 +42,49 @@ function jsonOptions(method, data) {
 }
 
 async function loadHealth() {
-  health.value = await request('/api/health')
+  health.value = await request('/api/system/v1/health')
 }
 async function loadSources() {
-  sources.value = (await request('/api/sources')) || []
+  sources.value = (await request('/api/sources/v1')) || []
 }
 async function loadVideos() {
   const p = new URLSearchParams({ page: String(videoPage.value), size: String(videoSize.value) })
   if (videoQuery.value.trim()) p.set('q', videoQuery.value.trim())
   if (videoSource.value) p.set('source_id', String(videoSource.value))
-  const d = await request('/api/videos?' + p.toString())
+  if (videoCategory.value) p.set('category_id', String(videoCategory.value))
+  const d = await request('/api/videos/v1?' + p.toString())
   videos.value = d.items || []
   videoTotal.value = d.total || 0
   videoPage.value = d.page || 1
   videoSize.value = d.size || 20
 }
 async function loadJobs() {
-  jobs.value = (await request('/api/jobs?limit=50')) || []
+  jobs.value = (await request('/api/jobs/v1?limit=50')) || []
+}
+async function loadCategories() {
+  categories.value = (await request('/api/categories/v1')) || []
 }
 
 async function refresh() {
   error.value = ''
   try {
-    await Promise.all([loadHealth(), loadSources(), loadVideos(), loadJobs()])
+    await Promise.all([loadHealth(), loadSources(), loadVideos(), loadJobs(), loadCategories()])
   } catch (e) {
     error.value = e.message
   }
+}
+
+function categoryName(id) {
+  return categories.value.find(c => c.id === id)?.name || '-'
+}
+function sourceName(id) {
+  return sources.value.find(s => s.id === id)?.name || id
+}
+function showCategoryVideos(c) {
+  videoCategory.value = String(c.id)
+  videoPage.value = 1
+  tab.value = 'videos'
+  loadVideos().catch(e => { error.value = e.message })
 }
 
 // ---------- 全字段详情 ----------
@@ -75,7 +94,7 @@ const detailTab = ref('fields')
 const onlyNonEmpty = ref(true)
 
 async function loadFieldMeta() {
-  try { fieldMeta.value = await request('/api/meta/fields') } catch (e) { /* 元数据不影响主流程 */ }
+  try { fieldMeta.value = await request('/api/meta/v1/fields') } catch (e) { /* 元数据不影响主流程 */ }
 }
 
 function hasValue(v) {
@@ -104,6 +123,18 @@ const extraPairs = computed(() => {
     return Object.entries(obj).map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)])
   } catch (e) { return [] }
 })
+
+// 按苹果CMS 字段解析出的结构化播放组（来自 detail.vodPlayList 的 JSON）。
+const playGroups = computed(() => {
+  const raw = detail.value?.vodPlayList
+  if (!raw) return []
+  try {
+    const arr = JSON.parse(raw)
+    return Array.isArray(arr) ? arr : []
+  } catch (e) { return [] }
+})
+const playEpisodeCount = computed(() =>
+  playGroups.value.reduce((sum, g) => sum + (g.episodes?.length || 0), 0))
 
 function prettyRaw(raw) {
   try { return JSON.stringify(JSON.parse(raw), null, 2) } catch (e) { return raw || '' }
@@ -149,8 +180,8 @@ async function saveSource() {
   error.value = ''
   try {
     const payload = sourcePayload(form)
-    if (form.id) await request(`/api/sources/${form.id}`, jsonOptions('PUT', payload))
-    else await request('/api/sources', jsonOptions('POST', payload))
+    if (form.id) await request(`/api/sources/v1/${form.id}`, jsonOptions('PUT', payload))
+    else await request('/api/sources/v1', jsonOptions('POST', payload))
     resetForm()
     notify('站点配置已保存')
     await refresh()
@@ -163,7 +194,7 @@ async function saveSource() {
 async function removeSource(s) {
   if (!confirm(`确认删除站点「${s.name}」？该站点的影片数据与采集记录会一并删除。`)) return
   try {
-    await request(`/api/sources/${s.id}`, { method: 'DELETE' })
+    await request(`/api/sources/v1/${s.id}`, { method: 'DELETE' })
     notify('站点已删除')
     await refresh()
   } catch (e) { notify(e.message, 'err') }
@@ -171,7 +202,7 @@ async function removeSource(s) {
 
 async function toggleSource(s) {
   try {
-    await request(`/api/sources/${s.id}`,
+    await request(`/api/sources/v1/${s.id}`,
       jsonOptions('PUT', { ...sourcePayload(s), enabled: !s.enabled }))
     await refresh()
   } catch (e) { notify(e.message, 'err') }
@@ -188,7 +219,7 @@ async function crawlOne(s, mode) {
   const label = mode === 'full' ? '全量' : '增量'
   notify(`正在对「${s.name}」执行${label}采集…`, 'info')
   try {
-    const r = await request(`/api/sources/${s.id}/crawl?mode=${mode}`, { method: 'POST' })
+    const r = await request(`/api/sources/v1/${s.id}/crawls`, jsonOptions('POST', { mode }))
     notify(`「${s.name}」${label}采集完成：${summarize(r)}`)
     await refresh()
   } catch (e) {
@@ -205,7 +236,7 @@ async function crawlAll(mode) {
   const label = mode === 'full' ? '全量' : '增量'
   notify(`正在对全部启用站点执行${label}采集…`, 'info')
   try {
-    const d = await request(`/api/crawl?mode=${mode}`, { method: 'POST' })
+    const d = await request('/api/crawls/v1', jsonOptions('POST', { mode }))
     const list = d.results || []
     const ok = list.filter(r => r.status === 'success').length
     const text = `${label}采集结束：${ok}/${list.length} 个站点成功`
@@ -262,6 +293,7 @@ onMounted(() => { refresh(); loadFieldMeta() })
     <nav class="tabs">
       <button :class="{ active: tab === 'sources' }" @click="tab = 'sources'">站点配置</button>
       <button :class="{ active: tab === 'videos' }" @click="tab = 'videos'; loadVideos()">采集数据</button>
+      <button :class="{ active: tab === 'categories' }" @click="tab = 'categories'; loadCategories()">视频分类</button>
       <button :class="{ active: tab === 'jobs' }" @click="tab = 'jobs'; loadJobs()">采集记录</button>
       <button class="ghost refresh" @click="refresh">刷新</button>
     </nav>
@@ -338,6 +370,35 @@ onMounted(() => { refresh(); loadFieldMeta() })
       </section>
     </template>
 
+    <!-- 视频分类 -->
+    <template v-if="tab === 'categories'">
+      <section class="card">
+        <div class="list-head">
+          <h2>视频分类</h2>
+          <span class="muted">按资源站自动归档，共 {{ categories.length }} 个分类</span>
+        </div>
+        <p class="hint">采集时按接口返回的 type_id / type_name 自动创建分类并关联影片，每个资源站各自一套，同名的站点分类互不影响。查看分类下的影片可点「查看影片」。</p>
+        <p v-if="!categories.length" class="empty">还没有分类，执行一次采集后会自动生成。</p>
+        <div v-else class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>ID</th><th>资源站</th><th>站点分类 ID</th><th>分类名称</th><th>影片数</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in categories" :key="c.id">
+                <td class="mono">{{ c.id }}</td>
+                <td class="host">{{ sourceName(c.sourceId) }}</td>
+                <td class="mono">{{ c.typeId || '-' }}</td>
+                <td>{{ c.name }}</td>
+                <td class="mono">{{ c.videoCount }}</td>
+                <td><button class="mini ghost" @click="showCategoryVideos(c)">查看影片</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </template>
+
     <!-- 采集数据 -->
     <template v-if="tab === 'videos'">
       <section class="card">
@@ -347,6 +408,10 @@ onMounted(() => { refresh(); loadFieldMeta() })
             <option value="">全部站点</option>
             <option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }}</option>
           </select>
+          <select v-model="videoCategory" @change="searchVideos">
+            <option value="">全部分类</option>
+            <option v-for="c in categories" :key="c.id" :value="c.id">{{ sourceName(c.sourceId) }} · {{ c.name }}</option>
+          </select>
           <button @click="searchVideos">搜索</button>
           <span class="muted">共 {{ videoTotal }} 条</span>
         </div>
@@ -354,7 +419,7 @@ onMounted(() => { refresh(); loadFieldMeta() })
         <div v-else class="table-wrap">
           <table>
             <thead>
-              <tr><th>ID</th><th>来源</th><th>VodID</th><th>影片名称</th><th>分类</th><th>备注</th><th>站点更新时间</th><th>首次入库</th><th>字段</th></tr>
+              <tr><th>ID</th><th>来源</th><th>VodID</th><th>影片名称</th><th>分类</th><th>归档分类</th><th>备注</th><th>站点更新时间</th><th>首次入库</th><th>字段</th></tr>
             </thead>
             <tbody>
               <tr v-for="v in videos" :key="v.id">
@@ -363,6 +428,7 @@ onMounted(() => { refresh(); loadFieldMeta() })
                 <td class="mono">{{ v.vodId }}</td>
                 <td class="host" :title="v.vodPlayUrl">{{ v.vodName || '-' }}</td>
                 <td>{{ v.typeName || '-' }}</td>
+                <td class="muted">{{ categoryName(v.categoryId) }}</td>
                 <td>{{ v.vodRemarks || '-' }}</td>
                 <td class="mono">{{ v.vodTime || '-' }}</td>
                 <td class="muted">{{ formatTime(v.firstSeenAt) }}</td>
@@ -422,6 +488,7 @@ onMounted(() => { refresh(); loadFieldMeta() })
         <div class="modal-tabs">
           <button :class="{ active: detailTab === 'fields' }" @click="detailTab = 'fields'">标准字段</button>
           <button :class="{ active: detailTab === 'extra' }" @click="detailTab = 'extra'">扩展字段 ({{ extraPairs.length }})</button>
+          <button :class="{ active: detailTab === 'play' }" @click="detailTab = 'play'">播放组 ({{ playEpisodeCount }})</button>
           <button :class="{ active: detailTab === 'raw' }" @click="detailTab = 'raw'">原始 JSON</button>
           <label v-if="detailTab === 'fields'" class="check"><input v-model="onlyNonEmpty" type="checkbox" /> 只看非空</label>
         </div>
@@ -444,6 +511,22 @@ onMounted(() => { refresh(); loadFieldMeta() })
             <table v-else class="kv-table">
               <tbody><tr v-for="[k, val] in extraPairs" :key="k"><th><code>{{ k }}</code></th><td>{{ val }}</td></tr></tbody>
             </table>
+          </template>
+          <template v-else-if="detailTab === 'play'">
+            <p class="hint">按苹果CMS 字段（vod_play_from / vod_play_url / vod_play_server / vod_play_note）解析出的播放组，每组是一条线路，下列为各集播放地址。</p>
+            <p v-if="!playGroups.length" class="empty">该影片无播放地址（vod_play_url 为空）。</p>
+            <section v-for="g in playGroups" :key="g.from" class="field-group">
+              <h4>{{ g.from }} <span class="muted">{{ g.episodes.length }} 集</span>
+                <span v-if="g.server && g.server !== 'no'" class="badge">{{ g.server }}</span>
+                <span v-if="g.note" class="badge info">{{ g.note }}</span>
+              </h4>
+              <ol class="ep-list">
+                <li v-for="(ep, i) in g.episodes" :key="i">
+                  <span class="ep-name">{{ ep.name || ('第' + (i + 1) + '集') }}</span>
+                  <a class="ep-url" :href="ep.url" target="_blank" rel="noopener">{{ ep.url || '（空地址）' }}</a>
+                </li>
+              </ol>
+            </section>
           </template>
           <template v-else>
             <p class="hint">接口返回的该条记录原始 JSON 全文，未经裁剪，可用于还原任意字段。</p>
@@ -528,6 +611,12 @@ th { color: #86909c; font-weight: 500; }
 .field-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 8px 16px; }
 .field-item { border-bottom: 1px dashed #f0f1f3; padding-bottom: 6px; min-width: 0; }
 .field-item.long { grid-column: 1 / -1; }
+.ep-list { margin: 6px 0 0; padding-left: 20px; }
+.ep-list li { padding: 4px 0; border-bottom: 1px dashed #f0f1f3; }
+.ep-name { display: inline-block; min-width: 110px; font-weight: 600; color: #1f2329; }
+.ep-url { color: #165dff; text-decoration: none; word-break: break-all; }
+.ep-url:hover { text-decoration: underline; }
+.badge.info { background: #e8f3ff; color: #165dff; }
 .field-k { font-size: 11px; color: #86909c; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .field-v { font-size: 13px; word-break: break-all; white-space: pre-wrap; max-height: 66px; overflow: hidden; }
 .field-item.long .field-v { max-height: 130px; }

@@ -16,7 +16,7 @@ import (
 
 const maxResponseBytes = 64 << 20 // 单页响应最大 64MB
 
-// Fetcher 负责按站点配置请求采集接口并解析 JSON。
+// Fetcher 负责按苹果CMS V10 Provide 协议请求采集接口并解析 JSON。
 type Fetcher struct {
 	client *http.Client
 	cfg    config.CollectorConfig
@@ -30,10 +30,12 @@ func NewFetcher(cfg config.CollectorConfig) *Fetcher {
 	}
 }
 
-// BuildURL 按海洋CMS 系协议拼装某一页的请求地址。
+// BuildURL 按苹果CMS V10 Provide 协议拼装某一页的请求地址。
 //
-// 参数优先级：站点附加参数可覆盖 ac；pg、h 由采集器强制写入。
-// hours > 0 时附加 h=<小时数>，即接口侧的"几小时内数据"增量过滤。
+// 默认使用 ac=videolist，只有该动作才会返回包含 vod_play_url 的完整字段
+// （ac=list 是精简字段、不含播放地址，无法解析播放组）。站点附加参数可覆盖 ac，
+// 因此仍可用 ExtraParams=ac=list 兼容只支持精简接口的旧站。
+// pg、h 由采集器强制写入；pagesize 仅在站点未自定义时按配置写入（上限通常 100）。
 func BuildURL(src model.Source, page, hours int, cfg config.CollectorConfig) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(src.APIBase))
 	if err != nil {
@@ -54,7 +56,7 @@ func BuildURL(src model.Source, page, hours int, cfg config.CollectorConfig) (st
 		}
 	}
 	if q.Get("ac") == "" {
-		q.Set("ac", "list")
+		q.Set("ac", "videolist")
 	}
 	q.Set("pg", strconv.Itoa(page))
 	if hours > 0 {
@@ -62,8 +64,8 @@ func BuildURL(src model.Source, page, hours int, cfg config.CollectorConfig) (st
 	} else {
 		q.Del("h")
 	}
-	if cfg.PageSize > 0 && q.Get("limit") == "" && q.Get("pagesize") == "" {
-		q.Set("limit", strconv.Itoa(cfg.PageSize))
+	if cfg.PageSize > 0 && q.Get("pagesize") == "" && q.Get("limit") == "" {
+		q.Set("pagesize", strconv.Itoa(cfg.PageSize))
 	}
 	u.RawQuery = q.Encode()
 	return u.String(), nil

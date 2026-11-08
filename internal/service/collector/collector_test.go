@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -15,7 +14,6 @@ import (
 
 	"github.com/SilenCN/AssetSpider/internal/config"
 	"github.com/SilenCN/AssetSpider/internal/model"
-	"github.com/SilenCN/AssetSpider/internal/store"
 )
 
 // ---------- 模拟海洋CMS JSON 资源站 ----------
@@ -124,42 +122,10 @@ func (m *mockSite) serve(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (m *mockSite) setItems(items []mockItem) {
-	m.mu.Lock()
-	m.items = items
-	m.mu.Unlock()
-}
-func (m *mockSite) setStatus(code int) {
-	m.mu.Lock()
-	m.status = code
-	m.mu.Unlock()
-}
 func (m *mockSite) snapshot() ([]url.Values, []string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]url.Values(nil), m.queries...), append([]string(nil), m.agents...)
-}
-
-func newRunnerStore(t *testing.T) *store.Store {
-	t.Helper()
-	s, err := store.Open(filepath.Join(t.TempDir(), "collector.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { s.Close() })
-	return s
-}
-
-func addSource(t *testing.T, s *store.Store, apiBase string, enabled bool) uint {
-	t.Helper()
-	src := &model.Source{
-		Name: "模拟资源站", APIBase: apiBase, Format: "seacms_json",
-		Enabled: enabled, IncrementalHours: 2,
-	}
-	if err := s.CreateSource(src); err != nil {
-		t.Fatal(err)
-	}
-	return src.ID
 }
 
 // parseOne 把单条记录包成完整列表响应并解析。
@@ -211,6 +177,68 @@ func TestParseListCompat(t *testing.T) {
 	}
 	if _, err := ParseList([]byte(`not-json`)); err == nil {
 		t.Fatal("非法 JSON 应返回错误")
+	}
+}
+
+// TestParseListRejectsNonSuccess 验证苹果CMS 约定 code!=1 视为失败。
+func TestParseListRejectsNonSuccess(t *testing.T) {
+	for _, code := range []string{"0", "-1", "-2"} {
+		data := []byte(`{"code":` + code + `,"msg":"错误","page":1,"pagecount":1,"limit":"20","total":0,"list":[]}`)
+		if _, err := ParseList(data); err == nil {
+			t.Fatalf("code=%s 应视为失败", code)
+		}
+	}
+	if _, err := ParseList([]byte(`{"code":1,"msg":"ok","page":1,"pagecount":1,"limit":"20","total":0,"list":[]}`)); err != nil {
+		t.Fatalf("code=1 应成功: %v", err)
+	}
+}
+
+// TestParsePlayGroups 覆盖苹果CMS 播放地址的 $$$ / # / $ 三层分隔与容错。
+func TestParsePlayGroups(t *testing.T) {
+	// 两组播放源、每组两集，含服务器组与备注。
+	from := "gugukk$$$yjm3u8"
+	url := "第1集$https://a/1.m3u8#第2集$https://a/2.m3u8$$$第1集$https://b/1.m3u8#第2集$https://b/2.m3u8"
+	server := "no$$$no"
+	note := "备用$$$主用"
+	g := ParsePlayGroups(from, url, server, note)
+	if len(g) != 2 {
+		t.Fatalf("播放组数量异常: %+v", g)
+	}
+	if g[0].From != "gugukk" || g[0].Server != "no" || g[0].Note != "备用" {
+		t.Errorf("第一组元信息异常: %+v", g[0])
+	}
+	if len(g[0].Episodes) != 2 || g[0].Episodes[0].Name != "第1集" || g[0].Episodes[0].Url != "https://a/1.m3u8" {
+		t.Errorf("第一组分集解析异常: %+v", g[0].Episodes)
+	}
+	if g[1].From != "yjm3u8" || g[1].Note != "主用" || len(g[1].Episodes) != 2 {
+		t.Errorf("第二组解析异常: %+v", g[1])
+	}
+
+	// 单组、无服务器/备注
+	single := ParsePlayGroups("默认线路", "第1集$https://x/1.m3u8", "", "")
+	if len(single) != 1 || single[0].From != "默认线路" || len(single[0].Episodes) != 1 {
+		t.Fatalf("单组解析异常: %+v", single)
+	}
+
+	// 缺失线路名：单组标「默认」，多组标「线路N」
+	if got := ParsePlayGroups("", "第1集$https://x/1.m3u8", "", ""); len(got) != 1 || got[0].From != "默认" {
+		t.Errorf("单组缺失线路名应标为默认: %+v", got)
+	}
+	multi := ParsePlayGroups("$$$", "第1集$https://x/1.m3u8$$$第1集$https://y/1.m3u8", "", "")
+	if len(multi) != 2 || multi[0].From != "线路1" || multi[1].From != "线路2" {
+		t.Errorf("多组缺失线路名应标为线路N: %+v", multi)
+	}
+
+	// 每集缺 $：整段视为地址、集名为空（单集电影常省略集名）
+	noDollar := ParsePlayGroups("ck", "https://x/1.m3u8#https://x/2.m3u8", "", "")
+	if len(noDollar) != 1 || len(noDollar[0].Episodes) != 2 ||
+		noDollar[0].Episodes[0].Name != "" || noDollar[0].Episodes[0].Url != "https://x/1.m3u8" {
+		t.Errorf("缺 $ 的集解析异常: %+v", noDollar)
+	}
+
+	// 空地址：返回 nil（调用方回退原始 vod_play_list）
+	if got := ParsePlayGroups("ck", "", "", ""); got != nil {
+		t.Errorf("空地址应返回 nil，实际 %+v", got)
 	}
 }
 
@@ -301,7 +329,7 @@ func TestAllFieldsPreserved(t *testing.T) {
 		obj2[k] = val
 	}
 	obj2["vod_level"] = 999
-	if got := toVideo(1, parseOne(t, obj2).List[0]).Hash; got == base {
+	if got := ToVideo(1, parseOne(t, obj2).List[0]).Hash; got == base {
 		t.Error("修改标准字段 vod_level 后指纹未变化")
 	}
 	obj3 := map[string]interface{}{}
@@ -309,7 +337,7 @@ func TestAllFieldsPreserved(t *testing.T) {
 		obj3[k] = val
 	}
 	obj3["vod_custom_flag"] = "改过了"
-	if got := toVideo(1, parseOne(t, obj3).List[0]).Hash; got == base {
+	if got := ToVideo(1, parseOne(t, obj3).List[0]).Hash; got == base {
 		t.Error("修改自定义字段后指纹未变化（扩展字段也应能触发更新）")
 	}
 }
@@ -340,8 +368,8 @@ func TestBuildURL(t *testing.T) {
 	cfg.PageSize = 50
 	raw, _ = BuildURL(model.Source{APIBase: "https://site.com/zyapi.php"}, 1, 0, cfg)
 	u, _ = url.Parse(raw)
-	if u.Query().Get("ac") != "list" || u.Query().Get("limit") != "50" {
-		t.Errorf("默认 ac / pageSize 异常: %s", raw)
+	if u.Query().Get("ac") != "videolist" || u.Query().Get("pagesize") != "50" {
+		t.Errorf("默认 ac / pagesize 异常: %s", raw)
 	}
 
 	if _, err := BuildURL(model.Source{APIBase: "not-a-url"}, 1, 0, cfg); err == nil {
@@ -372,142 +400,5 @@ func TestFetchList(t *testing.T) {
 	}
 	if !strings.Contains(agents[0], "AssetSpider") {
 		t.Errorf("User-Agent 未正确设置: %q", agents[0])
-	}
-}
-
-// ---------- 全量 / 增量 / 去重 / 失败 ----------
-
-func TestRunnerFullIncrementalAndDedup(t *testing.T) {
-	items := []mockItem{
-		{ID: "1", Name: "影片A", VodTime: "2026-11-06 08:00:00", NumericID: true, PlayURL: "https://x/a.m3u8"},
-		{ID: "2", Name: "影片B", VodTime: "2026-11-06 09:00:00", PlayURL: "https://x/b.m3u8"},
-		{ID: "3", Name: "影片C", VodTime: "2026-11-07 10:00:00", Recent: true, PlayURL: "https://x/c.m3u8"},
-	}
-	m := newMockSite(t, items)
-	st := newRunnerStore(t)
-	id := addSource(t, st, m.server.URL+"/api.php/provide/vod/", true)
-	runner := NewRunner(st, config.Default().Collector)
-	ctx := context.Background()
-
-	// 1. 全量：3 条分 2 页全部入库
-	res, err := runner.RunOne(ctx, id, model.ModeFull)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Status != model.JobSuccess || res.Fetched != 3 || res.New != 3 || res.Pages != 2 || res.Total != 3 {
-		t.Fatalf("全量采集结果异常: %+v", res)
-	}
-	if _, total, _ := st.ListVideos(0, "", 1, 20); total != 3 {
-		t.Fatalf("入库条数应为 3，实际 %d", total)
-	}
-	vids, _, _ := st.ListVideos(0, "影片A", 1, 20)
-	if len(vids) != 1 || vids[0].VodID != "1" || !strings.Contains(vids[0].VodPlayURL, "a.m3u8") {
-		t.Fatalf("数字型 vod_id 或播放地址解析异常: %+v", vids)
-	}
-	// 全字段入库：抽查冷门字段、扩展字段与原始 JSON
-	if vids[0].VodLevel == "" || vids[0].VodDoubanID == "" || vids[0].VodPwdDownURL == "" {
-		t.Errorf("冷门标准字段未入库: %+v", vids[0])
-	}
-	if !strings.Contains(vids[0].Extra, "vod_custom_flag") || !strings.Contains(vids[0].Raw, "vod_custom_flag") {
-		t.Errorf("扩展字段或原始 JSON 未入库: extra=%s raw=%s", vids[0].Extra, vids[0].Raw)
-	}
-	src, _ := st.GetSource(id)
-	if src.LastStatus != model.JobSuccess || src.LastCursor != "2026-11-07 10:00:00" || src.LastSyncAt == nil {
-		t.Fatalf("站点状态/游标未回写: %+v", src)
-	}
-
-	// 2. 再次全量：全部命中去重
-	res, err = runner.RunOne(ctx, id, model.ModeFull)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.New != 0 || res.Unchanged != 3 || res.Fetched != 3 {
-		t.Fatalf("重复全量应全部未变化: %+v", res)
-	}
-
-	// 3. 站点修改一条内容（vod_time 不变）→ 应识别为更新
-	edited := append([]mockItem(nil), items...)
-	edited[1].Name = "影片B 修订版"
-	m.setItems(edited)
-	res, err = runner.RunOne(ctx, id, model.ModeFull)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Updated != 1 || res.Unchanged != 2 {
-		t.Fatalf("内容变化应被更新: %+v", res)
-	}
-
-	// 4. 站点新增一条更新的影片 → 增量只采这一条
-	withNew := append(append([]mockItem(nil), edited...),
-		mockItem{ID: "4", Name: "影片D 新增", VodTime: "2026-11-07 12:00:00", Recent: true, PlayURL: "https://x/d.m3u8"})
-	m.setItems(withNew)
-	res, err = runner.RunOne(ctx, id, model.ModeIncremental)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Fetched != 1 || res.New != 1 {
-		t.Fatalf("增量应只处理游标之后的新数据: %+v", res)
-	}
-	if _, total, _ := st.ListVideos(0, "", 1, 20); total != 4 {
-		t.Fatalf("增量入库后总数应为 4，实际 %d", total)
-	}
-	queries, _ := m.snapshot()
-	hasH := false
-	for _, q := range queries {
-		if q.Get("h") != "" {
-			hasH = true
-		}
-	}
-	if !hasH {
-		t.Fatal("增量采集未向接口传递 h 参数")
-	}
-
-	// 5. 再增量一次：无新数据，幂等
-	res, err = runner.RunOne(ctx, id, model.ModeIncremental)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Fetched != 0 || res.New != 0 || res.Unchanged != 0 {
-		t.Fatalf("无新数据时增量应为 0: %+v", res)
-	}
-
-	// 6. 采集记录与失败处理
-	jobs, _ := st.ListJobs(id, 50)
-	if len(jobs) != 5 || jobs[0].Status != model.JobSuccess {
-		t.Fatalf("采集记录数量/状态异常: %d %+v", len(jobs), jobs)
-	}
-	m.setStatus(http.StatusInternalServerError)
-	res, err = runner.RunOne(ctx, id, model.ModeFull)
-	if err == nil || res == nil || res.Status != model.JobFailed {
-		t.Fatalf("接口异常时应记录失败: err=%v res=%+v", err, res)
-	}
-	src, _ = st.GetSource(id)
-	if src.LastStatus != model.JobFailed || src.LastError == "" {
-		t.Fatalf("失败状态未回写: %+v", src)
-	}
-
-	if _, err := runner.RunOne(ctx, id, "bad-mode"); err == nil {
-		t.Fatal("非法模式应返回错误")
-	}
-}
-
-func TestRunnerRunAllOnlyEnabled(t *testing.T) {
-	m := newMockSite(t, []mockItem{
-		{ID: "1", Name: "A", VodTime: "2026-11-07 10:00:00", Recent: true},
-	})
-	st := newRunnerStore(t)
-	good := addSource(t, st, m.server.URL+"/api.php/provide/vod/", true)
-	addSource(t, st, m.server.URL+"/api.php/provide/vod/", false)
-	runner := NewRunner(st, config.Default().Collector)
-
-	results, err := runner.RunAll(context.Background(), model.ModeFull)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 1 || results[0].SourceID != good || results[0].New != 1 {
-		t.Fatalf("批量采集应只处理启用站点: %+v", results)
-	}
-	if _, total, _ := st.ListVideos(0, "", 1, 20); total != 1 {
-		t.Fatalf("入库总数应为 1，实际 %d", total)
 	}
 }

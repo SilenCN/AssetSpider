@@ -1,29 +1,15 @@
-package store
+package repository
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/SilenCN/AssetSpider/internal/model"
 )
 
-func TestCRUD(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", "asset.db")
-	s, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+func TestAssetRepositoryCRUD(t *testing.T) {
+	r := newTestRepos(t)
 
-	if s.Path() != path {
-		t.Errorf("Path() = %q, want %q", s.Path(), path)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("数据库文件未创建（嵌套目录未自动建立）: %v", err)
-	}
-
-	items, err := s.List()
+	items, err := r.Assets.List()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,14 +18,14 @@ func TestCRUD(t *testing.T) {
 	}
 
 	a := &model.Asset{Host: "example.com", IP: "1.2.3.4", Category: "domain"}
-	if err := s.Create(a); err != nil {
+	if err := r.Assets.Create(a); err != nil {
 		t.Fatal(err)
 	}
 	if a.ID == 0 {
 		t.Fatal("Create 未回填 ID")
 	}
 
-	items, err = s.List()
+	items, err = r.Assets.List()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,10 +33,10 @@ func TestCRUD(t *testing.T) {
 		t.Fatalf("列表内容异常: %+v", items)
 	}
 
-	if err := s.Delete(a.ID); err != nil {
+	if err := r.Assets.Delete(a.ID); err != nil {
 		t.Fatal(err)
 	}
-	items, err = s.List()
+	items, err = r.Assets.List()
 	if err != nil {
 		t.Fatal(err)
 	}

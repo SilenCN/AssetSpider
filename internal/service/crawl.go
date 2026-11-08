@@ -1,24 +1,20 @@
-package collector
+package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"reflect"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/SilenCN/AssetSpider/internal/config"
 	"github.com/SilenCN/AssetSpider/internal/model"
-	"github.com/SilenCN/AssetSpider/internal/store"
+	"github.com/SilenCN/AssetSpider/internal/repository"
+	"github.com/SilenCN/AssetSpider/internal/service/collector"
+	"github.com/SilenCN/AssetSpider/internal/utils"
 )
 
-// RunResult 是一次采集的结果摘要。
+// RunResult 是一次采集的结果摘要，也是 controller 直接序列化的 DTO。
 type RunResult struct {
 	SourceID   uint      `json:"sourceId"`
 	SourceName string    `json:"sourceName"`
@@ -36,61 +32,89 @@ type RunResult struct {
 	FinishedAt time.Time `json:"finishedAt"`
 }
 
-// Runner 编排采集：分页拉取 → 去重入库 → 回写状态与采集记录。
-type Runner struct {
-	st      *store.Store
-	fetcher *Fetcher
-	cfg     config.CollectorConfig
+// NormalizeMode 解析采集模式：空值默认为增量，非法值返回 ErrInvalid。
+// controller 只负责取出原始字符串，业务规则留在 service 层。
+func NormalizeMode(raw string) (string, error) {
+	mode := strings.TrimSpace(raw)
+	if mode == "" {
+		return model.ModeIncremental, nil
+	}
+	if mode != model.ModeFull && mode != model.ModeIncremental {
+		return "", invalid("mode 仅支持 full / incremental")
+	}
+	return mode, nil
+}
+
+// CrawlService 编排采集：分页拉取 → 分类自动归档 → 去重入库 → 回写状态与采集记录。
+//
+// HTTP 抓取与协议解析由 service 层内部的 collector 子包完成；
+// 持久化按实体分别注入 SourceRepository / VideoRepository / CategoryRepository /
+// JobRepository，绝不越级。
+type CrawlService struct {
+	sources    repository.SourceRepository
+	videos     repository.VideoRepository
+	categories repository.CategoryRepository
+	jobs       repository.JobRepository
+	fetcher    *collector.Fetcher
+	cfg        config.CollectorConfig
 
 	mu      sync.Mutex
 	running map[uint]bool // 防止同一站点并发采集
 }
 
-// NewRunner 创建采集编排器。
-func NewRunner(st *store.Store, cfg config.CollectorConfig) *Runner {
-	return &Runner{
-		st:      st,
-		fetcher: NewFetcher(cfg),
-		cfg:     cfg,
-		running: make(map[uint]bool),
+func NewCrawlService(
+	sources repository.SourceRepository,
+	videos repository.VideoRepository,
+	categories repository.CategoryRepository,
+	jobs repository.JobRepository,
+	cfg config.CollectorConfig,
+) *CrawlService {
+	return &CrawlService{
+		sources:    sources,
+		videos:     videos,
+		categories: categories,
+		jobs:       jobs,
+		fetcher:    collector.NewFetcher(cfg),
+		cfg:        cfg,
+		running:    make(map[uint]bool),
 	}
 }
 
-func (r *Runner) lock(id uint) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.running[id] {
+func (s *CrawlService) lock(id uint) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running[id] {
 		return false
 	}
-	r.running[id] = true
+	s.running[id] = true
 	return true
 }
 
-func (r *Runner) unlock(id uint) {
-	r.mu.Lock()
-	delete(r.running, id)
-	r.mu.Unlock()
+func (s *CrawlService) unlock(id uint) {
+	s.mu.Lock()
+	delete(s.running, id)
+	s.mu.Unlock()
 }
 
 // RunOne 对单个站点执行一次全量或增量采集。
-func (r *Runner) RunOne(ctx context.Context, id uint, mode string) (*RunResult, error) {
+func (s *CrawlService) RunOne(ctx context.Context, id uint, mode string) (*RunResult, error) {
 	if mode != model.ModeFull && mode != model.ModeIncremental {
-		return nil, fmt.Errorf("不支持的采集模式 %q（可选 full / incremental）", mode)
+		return nil, invalid("不支持的采集模式 %q（可选 full / incremental）", mode)
 	}
-	src, err := r.st.GetSource(id)
+	src, err := s.sources.GetSource(id)
 	if err != nil {
-		return nil, fmt.Errorf("站点 %d 不存在: %w", id, err)
+		return nil, wrapRepo(err)
 	}
-	if !r.lock(id) {
-		return nil, fmt.Errorf("站点「%s」正在采集中，请稍后再试", src.Name)
+	if !s.lock(id) {
+		return nil, conflict("站点「%s」正在采集中，请稍后再试", src.Name)
 	}
-	defer r.unlock(id)
+	defer s.unlock(id)
 
 	job := &model.CrawlJob{
 		SourceID: src.ID, SourceName: src.Name, Mode: mode,
 		Status: model.JobRunning, StartedAt: time.Now(),
 	}
-	if err := r.st.CreateJob(job); err != nil {
+	if err := s.jobs.CreateJob(job); err != nil {
 		return nil, fmt.Errorf("创建采集记录失败: %w", err)
 	}
 
@@ -98,7 +122,7 @@ func (r *Runner) RunOne(ctx context.Context, id uint, mode string) (*RunResult, 
 		SourceID: src.ID, SourceName: src.Name, Mode: mode,
 		StartedAt: job.StartedAt,
 	}
-	crawlErr := r.crawl(ctx, src, mode, res)
+	crawlErr := s.crawl(ctx, src, mode, res)
 
 	now := time.Now()
 	res.FinishedAt = now
@@ -112,7 +136,7 @@ func (r *Runner) RunOne(ctx context.Context, id uint, mode string) (*RunResult, 
 
 	job.Fetched, job.New, job.Updated = res.Fetched, res.New, res.Updated
 	job.Unchanged, job.Pages, job.Total = res.Unchanged, res.Pages, res.Total
-	if err := r.st.FinishJob(job, status, msg); err != nil {
+	if err := s.jobs.FinishJob(job, status, msg); err != nil {
 		return res, fmt.Errorf("写入采集记录失败: %w", err)
 	}
 
@@ -120,7 +144,7 @@ func (r *Runner) RunOne(ctx context.Context, id uint, mode string) (*RunResult, 
 	if crawlErr == nil {
 		cursor = res.Cursor // 失败时不推进游标，避免漏采
 	}
-	if err := r.st.UpdateSourceResult(src.ID, mode, status, cursor, errMsg, now); err != nil {
+	if err := s.sources.UpdateSourceResult(src.ID, mode, status, cursor, errMsg, now); err != nil {
 		return res, fmt.Errorf("更新站点状态失败: %w", err)
 	}
 	if crawlErr != nil {
@@ -130,15 +154,15 @@ func (r *Runner) RunOne(ctx context.Context, id uint, mode string) (*RunResult, 
 }
 
 // RunAll 对所有启用站点执行同一模式的采集。
-func (r *Runner) RunAll(ctx context.Context, mode string) ([]RunResult, error) {
+func (s *CrawlService) RunAll(ctx context.Context, mode string) ([]RunResult, error) {
 	if mode != model.ModeFull && mode != model.ModeIncremental {
-		return nil, fmt.Errorf("不支持的采集模式 %q（可选 full / incremental）", mode)
+		return nil, invalid("不支持的采集模式 %q（可选 full / incremental）", mode)
 	}
-	srcs, err := r.st.ListEnabledSources()
+	srcs, err := s.sources.ListEnabledSources()
 	if err != nil {
 		return nil, err
 	}
-	parallel := r.cfg.Parallel
+	parallel := s.cfg.Parallel
 	if parallel < 1 {
 		parallel = 1
 	}
@@ -154,7 +178,7 @@ func (r *Runner) RunAll(ctx context.Context, mode string) ([]RunResult, error) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			res, runErr := r.RunOne(ctx, src.ID, mode)
+			res, runErr := s.RunOne(ctx, src.ID, mode)
 			if res != nil {
 				results[i] = *res
 			} else {
@@ -180,12 +204,12 @@ func (r *Runner) RunAll(ctx context.Context, mode string) ([]RunResult, error) {
 }
 
 // crawl 执行分页循环与入库。
-func (r *Runner) crawl(ctx context.Context, src *model.Source, mode string, res *RunResult) error {
+func (s *CrawlService) crawl(ctx context.Context, src *model.Source, mode string, res *RunResult) error {
 	hours := 0
 	if mode == model.ModeIncremental {
 		hours = src.IncrementalHours
 		if hours <= 0 {
-			hours = r.cfg.DefaultHours
+			hours = s.cfg.DefaultHours
 		}
 		// 用上次采集时间兜底：时间窗取"配置小时数"与"距上次采集的小时数"的较大者，
 		// 避免站点时间不准或采集间隔过长导致漏数据。
@@ -200,7 +224,7 @@ func (r *Runner) crawl(ctx context.Context, src *model.Source, mode string, res 
 		}
 	}
 
-	maxPages := r.cfg.MaxPages
+	maxPages := s.cfg.MaxPages
 	if src.MaxPages > 0 {
 		maxPages = src.MaxPages
 	}
@@ -214,7 +238,7 @@ func (r *Runner) crawl(ctx context.Context, src *model.Source, mode string, res 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		list, err := r.fetcher.FetchList(ctx, *src, page, hours)
+		list, err := s.fetcher.FetchList(ctx, *src, page, hours)
 		if err != nil {
 			return fmt.Errorf("第 %d 页采集失败: %w", page, err)
 		}
@@ -233,7 +257,7 @@ func (r *Runner) crawl(ctx context.Context, src *model.Source, mode string, res 
 
 		videos := make([]model.Video, 0, len(list.List))
 		for _, item := range list.List {
-			v := toVideo(src.ID, item)
+			v := collector.ToVideo(src.ID, item)
 			if v.VodID == "" {
 				continue // 无 vod_id 的记录无法去重，跳过
 			}
@@ -248,7 +272,20 @@ func (r *Runner) crawl(ctx context.Context, src *model.Source, mode string, res 
 			}
 			videos = append(videos, v)
 		}
-		stats, err := r.st.UpsertVideos(videos)
+		// 按视频自带的 type_id / type_name 幂等创建本站分类，并建立关联。
+		// 分类在入库前确定，保证 Video.CategoryID 与分类记录同批写回。
+		ids, err := s.categories.EnsureForVideos(src.ID, videos)
+		if err != nil {
+			return fmt.Errorf("第 %d 页分类归档失败: %w", page, err)
+		}
+		for i := range videos {
+			key := utils.CategoryKey(videos[i].TypeID, videos[i].TypeName)
+			if key != "" {
+				videos[i].CategoryID = ids[key]
+			}
+		}
+
+		stats, err := s.videos.UpsertVideos(videos)
 		if err != nil {
 			return fmt.Errorf("第 %d 页入库失败: %w", page, err)
 		}
@@ -263,86 +300,4 @@ func (r *Runner) crawl(ctx context.Context, src *model.Source, mode string, res 
 	}
 	res.Cursor = maxCursor
 	return nil
-}
-
-// toVideo 把接口记录全量转换为入库模型并计算内容指纹。
-//
-// 映射完全由 model.VodFields 驱动，新增字段只需改清单与实体，无需改动这里；
-// 清单之外的字段（站点自定义字段、嵌套对象等）按原始 JSON 值写入 Extra，
-// 原始单条 JSON 全文写入 Raw，因此接口返回的任何字段都不会丢失。
-func toVideo(sourceID uint, item VideoItem) model.Video {
-	v := model.Video{SourceID: sourceID}
-	rv := reflect.ValueOf(&v).Elem()
-	for _, f := range model.VodFields {
-		val, ok := item.Fields[f.Key]
-		if !ok {
-			continue
-		}
-		fv := rv.FieldByName(f.Go)
-		if fv.IsValid() && fv.CanSet() && fv.Kind() == reflect.String {
-			fv.SetString(val)
-		} else {
-			// 清单与实体脱节属于代码错误，宁可显式失败也不静默丢字段。
-			panic(fmt.Sprintf("Video 缺少字段 %s（接口键 %s）", f.Go, f.Key))
-		}
-	}
-
-	extra := make(map[string]json.RawMessage)
-	for k, raw := range item.RawFields {
-		if !model.IsVodField(k) {
-			extra[k] = raw
-		}
-	}
-	if len(extra) > 0 {
-		if b, err := json.Marshal(extra); err == nil {
-			v.Extra = string(b)
-		}
-	}
-
-	v.VodTime = normalizeTime(v.VodTime) // 游标需要可字典序比较的时间
-	v.Raw = item.RawJSON
-	v.Hash = fingerprint(item)
-	return v
-}
-
-// fingerprint 基于该条记录的全部键值（含未映射的自定义字段）计算指纹。
-// 键排序后拼接，字段顺序或空白变化不会误判为内容更新。
-func fingerprint(item VideoItem) string {
-	keys := make([]string, 0, len(item.Fields))
-	for k := range item.Fields {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	for _, k := range keys {
-		b.WriteString(k)
-		b.WriteByte('=')
-		b.WriteString(item.Fields[k])
-		b.WriteByte('\x1f')
-	}
-	sum := sha256.Sum256([]byte(b.String()))
-	return hex.EncodeToString(sum[:16])
-}
-
-// normalizeTime 把站点时间统一为可字典序比较的本地时间字符串。
-func normalizeTime(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
-	}
-	for _, layout := range []string{
-		"2006-01-02 15:04:05", "2006-01-02T15:04:05",
-		"2006-01-02 15:04", "2006-01-02",
-	} {
-		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
-			return t.Format("2006-01-02 15:04:05")
-		}
-	}
-	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
-		if n > 1e12 { // 毫秒时间戳
-			n /= 1000
-		}
-		return time.Unix(n, 0).Local().Format("2006-01-02 15:04:05")
-	}
-	return s
 }

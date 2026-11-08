@@ -2,17 +2,25 @@ package model
 
 import "time"
 
+// 采集格式常量。苹果CMS V10 的 Provide 接口（api.php/provide/vod/）使用同一套
+// JSON 协议，seacms_json 与 maccms_json 由同一套解析器处理；旧数据可能仍是
+// seacms_json，新建站点默认使用 maccms_json。
+const (
+	FormatSeaCMSJSON = "seacms_json"
+	FormatMacCMSJSON = "maccms_json"
+)
+
 // Source 表示一个采集站点配置。
 //
-// 站点信息保存在数据库里，可由前端增删改；采集器按 Format 解析其 JSON 接口。
-// 目前支持 seacms_json（海洋CMS / 苹果CMS 系 api.php/provide/vod/?ac=list）。
+// 站点信息保存在数据库里，可由前端增删改；采集器按其 JSON 接口（苹果CMS V10
+// Provide 协议：api.php/provide/vod/?ac=videolist）抓取并零丢失解析。
 type Source struct {
 	ID      uint   `gorm:"primaryKey" json:"id"`
 	Name    string `gorm:"size:128;not null" json:"name"`
 	APIBase string `gorm:"size:512;not null" json:"apiBase"`
-	Format  string `gorm:"size:32;not null;default:seacms_json" json:"format"`
+	Format  string `gorm:"size:32;not null;default:maccms_json" json:"format"`
 
-	// ExtraParams 是附加查询串，例如 "t=1&wd=电影"，可覆盖默认的 ac=list。
+	// ExtraParams 是附加查询串，例如 "t=1&wd=电影"，可覆盖默认的 ac=videolist。
 	ExtraParams string `gorm:"size:512" json:"extraParams"`
 
 	// 不设 default:true，否则 GORM 会把显式的 false 当作零值跳过并套用默认值。

@@ -16,6 +16,9 @@ type Video struct {
 	ID       uint `gorm:"primaryKey" json:"id"`
 	SourceID uint `gorm:"column:source_id;not null;uniqueIndex:idx_source_vod,priority:1" json:"sourceId"`
 
+	// CategoryID 由采集时按本站分类自动归档回填；0 表示接口未返回分类信息。
+	CategoryID uint `gorm:"column:category_id;index" json:"categoryId"`
+
 	// ---- 基础信息 ----
 	VodID          string `gorm:"column:vod_id;size:64;not null;uniqueIndex:idx_source_vod,priority:2" json:"vodId"`
 	TypeID         string `gorm:"column:type_id" json:"typeId"`
