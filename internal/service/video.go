@@ -17,6 +17,17 @@ type VideoList struct {
 	Size  int           `json:"size"`
 }
 
+// VideoListQuery 是影片列表的查询入参（检索 + 筛选 + 排序 + 分页）。
+type VideoListQuery struct {
+	SourceID   uint
+	CategoryID uint
+	Keyword    string
+	Area       string
+	Sort       string
+	Page       int
+	Size       int
+}
+
 // VideoService 处理入库影片的查询与分页规则。
 type VideoService struct {
 	videos repository.VideoRepository
@@ -26,7 +37,8 @@ func NewVideoService(videos repository.VideoRepository) *VideoService {
 	return &VideoService{videos: videos}
 }
 
-func (s *VideoService) List(sourceID, categoryID uint, keyword string, page, size int) (VideoList, error) {
+func (s *VideoService) List(query VideoListQuery) (VideoList, error) {
+	page, size := query.Page, query.Size
 	if page < 1 {
 		page = 1
 	}
@@ -34,9 +46,11 @@ func (s *VideoService) List(sourceID, categoryID uint, keyword string, page, siz
 		size = 20
 	}
 	items, total, err := s.videos.ListVideos(repository.VideoQuery{
-		SourceID:   sourceID,
-		CategoryID: categoryID,
-		Keyword:    strings.TrimSpace(keyword),
+		SourceID:   query.SourceID,
+		CategoryID: query.CategoryID,
+		Keyword:    strings.TrimSpace(query.Keyword),
+		Area:       strings.TrimSpace(query.Area),
+		Sort:       strings.TrimSpace(query.Sort),
 		Page:       page,
 		Size:       size,
 	})
@@ -44,6 +58,18 @@ func (s *VideoService) List(sourceID, categoryID uint, keyword string, page, siz
 		return VideoList{}, err
 	}
 	return VideoList{Items: items, Total: total, Page: page, Size: size}, nil
+}
+
+// Areas 返回库中出现过的地域列表，供前端筛选下拉使用。
+func (s *VideoService) Areas() ([]string, error) {
+	areas, err := s.videos.ListVideoAreas()
+	if err != nil {
+		return nil, err
+	}
+	if areas == nil {
+		areas = []string{}
+	}
+	return areas, nil
 }
 
 // Get 返回单条影片完整记录（含原始 JSON 与扩展字段）。

@@ -56,6 +56,7 @@ func registerV1(api *gin.RouterGroup, set controller.Set) {
 	// 入库影片；category_id 可按自动归档的分类过滤
 	videos := api.Group("/videos/" + APIVersion)
 	videos.GET("", set.Video.List)
+	videos.GET("/areas", set.Video.Areas) // 地域筛选项
 	videos.GET("/:id", set.Video.Get)
 	videos.GET("/:id/play-groups", set.Video.PlayGroups) // 按苹果CMS 字段解析出的播放组
 

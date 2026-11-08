@@ -10,7 +10,7 @@
 | --- | --- |
 | Web 框架 | Gin |
 | ORM / 数据库 | GORM + SQLite（纯 Go 驱动 modernc.org/sqlite，无 CGO） |
-| 前端 | Vue 3 + Vite |
+| 前端 | Vue 3 + Vite + hls.js（m3u8 播放，按需动态加载） |
 | 配置 | `conf/config.yaml`（YAML） |
 | 采集协议 | 苹果CMS V10 Provide 接口 `api.php/provide/vod/?ac=videolist` JSON |
 
@@ -224,7 +224,8 @@ collector:
 | sources | DELETE | `/api/sources/v1/:id` | 删除站点，级联清理其影片与采集记录 |
 | sources | POST | `/api/sources/v1/:id/crawls` | 为该站点创建一次采集任务，同步返回结果摘要 |
 | crawls | POST | `/api/crawls/v1` | 对全部启用站点批量创建采集任务 |
-| videos | GET | `/api/videos/v1?source_id=&category_id=&q=&page=&size=` | 分页查询入库影片（返回全部字段、extra、categoryId），`q` 匹配名称/别名/演员/导演/分类，`category_id` 按自动归档的分类过滤 |
+| videos | GET | `/api/videos/v1?source_id=&category_id=&area=&q=&sort=&page=&size=` | 分页查询入库影片（返回全部字段、extra、categoryId）。`q` 匹配名称/别名/演员/导演/分类/地域；`category_id` 按自动归档的分类过滤（含子分类）；`area` 按地域模糊筛选；`sort` 取值 `time_desc`（更新时间↓）/`time_asc`/`score_desc`（评分↓）/`score_asc`，空则为 id 倒序 |
+| videos | GET | `/api/videos/v1/areas` | 库中出现过的地域去重列表，供前端筛选下拉 |
 | videos | GET | `/api/videos/v1/:id` | 单条影片完整记录 |
 | videos | GET | `/api/videos/v1/:id/play-groups` | 该影片的播放组数组（来自苹果CMS 播放组字段，已解析为结构化 JSON） |
 | categories | GET | `/api/categories/v1?source_id=` | 视频分类列表，含 `videoCount`；`source_id` 只看该资源站的一套分类 |
@@ -259,7 +260,9 @@ npm run dev      # Vite 开发服务器，/api 代理到 :8080
 npm run build    # 产物输出到 web/dist，由 Gin 托管
 ```
 
-页面分四块：**站点配置**（增删改、启用开关、单站点全量/增量采集、一键批量采集）、**采集数据**（分页/搜索影片，可按站点和自动归档的分类筛选，点「详情」按 14 个分组查看全部标准字段，并可切换查看扩展字段与原始 JSON，支持「只看非空」）、**视频分类**（按资源站列出自动生成的分类、站点分类 ID、影片数，点「查看影片」直接跳到该分类的影片列表）、**采集记录**（每次采集的统计与状态）。`web/dist` 已随仓库提供，clone 后无需构建前端即可运行；未知前端路由由 Gin 回退到 `index.html`。
+页面分四块：**站点配置**（增删改、启用开关、单站点全量/增量采集、一键批量采集）、**资源库**（采集到的影片以海报卡片展示，每张卡片显示**资源名 + 海报图 + 更新集数**，图片加载失败自动退化占位；顶部可按**视频名称**检索、按**分类 / 地域 / 站点**筛选、按**更新时间**或**评分**升降序排序，分页浏览）、**视频分类**（按资源站列出自动生成的分类、站点分类 ID、影片数，点「查看影片」直接跳到该分类的影片列表）、**采集记录**（每次采集的统计与状态）。
+
+资源库点开卡片进入资源详情：顶部是播放器，下方是**播放组（线路）**与**剧集**选择，切换即换源；m3u8 走 hls.js（Safari 原生播放），mp4/webm 直链直接播放，非直链地址给出「在新窗口打开」入口。另有「标准字段」「扩展字段」两个页签，可按 14 个分组查看全部 91 个标准字段（支持「只看非空」）与站点自定义字段。`web/dist` 已随仓库提供，clone 后无需构建前端即可运行；未知前端路由由 Gin 回退到 `index.html`。
 
 ## 目录结构
 
@@ -307,7 +310,7 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 
 ## 测试
 
-`go test ./...` 覆盖**四层依赖方向守卫**、**utils 横切纯洁性守卫**、**仓储层一实体一对象守卫**、**`/api/{模块}/{版本}` 路由规范守卫**、配置加载、工具函数、站点/影片/任务/**分类** CRUD、分类自动创建与按站点隔离、分类幂等与改名、分类影片数与按分类筛选、**二级分类（苹果CMS type_pid / type_id_1 父子关联、父级缺失暂存孤儿、父级出现后自动挂接）**、去重 upsert、**字段清单与实体一致性**、**全字段零丢失解析（数字/字符串/null/对象/数组/自定义字段）**、**播放组解析（多线路 `$$$`/`#`/`$` 分隔符、默认/线路N 命名、无 `$` 回退）**、**全字段指纹与全字段写回**、URL 拼装、**`code != 1` 拒绝解析**、全量/增量/游标/去重/失败回写，以及通过 HTTP 接口触发采集与字段元数据/详情/分类（含二级树）/播放组接口的完整链路。采集测试用本地 HTTP 模拟站点，不依赖外网。
+`go test ./...` 覆盖**四层依赖方向守卫**、**utils 横切纯洁性守卫**、**仓储层一实体一对象守卫**、**`/api/{模块}/{版本}` 路由规范守卫**、配置加载、工具函数、站点/影片/任务/**分类** CRUD、分类自动创建与按站点隔离、分类幂等与改名、分类影片数与按分类筛选、**二级分类（苹果CMS type_pid / type_id_1 父子关联、父级缺失暂存孤儿、父级出现后自动挂接）**、去重 upsert、**字段清单与实体一致性**、**全字段零丢失解析（数字/字符串/null/对象/数组/自定义字段）**、**播放组解析（多线路 `$$$`/`#`/`$` 分隔符、默认/线路N 命名、无 `$` 回退）**、**全字段指纹与全字段写回**、URL 拼装、**`code != 1` 拒绝解析**、全量/增量/游标/去重/失败回写，**资源检索（名称 / 地域筛选、按更新时间与评分升降序排列、地域枚举去重）**，以及通过 HTTP 接口触发采集与字段元数据/详情/分类（含二级树）/播放组/地域与排序检索接口的完整链路。采集测试用本地 HTTP 模拟站点，不依赖外网。
 
 HTTP 链路测试位于 `internal/router`（装配后打真实请求，同时校验新路由结构与旧路由已下线），采集编排测试位于 `internal/service`，协议解析测试位于 `internal/service/collector`，纯工具测试位于 `internal/utils`；`internal/repository` 下按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go`，另有 `store_test.go` 校验连接与四个对象装配。SQLite 使用纯 Go 的 modernc.org/sqlite 驱动（经 github.com/glebarez/sqlite 接入 GORM），无需本机 gcc，测试直接运行即可（`CGO_ENABLED=0`）。
 

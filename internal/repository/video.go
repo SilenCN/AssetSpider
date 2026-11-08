@@ -3,6 +3,7 @@ package repository
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/SilenCN/AssetSpider/internal/model"
@@ -21,6 +22,8 @@ type VideoQuery struct {
 	SourceID   uint
 	CategoryID uint
 	Keyword    string
+	Area       string // 地域（vod_area 模糊匹配）
+	Sort       string // 排序标识，见 videoOrder；空则按 id 倒序
 	Page       int
 	Size       int
 }
@@ -35,6 +38,7 @@ type VideoRepository interface {
 	UpsertVideos(items []model.Video) (UpsertStats, error)
 	GetVideo(id uint) (*model.Video, error)
 	ListVideos(query VideoQuery) ([]model.Video, int64, error)
+	ListVideoAreas() ([]string, error)
 	CountVideosBySource() (map[uint]int64, error)
 	CountVideosByCategory() (map[uint]int64, error)
 }
@@ -127,7 +131,25 @@ func (r *videoRepository) GetVideo(id uint) (*model.Video, error) {
 	return &v, nil
 }
 
-// ListVideos 分页查询影片，支持按站点、分类过滤与多字段模糊搜索。
+// videoOrder 把排序标识映射为白名单内的 ORDER BY 片段。
+// 只允许固定几组排序，避免把外部输入直接拼进 SQL。
+func videoOrder(sort string) string {
+	switch sort {
+	case "time_desc":
+		return "vod_time DESC, id DESC"
+	case "time_asc":
+		return "vod_time ASC, id ASC"
+	case "score_desc":
+		// vod_score 是字符串列，空值经 NULLIF 转 NULL 后排在末尾（SQLite 中 NULL 在 DESC 时最后）。
+		return "CAST(NULLIF(TRIM(vod_score), '') AS REAL) DESC, vod_time DESC, id DESC"
+	case "score_asc":
+		return "CAST(NULLIF(TRIM(vod_score), '') AS REAL) ASC, vod_time DESC, id DESC"
+	default:
+		return "id DESC"
+	}
+}
+
+// ListVideos 分页查询影片，支持按站点、分类、地域过滤、多字段模糊搜索与排序。
 func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, int64, error) {
 	if query.Page < 1 {
 		query.Page = 1
@@ -152,11 +174,15 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, int64, er
 		}
 		q = q.Where("category_id IN ?", ids)
 	}
+	if area := strings.TrimSpace(query.Area); area != "" {
+		// 各站点对地域的叫法不完全一致（大陆 / 中国大陆），用模糊匹配更宽容。
+		q = q.Where("vod_area LIKE ?", "%"+area+"%")
+	}
 	if query.Keyword != "" {
 		kw := "%" + query.Keyword + "%"
 		q = q.Where(
-			"vod_name LIKE ? OR vod_en LIKE ? OR vod_actor LIKE ? OR vod_director LIKE ? OR vod_class LIKE ?",
-			kw, kw, kw, kw, kw,
+			"vod_name LIKE ? OR vod_en LIKE ? OR vod_actor LIKE ? OR vod_director LIKE ? OR vod_class LIKE ? OR vod_area LIKE ?",
+			kw, kw, kw, kw, kw, kw,
 		)
 	}
 	var total int64
@@ -164,10 +190,22 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, int64, er
 		return nil, 0, err
 	}
 	var items []model.Video
-	if err := q.Order("id DESC").Offset((query.Page - 1) * query.Size).Limit(query.Size).Find(&items).Error; err != nil {
+	if err := q.Order(videoOrder(query.Sort)).
+		Offset((query.Page - 1) * query.Size).Limit(query.Size).Find(&items).Error; err != nil {
 		return nil, 0, err
 	}
 	return items, total, nil
+}
+
+// ListVideoAreas 返回库中已出现过的地域，供前端筛选下拉使用。
+func (r *videoRepository) ListVideoAreas() ([]string, error) {
+	var areas []string
+	if err := r.db.Model(&model.Video{}).
+		Where("vod_area IS NOT NULL AND vod_area <> ''").
+		Distinct().Order("vod_area ASC").Pluck("vod_area", &areas).Error; err != nil {
+		return nil, err
+	}
+	return areas, nil
 }
 
 // CountVideosBySource 返回每个站点的影片数量。

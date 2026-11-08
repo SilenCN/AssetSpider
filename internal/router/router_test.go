@@ -61,8 +61,10 @@ func newMockVideoSite(t *testing.T) *httptest.Server {
 			"limit": "20", "total": 2,
 			"list": []map[string]interface{}{
 				{"vod_id": 101, "vod_name": "测试影片A", "type_name": "动作片",
+					"vod_area": "大陆", "vod_score": "8.5",
 					"vod_time": "2026-11-07 10:00:00", "vod_play_url": "https://x/a.m3u8"},
 				{"vod_id": "102", "vod_name": "测试影片B", "type_name": "喜剧片",
+					"vod_area": "美国", "vod_score": "9.1",
 					"vod_time": "2026-11-07 11:00:00"},
 			},
 		})
@@ -675,5 +677,66 @@ func TestVideoPlayGroupsEndpoint(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1/999999/play-groups", nil))
 	if w.Code != http.StatusNotFound {
 		t.Errorf("不存在影片的播放组应返回 404，实际 %d", w.Code)
+	}
+}
+
+// TestVideoAreasAndSortEndpoint 验证资源检索：地域枚举、地域筛选、按更新时间/评分排序。
+func TestVideoAreasAndSortEndpoint(t *testing.T) {
+	r, _ := newTestRouter(t)
+	site := newMockVideoSite(t)
+	if w := doJSON(r, http.MethodPost, "/api/sources/v1", map[string]interface{}{
+		"name": "检索站", "apiBase": site.URL + "/api.php/provide/vod/",
+		"format": "maccms_json", "enabled": true, "incrementalHours": 24,
+	}); w.Code != http.StatusCreated {
+		t.Fatalf("创建站点失败: %d %s", w.Code, w.Body.String())
+	}
+	if w := doJSON(r, http.MethodPost, "/api/sources/v1/1/crawls?mode=full", nil); w.Code != http.StatusOK {
+		t.Fatalf("采集失败: %d %s", w.Code, w.Body.String())
+	}
+
+	// 地域枚举去重
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1/areas", nil))
+	var areas []string
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &areas) != nil {
+		t.Fatalf("地域接口异常: %d %s", w.Code, w.Body.String())
+	}
+	if len(areas) != 2 {
+		t.Fatalf("应有 2 个地域，实际 %v", areas)
+	}
+
+	type listResp struct {
+		Items []model.Video `json:"items"`
+		Total int64         `json:"total"`
+	}
+	get := func(qs string) listResp {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1?"+qs, nil))
+		var out listResp
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &out) != nil {
+			t.Fatalf("列表接口异常(%s): %d %s", qs, w.Code, w.Body.String())
+		}
+		return out
+	}
+
+	// 地域筛选
+	if got := get("area=大陆"); got.Total != 1 || got.Items[0].VodName != "测试影片A" {
+		t.Errorf("按地域筛选异常: %+v", got)
+	}
+	// 按更新时间倒序：B 的 vod_time 更晚
+	if got := get("sort=time_desc"); got.Items[0].VodName != "测试影片B" {
+		t.Errorf("按更新时间倒序异常: %+v", got.Items)
+	}
+	// 按评分倒序：B 9.1 > A 8.5
+	if got := get("sort=score_desc"); got.Items[0].VodName != "测试影片B" || got.Items[1].VodName != "测试影片A" {
+		t.Errorf("按评分倒序异常: %+v", got.Items)
+	}
+	// 按评分升序：A 8.5 在前
+	if got := get("sort=score_asc"); got.Items[0].VodName != "测试影片A" {
+		t.Errorf("按评分升序异常: %+v", got.Items)
+	}
+	// 名称检索
+	if got := get("q=影片A"); got.Total != 1 || got.Items[0].VodName != "测试影片A" {
+		t.Errorf("名称检索异常: %+v", got)
 	}
 }
