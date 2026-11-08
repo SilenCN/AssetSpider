@@ -32,6 +32,14 @@ type Source struct {
 	// 配置后播放时用它替换原播放地址中的「协议 + 域名」，只保留原地址的路径与查询串。
 	PlayDomain string `gorm:"size:255" json:"playDomain"`
 
+	// PicAPI 是图片解析/代理地址（如 https://img.example.com/proxy?url=）。
+	// 与解析播放地址同理：配置后封面等图片地址会拼在它的后面，支持 {url} 占位符。
+	PicAPI string `gorm:"size:512" json:"picApi"`
+
+	// PicDomain 是图片域名（如 https://img.example.com）。
+	// 配置后封面等图片地址会用它替换原来的「协议 + 域名」。
+	PicDomain string `gorm:"size:255" json:"picDomain"`
+
 	// 不设 default:true，否则 GORM 会把显式的 false 当作零值跳过并套用默认值。
 	Enabled          bool `gorm:"not null;index" json:"enabled"`
 	IncrementalHours int  `gorm:"not null;default:24" json:"incrementalHours"`

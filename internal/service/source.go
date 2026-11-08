@@ -19,6 +19,8 @@ type SourceInput struct {
 	MaxPages         int    `json:"maxPages"`
 	ParseAPI         string `json:"parseApi"`   // 视频解析地址，播放时拼在播放地址前
 	PlayDomain       string `json:"playDomain"` // 视频播放域名，播放时替换原地址域名
+	PicAPI           string `json:"picApi"`     // 图片解析/代理地址，展示时拼在图片地址前
+	PicDomain        string `json:"picDomain"`  // 图片域名，展示时替换原图片地址域名
 }
 
 func (in SourceInput) validate() error {
@@ -42,6 +44,12 @@ func (in SourceInput) validate() error {
 	if _, err := NormalizePlayDomain(in.PlayDomain); err != nil {
 		return invalid("%s", err.Error())
 	}
+	if _, err := NormalizePicAPI(in.PicAPI); err != nil {
+		return invalid("%s", err.Error())
+	}
+	if _, err := NormalizePicDomain(in.PicDomain); err != nil {
+		return invalid("%s", err.Error())
+	}
 	return nil
 }
 
@@ -53,12 +61,20 @@ func (in SourceInput) apply(dst *model.Source) *model.Source {
 		dst.Format = model.FormatMacCMSJSON
 	}
 	dst.ExtraParams = strings.TrimSpace(in.ExtraParams)
-	// 规范化后入库：域名补全协议、去掉尾斜杠，播放时可直接拼接。
-	if v, err := NormalizeParseAPI(in.ParseAPI); err == nil {
-		dst.ParseAPI = v
-	}
-	if v, err := NormalizePlayDomain(in.PlayDomain); err == nil {
-		dst.PlayDomain = v
+	// 规范化后入库：域名补全协议、去掉尾斜杠，展示/播放时可直接拼接。
+	for _, f := range []struct {
+		raw  string
+		norm func(string) (string, error)
+		dst  *string
+	}{
+		{in.ParseAPI, NormalizeParseAPI, &dst.ParseAPI},
+		{in.PlayDomain, NormalizePlayDomain, &dst.PlayDomain},
+		{in.PicAPI, NormalizePicAPI, &dst.PicAPI},
+		{in.PicDomain, NormalizePicDomain, &dst.PicDomain},
+	} {
+		if v, err := f.norm(f.raw); err == nil {
+			*f.dst = v
+		}
 	}
 	if in.Enabled != nil {
 		dst.Enabled = *in.Enabled

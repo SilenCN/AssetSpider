@@ -293,14 +293,25 @@ async function openDetail(v) {
 
 onBeforeUnmount(destroyPlayer)
 
+// Esc 关闭当前弹窗（站点配置优先，其次资源详情）
+function onEsc(e) {
+  if (e.key !== 'Escape') return
+  if (sourceOpen.value) { closeSourceForm(); return }
+  if (detail.value) closeDetail()
+}
+onMounted(() => window.addEventListener('keydown', onEsc))
+onBeforeUnmount(() => window.removeEventListener('keydown', onEsc))
+
 // ---------- 站点配置 ----------
+// 站点配置改成弹窗：列表页只留一个「新增站点」入口，编辑时点行内「编辑」打开同一个弹窗。
 const emptyForm = () => ({
   id: null, name: '', apiBase: '', format: 'seacms_json', extraParams: '',
   incrementalHours: 24, maxPages: 0, enabled: true,
-  parseApi: '', playDomain: '',
+  parseApi: '', playDomain: '', picApi: '', picDomain: '',
 })
 const form = reactive(emptyForm())
 const editing = computed(() => !!form.id)
+const sourceOpen = ref(false)
 
 function resetForm() { Object.assign(form, emptyForm()) }
 
@@ -311,18 +322,32 @@ function sourcePayload(s) {
     incrementalHours: Number(s.incrementalHours) || 0,
     maxPages: Number(s.maxPages) || 0,
     parseApi: s.parseApi || '', playDomain: s.playDomain || '',
+    picApi: s.picApi || '', picDomain: s.picDomain || '',
   }
 }
 
+function openSourceForm(s) {
+  if (s) {
+    Object.assign(form, {
+      id: s.id, name: s.name, apiBase: s.apiBase, format: s.format,
+      extraParams: s.extraParams, incrementalHours: s.incrementalHours,
+      maxPages: s.maxPages, enabled: s.enabled,
+      parseApi: s.parseApi || '', playDomain: s.playDomain || '',
+      picApi: s.picApi || '', picDomain: s.picDomain || '',
+    })
+  } else {
+    resetForm()
+  }
+  sourceOpen.value = true
+}
+
+function closeSourceForm() {
+  sourceOpen.value = false
+  resetForm()
+}
+
 function editSource(s) {
-  Object.assign(form, {
-    id: s.id, name: s.name, apiBase: s.apiBase, format: s.format,
-    extraParams: s.extraParams, incrementalHours: s.incrementalHours,
-    maxPages: s.maxPages, enabled: s.enabled,
-    parseApi: s.parseApi || '', playDomain: s.playDomain || '',
-  })
-  tab.value = 'sources'
-  window.scrollTo({ top: 0, behavior: 'smooth' })
+  openSourceForm(s)
 }
 
 async function saveSource() {
@@ -331,7 +356,7 @@ async function saveSource() {
     const payload = sourcePayload(form)
     if (form.id) await request(`/api/sources/v1/${form.id}`, jsonOptions('PUT', payload))
     else await request('/api/sources/v1', jsonOptions('POST', payload))
-    resetForm()
+    closeSourceForm()
     notify('站点配置已保存')
     await refresh()
   } catch (e) {
@@ -597,30 +622,14 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
       </section>
 
       <section class="card">
-        <h2>{{ editing ? '编辑站点' : '新增采集站点' }}</h2>
-        <form class="source-form" @submit.prevent="saveSource">
-          <input v-model="form.name" placeholder="站点名称 *" required />
-          <input v-model="form.apiBase" class="wide" placeholder="JSON 接口地址 * 例：https://site.com/api.php/provide/vod/" required />
-          <input v-model="form.extraParams" placeholder="附加参数，如 t=1&amp;wd=电影" />
-          <input v-model="form.parseApi" class="wide" placeholder="视频解析地址（可选）例：https://jx.example.com/?url= 或含 {url} 占位符" />
-          <input v-model="form.playDomain" class="wide" placeholder="视频播放域名（可选）例：https://cdn.example.com —— 播放时替换原地址域名" />
-          <label class="field">增量小时数
-            <input v-model.number="form.incrementalHours" type="number" min="0" />
-          </label>
-          <label class="field">最大页数 (0=全局)
-            <input v-model.number="form.maxPages" type="number" min="0" />
-          </label>
-          <label class="check"><input v-model="form.enabled" type="checkbox" /> 启用</label>
-          <button type="submit">{{ editing ? '保存修改' : '添加站点' }}</button>
-          <button v-if="editing" type="button" class="ghost" @click="resetForm">取消</button>
-        </form>
-        <p class="hint">采集协议：苹果CMS V10 Provide <code>api.php/provide/vod/?ac=videolist</code>，返回 JSON 的 <code>page / pagecount / total / list[]</code>（含 <code>vod_play_url</code> 播放地址）。增量采集附加 <code>h=&lt;小时数&gt;</code> 并按 <code>vod_time</code> 游标去重。接口返回的<strong>全部标准字段</strong>结构化入库，站点自定义字段存入 <code>extra</code>，不丢字段。</p>
-        <p class="hint">播放增强（都只影响播放时的地址，<strong>不改动入库的原始地址</strong>）：填了<strong>视频解析地址</strong>，播放地址变成「解析地址 + 原地址」（解析地址含 <code>{url}</code> 时按占位符拼接），此时详情页用解析页面播放；填了<strong>视频播放域名</strong>，播放时用该域名替换原地址的协议与域名，保留路径与参数。两者同时配置时先换域名、再拼解析地址。</p>
-      </section>
-
-      <section class="card">
-        <div class="list-head"><h2>站点列表</h2><span class="muted">共 {{ sources.length }} 个</span></div>
-        <p v-if="!sources.length" class="empty">还没有站点，先在上方添加一个 JSON 采集接口。</p>
+        <div class="list-head">
+          <div class="list-head-l">
+            <h2>站点列表</h2>
+            <span class="muted">共 {{ sources.length }} 个</span>
+          </div>
+          <button @click="openSourceForm()">+ 新增站点</button>
+        </div>
+        <p v-if="!sources.length" class="empty">还没有站点，点右上角「新增站点」添加一个 JSON 采集接口。</p>
         <div v-else class="table-wrap">
           <table>
             <thead>
@@ -634,10 +643,20 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
                 <td class="mono hide-sm">{{ s.id }}</td>
                 <td class="host">
                   {{ s.name }}
-                  <div v-if="s.parseApi || s.playDomain" class="tiny muted" :title="[s.parseApi && ('解析：' + s.parseApi), s.playDomain && ('播放域名：' + s.playDomain)].filter(Boolean).join(' / ')">
+                  <div v-if="s.parseApi || s.playDomain || s.picApi || s.picDomain" class="tiny muted"
+                       :title="[
+                         s.parseApi && ('解析：' + s.parseApi),
+                         s.playDomain && ('播放域名：' + s.playDomain),
+                         s.picApi && ('图片解析：' + s.picApi),
+                         s.picDomain && ('图片域名：' + s.picDomain),
+                       ].filter(Boolean).join('\n')">
                     <span v-if="s.parseApi">解析播放</span>
                     <span v-if="s.parseApi && s.playDomain"> · </span>
-                    <span v-if="s.playDomain">域名替换</span>
+                    <span v-if="s.playDomain">播放域名</span>
+                    <span v-if="(s.parseApi || s.playDomain) && (s.picApi || s.picDomain)"> · </span>
+                    <span v-if="s.picApi">图片解析</span>
+                    <span v-if="s.picApi && s.picDomain"> · </span>
+                    <span v-if="s.picDomain">图片域名</span>
                   </div>
                 </td>
                 <td class="url hide-sm" :title="s.apiBase">{{ short(s.apiBase, 38) }}</td>
@@ -808,6 +827,73 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
         </div>
       </section>
     </template>
+
+    <!-- 站点配置弹窗（新增 / 编辑共用） -->
+    <div v-if="sourceOpen" class="modal-mask" @click.self="closeSourceForm">
+      <div class="modal narrow">
+        <div class="modal-head">
+          <div>
+            <h3>{{ editing ? '编辑站点' : '新增采集站点' }}</h3>
+            <p class="muted">苹果CMS V10 Provide 接口：<code>api.php/provide/vod/?ac=videolist</code></p>
+          </div>
+          <button class="ghost" @click="closeSourceForm">关闭</button>
+        </div>
+        <form class="modal-body sf-form" @submit.prevent="saveSource">
+          <label class="sf-item">
+            <span>站点名称 *</span>
+            <input v-model="form.name" placeholder="例：某某资源站" required />
+          </label>
+          <label class="sf-item">
+            <span>附加参数</span>
+            <input v-model="form.extraParams" placeholder="如 t=1&amp;wd=电影（可留空）" />
+          </label>
+          <label class="sf-item full">
+            <span>JSON 接口地址 *</span>
+            <input v-model="form.apiBase" placeholder="https://site.com/api.php/provide/vod/" required />
+          </label>
+
+          <p class="sf-group full">播放增强<span class="muted">只影响播放时的地址，不改动入库的原始地址</span></p>
+          <label class="sf-item full">
+            <span>视频解析地址</span>
+            <input v-model="form.parseApi" placeholder="https://jx.example.com/?url=（可留空，支持 {url} 占位符）" />
+          </label>
+          <label class="sf-item full">
+            <span>视频播放域名</span>
+            <input v-model="form.playDomain" placeholder="https://cdn.example.com（可留空，播放时替换原地址域名）" />
+          </label>
+
+          <p class="sf-group full">图片增强<span class="muted">封面等图片地址，同样只影响展示、不改动入库数据</span></p>
+          <label class="sf-item full">
+            <span>图片解析地址</span>
+            <input v-model="form.picApi" placeholder="https://img.example.com/proxy?url=（可留空，拼在图片地址前，支持 {url}）" />
+          </label>
+          <label class="sf-item full">
+            <span>图片域名</span>
+            <input v-model="form.picDomain" placeholder="https://img.example.com（可留空，展示时替换原图片域名）" />
+          </label>
+
+          <label class="sf-item">
+            <span>增量小时数</span>
+            <input v-model.number="form.incrementalHours" type="number" min="0" />
+          </label>
+          <label class="sf-item">
+            <span>最大页数（0 = 全局配置）</span>
+            <input v-model.number="form.maxPages" type="number" min="0" />
+          </label>
+          <label class="check full"><input v-model="form.enabled" type="checkbox" /> 启用该站点</label>
+
+          <p class="hint full">
+            增量采集附加 <code>h=&lt;小时数&gt;</code> 并按 <code>vod_time</code> 游标去重；接口返回的<strong>全部标准字段</strong>结构化入库，站点自定义字段存入 <code>extra</code>，不丢字段。<br />
+            地址改写顺序统一为<strong>先换域名、再拼解析/代理地址</strong>：解析地址含 <code>{url}</code> 时按占位符插入，未含时直接前缀拼接。
+          </p>
+          <div class="sf-actions full">
+            <button type="submit">{{ editing ? '保存修改' : '添加站点' }}</button>
+            <button type="button" class="ghost" @click="closeSourceForm">取消</button>
+          </div>
+          <p v-if="error" class="error full">{{ error }}</p>
+        </form>
+      </div>
+    </div>
 
     <!-- 资源详情 -->
     <div v-if="detail" class="modal-mask" @click.self="closeDetail">
@@ -981,6 +1067,22 @@ th { color: #86909c; font-weight: 500; }
 .modal-tabs button.active { background: #165dff; color: #fff; }
 .modal-tabs .check { margin-left: auto; }
 .modal-body { overflow-y: auto; padding: 6px 22px 22px; }
+.list-head-l { display: flex; align-items: baseline; gap: 10px; }
+.list-head-l h2 { margin: 0; }
+/* 站点配置弹窗表单 */
+.modal.narrow { width: min(720px, 100%); }
+.sf-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 18px; padding: 16px 22px 22px; }
+.sf-item { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.sf-item > span { font-size: 12px; color: #4e5969; }
+.sf-item input { width: 100%; flex: none; }
+.sf-form .full { grid-column: 1 / -1; }
+.sf-group {
+  display: flex; align-items: baseline; gap: 8px; margin: 6px 0 0; padding-top: 10px;
+  border-top: 1px dashed #e5e6eb; font-size: 13px; font-weight: 600; color: #165dff;
+}
+.sf-group .muted { font-weight: 400; font-size: 12px; }
+.sf-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.sf-form .hint { margin: 2px 0 0; }
 .field-group { margin-top: 16px; }
 .field-group h4 { margin: 0 0 10px; font-size: 14px; color: #165dff; }
 .field-group h4 span { font-weight: 400; font-size: 12px; }
@@ -1087,6 +1189,9 @@ th { color: #86909c; font-weight: 500; }
   .modal-tabs { padding: 10px 16px; gap: 6px; }
   .modal-tabs button { padding: 5px 10px; }
   .modal-body { padding: 4px 16px 20px; }
+  .sf-form { grid-template-columns: 1fr; padding: 12px 16px 18px; gap: 10px; }
+  .sf-actions { flex-wrap: wrap; justify-content: stretch; }
+  .sf-actions button { flex: 1 1 auto; }
   .player { max-height: 56vh; }
   .player-frame { max-height: 56vh; }
   .field-grid { grid-template-columns: 1fr; }

@@ -74,6 +74,8 @@ func (r *sourceRepository) UpdateSource(id uint, in *model.Source) (*model.Sourc
 	src.ExtraParams = in.ExtraParams
 	src.ParseAPI = in.ParseAPI
 	src.PlayDomain = in.PlayDomain
+	src.PicAPI = in.PicAPI
+	src.PicDomain = in.PicDomain
 	src.Enabled = in.Enabled
 	src.IncrementalHours = in.IncrementalHours
 	src.MaxPages = in.MaxPages

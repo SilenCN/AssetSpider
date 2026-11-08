@@ -38,10 +38,19 @@ func NewVideoService(videos repository.VideoRepository, sources repository.Sourc
 	return &VideoService{videos: videos, sources: sources}
 }
 
-// playRewriters 读取站点配置，返回 sourceID → 播放地址改写器。
-// 只有配置了「视频解析地址」或「视频播放域名」的站点才会出现在结果里，
+// sourceRewriter 汇总一个站点的两类改写器：播放地址与封面图片。
+// 两者来自同一份站点配置，互不影响（图片域名通常和播放域名不是同一个）。
+type sourceRewriter struct {
+	play URLRewriter
+	pic  URLRewriter
+}
+
+func (r sourceRewriter) enabled() bool { return r.play.Enabled() || r.pic.Enabled() }
+
+// rewriters 读取站点配置，返回 sourceID → 改写器。
+// 只有配置了「解析地址 / 域名」的站点才会出现在结果里，
 // 未配置时整批查询连 JSON 都不解析，不影响性能。
-func (s *VideoService) playRewriters() (map[uint]PlayURLRewriter, error) {
+func (s *VideoService) rewriters() (map[uint]sourceRewriter, error) {
 	if s.sources == nil {
 		return nil, nil
 	}
@@ -49,9 +58,10 @@ func (s *VideoService) playRewriters() (map[uint]PlayURLRewriter, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[uint]PlayURLRewriter, len(srcs))
+	out := make(map[uint]sourceRewriter, len(srcs))
 	for _, src := range srcs {
-		if r := NewPlayURLRewriterFrom(src); r.Enabled() {
+		r := sourceRewriter{play: NewPlayURLRewriterFrom(src), pic: NewPicURLRewriterFrom(src)}
+		if r.enabled() {
 			out[src.ID] = r
 		}
 	}
@@ -62,7 +72,7 @@ func (s *VideoService) playRewriters() (map[uint]PlayURLRewriter, error) {
 }
 
 // applyPlayRewrite 就地改写影片播放组里的地址（只改内存副本，不回写数据库）。
-func applyPlayRewrite(v *model.Video, r PlayURLRewriter) {
+func applyPlayRewrite(v *model.Video, r URLRewriter) {
 	if v.VodPlayList == "" || !r.Enabled() {
 		return
 	}
@@ -87,15 +97,41 @@ func applyPlayRewrite(v *model.Video, r PlayURLRewriter) {
 	}
 }
 
-// rewriteVideos 按站点配置批量改写播放地址。
+// applyPicRewrite 就地改写影片的封面类图片地址。
+// 与播放地址一样只改内存副本；vod_pic_screenshot 是 # 连接的截图集合，
+// 逐段改写后按原分隔符拼回。
+func applyPicRewrite(v *model.Video, r URLRewriter) {
+	if !r.Enabled() {
+		return
+	}
+	v.VodPic = r.Rewrite(v.VodPic)
+	v.VodPicThumb = r.Rewrite(v.VodPicThumb)
+	v.VodPicSlide = r.Rewrite(v.VodPicSlide)
+	v.VodPicOriginal = r.Rewrite(v.VodPicOriginal)
+	if v.VodPicScreenshot != "" {
+		parts := strings.Split(v.VodPicScreenshot, "#")
+		for i, p := range parts {
+			parts[i] = r.Rewrite(p)
+		}
+		v.VodPicScreenshot = strings.Join(parts, "#")
+	}
+}
+
+// applyRewrite 按站点配置改写一条影片的播放地址与图片地址。
+func applyRewrite(v *model.Video, r sourceRewriter) {
+	applyPlayRewrite(v, r.play)
+	applyPicRewrite(v, r.pic)
+}
+
+// rewriteVideos 按站点配置批量改写播放地址与图片地址。
 func (s *VideoService) rewriteVideos(items []model.Video) error {
-	rewriters, err := s.playRewriters()
+	rewriters, err := s.rewriters()
 	if err != nil {
 		return err
 	}
 	for i := range items {
 		if r, ok := rewriters[items[i].SourceID]; ok {
-			applyPlayRewrite(&items[i], r)
+			applyRewrite(&items[i], r)
 		}
 	}
 	return nil
@@ -146,12 +182,12 @@ func (s *VideoService) Get(id uint) (*model.Video, error) {
 	if err != nil {
 		return nil, wrapRepo(err)
 	}
-	rewriters, err := s.playRewriters()
+	rewriters, err := s.rewriters()
 	if err != nil {
 		return nil, err
 	}
 	if r, ok := rewriters[v.SourceID]; ok {
-		applyPlayRewrite(v, r)
+		applyRewrite(v, r)
 	}
 	return v, nil
 }
@@ -167,12 +203,12 @@ func (s *VideoService) GetPlayGroups(id uint) ([]model.PlayGroup, error) {
 	if v.VodPlayList == "" {
 		return []model.PlayGroup{}, nil
 	}
-	rewriters, err := s.playRewriters()
+	rewriters, err := s.rewriters()
 	if err != nil {
 		return nil, err
 	}
 	if r, ok := rewriters[v.SourceID]; ok {
-		applyPlayRewrite(v, r)
+		applyPlayRewrite(v, r.play)
 	}
 	var groups []model.PlayGroup
 	if err := json.Unmarshal([]byte(v.VodPlayList), &groups); err != nil {
