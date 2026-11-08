@@ -19,7 +19,7 @@ func TestDefault(t *testing.T) {
 		t.Errorf("默认页面目录 = %q", cfg.Web.Dir)
 	}
 	cc := cfg.Collector
-	if cc.TimeoutSeconds != 20 || cc.MaxPages != 1000 || cc.DefaultHours != 24 || cc.Parallel != 1 || cc.PageSize != 0 {
+	if cc.TimeoutSeconds != 20 || cc.MaxPages != 1000 || cc.DefaultHours != 24 || cc.MaxConcurrent != 3 || cc.PageSize != 0 {
 		t.Errorf("采集器默认值异常: %+v", cc)
 	}
 	if err := cfg.Validate(); err != nil {
@@ -77,18 +77,18 @@ func TestCollectorYAMLAndEnvOverride(t *testing.T) {
 		cfg.Collector.DefaultHours != 6 || cfg.Collector.UserAgent != "yaml-agent" {
 		t.Fatalf("YAML 采集器配置未生效: %+v", cfg.Collector)
 	}
-	if cfg.Collector.Parallel != 1 {
-		t.Errorf("未提供的字段应保持默认，实际 %d", cfg.Collector.Parallel)
+	if cfg.Collector.MaxConcurrent != 3 {
+		t.Errorf("未提供的字段应保持默认，实际 %d", cfg.Collector.MaxConcurrent)
 	}
 
 	t.Setenv("ASSETSPIDER_COLLECTOR_TIMEOUT", "55")
-	t.Setenv("ASSETSPIDER_COLLECTOR_PARALLEL", "2")
+	t.Setenv("ASSETSPIDER_COLLECTOR_PARALLEL", "2") // 旧变量名兼容：映射到并发上限
 	t.Setenv("ASSETSPIDER_COLLECTOR_USER_AGENT", "env-agent")
 	cfg2, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg2.Collector.TimeoutSeconds != 55 || cfg2.Collector.Parallel != 2 ||
+	if cfg2.Collector.TimeoutSeconds != 55 || cfg2.Collector.MaxConcurrent != 2 ||
 		cfg2.Collector.UserAgent != "env-agent" || cfg2.Collector.MaxPages != 37 {
 		t.Fatalf("环境变量覆盖异常: %+v", cfg2.Collector)
 	}
@@ -102,6 +102,11 @@ func TestCollectorValidation(t *testing.T) {
 	t.Setenv("ASSETSPIDER_COLLECTOR_TIMEOUT", "abc")
 	if _, err := Load(""); err == nil {
 		t.Fatal("非整数环境变量应报错")
+	}
+	t.Setenv("ASSETSPIDER_COLLECTOR_TIMEOUT", "20")
+	t.Setenv("ASSETSPIDER_COLLECTOR_MAX_CONCURRENT", "0")
+	if _, err := Load(""); err == nil {
+		t.Fatal("max_concurrent=0 应校验失败")
 	}
 }
 

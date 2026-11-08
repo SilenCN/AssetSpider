@@ -68,10 +68,13 @@ func (c *CrawlController) RunAll(ctx *gin.Context) {
 }
 
 // writeError 采集接口的默认失败是上游站点/抓取异常，按 502 返回；
-// 参数、资源不存在、并发冲突分别映射为 400 / 404 / 409。
+// 参数、资源不存在、并发冲突分别映射为 400 / 404 / 409；
+// 被手动暂停不是错误，按 200 返回带 paused 状态的结果。
 func (c *CrawlController) writeError(ctx *gin.Context, err error, res *service.RunResult) {
 	code := http.StatusBadGateway
 	switch {
+	case errors.Is(err, service.ErrPaused):
+		code = http.StatusOK
 	case errors.Is(err, service.ErrInvalid):
 		code = http.StatusBadRequest
 	case errors.Is(err, service.ErrNotFound):

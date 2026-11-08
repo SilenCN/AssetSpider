@@ -16,10 +16,10 @@ web:
   dir: "web/dist"
 
 collector:
-  # 视频站点 JSON 采集器（海洋CMS / 苹果CMS 系 api.php/provide/vod/?ac=list）
+  # 视频站点 JSON 采集器（苹果CMS V10 Provide api.php/provide/vod/?ac=videolist）
   timeout_seconds: 20           # 单次接口请求超时（秒）
   max_pages: 1000              # 单次采集最多遍历页数，防止失控
-  page_size: 0                 # 0 = 由站点返回决定；>0 时附加 limit 参数
-  user_agent: "AssetSpider/1.0 (+seacms-json-collector)"
+  page_size: 0                 # 0 = 由站点返回决定；>0 时附加苹果CMS 的 pagesize 参数
+  user_agent: "AssetSpider/1.0 (+maccms-json-collector)"
   default_incremental_hours: 24 # 站点未单独配置时的增量时间窗（对应接口 h 参数）
-  parallel: 1                  # 批量采集并发站点数，SQLite 建议保持 1
+  max_concurrent: 3            # 同时运行的采集任务上限，超出的任务排队；也可在页面/接口运行时调整

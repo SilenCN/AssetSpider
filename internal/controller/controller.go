@@ -19,6 +19,7 @@ type Set struct {
 	Asset    *AssetController
 	Source   *SourceController
 	Crawl    *CrawlController
+	Task     *TaskController
 	Video    *VideoController
 	Category *CategoryController
 	Meta     *MetaController

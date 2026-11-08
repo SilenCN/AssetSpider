@@ -28,6 +28,10 @@ func conflict(format string, args ...interface{}) error {
 	return fmt.Errorf("%w: %s", ErrConflict, fmt.Sprintf(format, args...))
 }
 
+func notFound(format string, args ...interface{}) error {
+	return fmt.Errorf("%w: %s", ErrNotFound, fmt.Sprintf(format, args...))
+}
+
 // wrapRepo 把 repository 层的错误语义翻译成 service 层语义。
 // 其余错误原样上抛，由 controller 统一按 500 处理。
 func wrapRepo(err error) error {

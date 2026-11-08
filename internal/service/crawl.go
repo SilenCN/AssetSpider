@@ -16,6 +16,7 @@ import (
 
 // RunResult 是一次采集的结果摘要，也是 controller 直接序列化的 DTO。
 type RunResult struct {
+	JobID      uint      `json:"jobId"`
 	SourceID   uint      `json:"sourceId"`
 	SourceName string    `json:"sourceName"`
 	Mode       string    `json:"mode"`
@@ -27,6 +28,7 @@ type RunResult struct {
 	Pages      int       `json:"pages"`
 	Total      int       `json:"total"`
 	Cursor     string    `json:"cursor"`
+	ResumePage int       `json:"resumePage"`
 	Message    string    `json:"message"`
 	StartedAt  time.Time `json:"startedAt"`
 	FinishedAt time.Time `json:"finishedAt"`
@@ -50,6 +52,9 @@ func NormalizeMode(raw string) (string, error) {
 // HTTP 抓取与协议解析由 service 层内部的 collector 子包完成；
 // 持久化按实体分别注入 SourceRepository / VideoRepository / CategoryRepository /
 // JobRepository，绝不越级。
+//
+// 任务调度（并发上限、排队、暂停）见 task.go：同一站点同一时刻只允许一个任务，
+// 所有任务共享一个可运行时调整上限的并发限流器。
 type CrawlService struct {
 	sources    repository.SourceRepository
 	videos     repository.VideoRepository
@@ -58,8 +63,10 @@ type CrawlService struct {
 	fetcher    *collector.Fetcher
 	cfg        config.CollectorConfig
 
-	mu      sync.Mutex
-	running map[uint]bool // 防止同一站点并发采集
+	mu       sync.Mutex
+	tasks    map[uint]*crawlTask // jobID → 运行时任务
+	bySource map[uint]uint       // sourceID → jobID（防止同站点并发采集）
+	limiter  *concurrencyLimiter
 }
 
 func NewCrawlService(
@@ -76,84 +83,23 @@ func NewCrawlService(
 		jobs:       jobs,
 		fetcher:    collector.NewFetcher(cfg),
 		cfg:        cfg,
-		running:    make(map[uint]bool),
+		tasks:      make(map[uint]*crawlTask),
+		bySource:   make(map[uint]uint),
+		limiter:    newConcurrencyLimiter(cfg.MaxConcurrent),
 	}
 }
 
-func (s *CrawlService) lock(id uint) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.running[id] {
-		return false
-	}
-	s.running[id] = true
-	return true
-}
-
-func (s *CrawlService) unlock(id uint) {
-	s.mu.Lock()
-	delete(s.running, id)
-	s.mu.Unlock()
-}
-
-// RunOne 对单个站点执行一次全量或增量采集。
+// RunOne 同步执行一次采集，调用方阻塞直到任务结束（成功/暂停/失败）。
 func (s *CrawlService) RunOne(ctx context.Context, id uint, mode string) (*RunResult, error) {
-	if mode != model.ModeFull && mode != model.ModeIncremental {
-		return nil, invalid("不支持的采集模式 %q（可选 full / incremental）", mode)
-	}
-	src, err := s.sources.GetSource(id)
+	task, src, err := s.begin(id, mode)
 	if err != nil {
-		return nil, wrapRepo(err)
+		return nil, err
 	}
-	if !s.lock(id) {
-		return nil, conflict("站点「%s」正在采集中，请稍后再试", src.Name)
-	}
-	defer s.unlock(id)
-
-	job := &model.CrawlJob{
-		SourceID: src.ID, SourceName: src.Name, Mode: mode,
-		Status: model.JobRunning, StartedAt: time.Now(),
-	}
-	if err := s.jobs.CreateJob(job); err != nil {
-		return nil, fmt.Errorf("创建采集记录失败: %w", err)
-	}
-
-	res := &RunResult{
-		SourceID: src.ID, SourceName: src.Name, Mode: mode,
-		StartedAt: job.StartedAt,
-	}
-	crawlErr := s.crawl(ctx, src, mode, res)
-
-	now := time.Now()
-	res.FinishedAt = now
-	status, msg := model.JobSuccess, "采集完成"
-	errMsg := ""
-	if crawlErr != nil {
-		status, msg = model.JobFailed, crawlErr.Error()
-		errMsg = crawlErr.Error()
-	}
-	res.Status, res.Message = status, msg
-
-	job.Fetched, job.New, job.Updated = res.Fetched, res.New, res.Updated
-	job.Unchanged, job.Pages, job.Total = res.Unchanged, res.Pages, res.Total
-	if err := s.jobs.FinishJob(job, status, msg); err != nil {
-		return res, fmt.Errorf("写入采集记录失败: %w", err)
-	}
-
-	cursor := ""
-	if crawlErr == nil {
-		cursor = res.Cursor // 失败时不推进游标，避免漏采
-	}
-	if err := s.sources.UpdateSourceResult(src.ID, mode, status, cursor, errMsg, now); err != nil {
-		return res, fmt.Errorf("更新站点状态失败: %w", err)
-	}
-	if crawlErr != nil {
-		return res, crawlErr
-	}
-	return res, nil
+	return s.runTask(ctx, task, src)
 }
 
-// RunAll 对所有启用站点执行同一模式的采集。
+// RunAll 对所有启用站点发起同模式采集，并发量由全局并发上限决定，
+// 超出的站点任务进入排队。返回值顺序与站点列表一致。
 func (s *CrawlService) RunAll(ctx context.Context, mode string) ([]RunResult, error) {
 	if mode != model.ModeFull && mode != model.ModeIncremental {
 		return nil, invalid("不支持的采集模式 %q（可选 full / incremental）", mode)
@@ -162,12 +108,7 @@ func (s *CrawlService) RunAll(ctx context.Context, mode string) ([]RunResult, er
 	if err != nil {
 		return nil, err
 	}
-	parallel := s.cfg.Parallel
-	if parallel < 1 {
-		parallel = 1
-	}
 	results := make([]RunResult, len(srcs))
-	sem := make(chan struct{}, parallel)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var firstErr error
@@ -176,8 +117,6 @@ func (s *CrawlService) RunAll(ctx context.Context, mode string) ([]RunResult, er
 		wg.Add(1)
 		go func(i int, src model.Source) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
 			res, runErr := s.RunOne(ctx, src.ID, mode)
 			if res != nil {
 				results[i] = *res
@@ -203,8 +142,15 @@ func (s *CrawlService) RunAll(ctx context.Context, mode string) ([]RunResult, er
 	return results, firstErr
 }
 
-// crawl 执行分页循环与入库。
-func (s *CrawlService) crawl(ctx context.Context, src *model.Source, mode string, res *RunResult) error {
+// crawl 执行分页循环与入库；startPage 为续采起点（全量被暂停后可从该页继续）。
+func (s *CrawlService) crawl(
+	ctx context.Context,
+	src *model.Source,
+	mode string,
+	startPage int,
+	task *crawlTask,
+	res *RunResult,
+) error {
 	hours := 0
 	if mode == model.ModeIncremental {
 		hours = src.IncrementalHours
@@ -231,19 +177,38 @@ func (s *CrawlService) crawl(ctx context.Context, src *model.Source, mode string
 	if maxPages <= 0 {
 		maxPages = 1000
 	}
+	if startPage < 1 {
+		startPage = 1
+	}
 
 	pageCount := 0
 	maxCursor := src.LastCursor
-	for page := 1; page <= maxPages; page++ {
+	// 无论正常结束还是中途暂停，已处理到的游标都要带回（暂停也要保存进度）。
+	defer func() { res.Cursor = maxCursor }()
+	for page := startPage; page <= maxPages; page++ {
+		// 页边界检查暂停：已完成页的数据已入库，续采页码指向本页。
+		if task.paused() {
+			res.ResumePage = page
+			return ErrPaused
+		}
 		if err := ctx.Err(); err != nil {
+			if task.paused() {
+				res.ResumePage = page
+				return ErrPaused
+			}
 			return err
 		}
 		list, err := s.fetcher.FetchList(ctx, *src, page, hours)
 		if err != nil {
+			// 暂停会取消在途请求，此处不能当失败处理。
+			if task.paused() {
+				res.ResumePage = page
+				return ErrPaused
+			}
 			return fmt.Errorf("第 %d 页采集失败: %w", page, err)
 		}
 		res.Pages++
-		if page == 1 {
+		if page == startPage {
 			res.Total = list.Total.Int()
 			pageCount = list.PageCount.Int()
 			if pageCount <= 0 && len(list.List) > 0 {
@@ -262,7 +227,7 @@ func (s *CrawlService) crawl(ctx context.Context, src *model.Source, mode string
 				continue // 无 vod_id 的记录无法去重，跳过
 			}
 			// 增量采集的第二道过滤：时间游标之前的旧数据不再处理。
-			// 海洋CMS 系站点更新影片会同步刷新 vod_time，因此该过滤是安全的。
+			// 站点更新影片会同步刷新 vod_time，因此该过滤是安全的。
 			if mode == model.ModeIncremental && src.LastCursor != "" &&
 				v.VodTime != "" && v.VodTime <= src.LastCursor {
 				continue
@@ -293,11 +258,13 @@ func (s *CrawlService) crawl(ctx context.Context, src *model.Source, mode string
 		res.New += stats.New
 		res.Updated += stats.Updated
 		res.Unchanged += stats.Unchanged
+		task.progress(res) // 让任务列表实时看到进度
 
-		if page >= pageCount {
+		if pageCount > 0 && page >= pageCount {
 			break
 		}
 	}
-	res.Cursor = maxCursor
+	// 正常结束（或按 maxPages 上限结束）：下次从头开始。
+	res.ResumePage = 1
 	return nil
 }

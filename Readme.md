@@ -126,6 +126,17 @@ go build -o bin/assetspider .
 
 > 苹果CMS 系站点更新影片会同步刷新 `vod_time`，因此游标过滤是安全的；若某站点不刷新 `vod_time`，可调大增量小时数或改用全量采集。
 
+### 采集任务：并发上限与暂停 / 继续
+
+采集以**异步任务**运行：发起接口立即返回任务号，抓取在后台排队执行，进度通过任务接口轮询。
+
+- **并发上限**：`collector.max_concurrent`（默认 3，环境变量 `ASSETSPIDER_COLLECTOR_MAX_CONCURRENT`）限制「同时运行的任务数」，超出的任务进入队列（状态 `queued`），空出槽位后自动补位；运行期可用 `PUT /api/tasks/v1/capacity` 实时调整，重启后回到配置文件的值。
+- **同站点互斥**：一个站点同一时刻只允许一个任务（重复发起返回 409），不同站点可并行。
+- **手动暂停**：`PUT /api/tasks/v1/{jobId}` + `{"status":"paused"}`。暂停是协作式的——在页边界生效并中断正在进行的 HTTP 请求，**已完成的整页数据不会回滚**，也不会写入半页数据。
+- **进度保存**：全量采集把「下一次从第几页开始」写入 `crawl_jobs.resume_page`；增量采集照常推进 `last_cursor`。因此暂停不是失败，站点与记录状态都是 `paused`。
+- **继续**：`PUT /api/tasks/v1/{jobId}` + `{"status":"running"}`，按原站点、原模式重新入队：全量从 `resume_page` 续采，增量从游标继续，不会从头再拉一遍。
+- **重启清理**：任务调度只存在于进程内存，服务启动时会把遗留的 `running` / `queued` 记录标记为中断（`paused` 的任务保留，仍可继续）。
+
 ### 自动视频分类
 
 采集到视频资源时，按其自带的 `type_id` / `type_name` **自动创建分类并建立关联**，无需手工维护：
@@ -188,11 +199,12 @@ collector:
   page_size: 0                   # 0 = 由站点决定；>0 附加 limit
   user_agent: "AssetSpider/1.0 (+maccms-json-collector)"
   default_incremental_hours: 24  # 站点未配置时的增量时间窗
-  parallel: 1                    # 批量采集并发数，SQLite 建议保持 1
+  max_concurrent: 3              # 同时运行的采集任务上限，超出的排队；可在页面/接口运行时调整
 ```
 
 环境变量覆盖：`ASSETSPIDER_SERVER_ADDR`、`ASSETSPIDER_DB_PATH`、`ASSETSPIDER_WEB_DIR`，以及
-`ASSETSPIDER_COLLECTOR_TIMEOUT` / `_MAX_PAGES` / `_PAGE_SIZE` / `_DEFAULT_HOURS` / `_PARALLEL` / `_USER_AGENT`。
+`ASSETSPIDER_COLLECTOR_TIMEOUT` / `_MAX_PAGES` / `_PAGE_SIZE` / `_DEFAULT_HOURS` / `_MAX_CONCURRENT` / `_USER_AGENT`
+（旧变量名 `_PARALLEL` 仍兼容，等价于 `_MAX_CONCURRENT`）。
 `-config` 指定其他配置文件，未填写的字段沿用默认值。
 
 ### 站点配置字段（存在数据库 `sources` 表）
@@ -222,8 +234,13 @@ collector:
 | sources | POST | `/api/sources/v1` | 新增站点 |
 | sources | PUT | `/api/sources/v1/:id` | 全量更新站点 |
 | sources | DELETE | `/api/sources/v1/:id` | 删除站点，级联清理其影片与采集记录 |
-| sources | POST | `/api/sources/v1/:id/crawls` | 为该站点创建一次采集任务，同步返回结果摘要 |
-| crawls | POST | `/api/crawls/v1` | 对全部启用站点批量创建采集任务 |
+| sources | POST | `/api/sources/v1/:id/crawls` | 为该站点执行一次采集，**同步**返回结果摘要（脚本/命令行用） |
+| crawls | POST | `/api/crawls/v1` | 对全部启用站点批量发起**同步**采集（超上限的排队） |
+| tasks | GET | `/api/tasks/v1` | 采集任务列表：`capacity`（`maxConcurrent` / `running` / `queued`）+ `items[]`（排队中、运行中、暂停中，含实时进度） |
+| tasks | POST | `/api/tasks/v1` | **异步**发起采集任务，body `{sourceId, mode}`，返回 `202` 与任务视图（`jobId`） |
+| tasks | PUT | `/api/tasks/v1/:id` | 更新任务状态：`{"status":"paused"}` 暂停 / `{"status":"running"}` 继续（`:id` 为 `jobId`） |
+| tasks | GET | `/api/tasks/v1/capacity` | 读取并发容量 |
+| tasks | PUT | `/api/tasks/v1/capacity` | 调整同时运行的任务数：`{"maxConcurrent":2}`（1..64） |
 | videos | GET | `/api/videos/v1?source_id=&category_id=&area=&q=&sort=&page=&size=` | 分页查询入库影片（返回全部字段、extra、categoryId）。`q` 匹配名称/别名/演员/导演/分类/地域；`category_id` 按自动归档的分类过滤（含子分类）；`area` 按地域模糊筛选；`sort` 取值 `time_desc`（更新时间↓）/`time_asc`/`score_desc`（评分↓）/`score_asc`，空则为 id 倒序 |
 | videos | GET | `/api/videos/v1/areas` | 库中出现过的地域去重列表，供前端筛选下拉 |
 | videos | GET | `/api/videos/v1/:id` | 单条影片完整记录 |
@@ -232,7 +249,7 @@ collector:
 | categories | GET | `/api/categories/v1/tree?source_id=` | 视频分类二级树（父分类在前、子分类嵌套），按苹果CMS type_pid 模型 |
 | categories | GET | `/api/categories/v1/:id` | 单个分类详情 |
 | meta | GET | `/api/meta/v1/fields` | 全字段元数据：`total`、`groups`、`fields[]`（`key` 原始键、`json` 前端键、`desc` 中文含义、`group`、`label`、`long`） |
-| jobs | GET | `/api/jobs/v1?source_id=&limit=` | 采集记录 |
+| jobs | GET | `/api/jobs/v1?source_id=&limit=` | 采集记录（含 `queued` / `running` / `paused` / `success` / `failed` 与续采页码 `resumePage`） |
 
 采集任务用 `POST` 创建，参数 `mode`（`full` / `incremental`，缺省 `incremental`）放在 **JSON body**，同时也兼容 query：
 
@@ -241,6 +258,18 @@ curl -X POST http://localhost:8080/api/sources/v1 \
   -H 'Content-Type: application/json' \
   -d '{"name":"测试资源站","apiBase":"https://site.com/api.php/provide/vod/","enabled":true,"incrementalHours":24}'
 
+# 异步发起（推荐，前端即走这条）：立即返回任务号
+curl -X POST http://localhost:8080/api/tasks/v1 \
+  -H 'Content-Type: application/json' -d '{"sourceId":1,"mode":"full"}'
+# 查看进度 / 并发容量
+curl http://localhost:8080/api/tasks/v1
+# 暂停（进度会保存）与继续（从断点续采）
+curl -X PUT http://localhost:8080/api/tasks/v1/1 -H 'Content-Type: application/json' -d '{"status":"paused"}'
+curl -X PUT http://localhost:8080/api/tasks/v1/1 -H 'Content-Type: application/json' -d '{"status":"running"}'
+# 最多同时运行 2 个任务
+curl -X PUT http://localhost:8080/api/tasks/v1/capacity -H 'Content-Type: application/json' -d '{"maxConcurrent":2}'
+
+# 同步采集（脚本用，阻塞到任务结束）
 curl -X POST http://localhost:8080/api/sources/v1/1/crawls \
   -H 'Content-Type: application/json' -d '{"mode":"full"}'
 curl -X POST http://localhost:8080/api/crawls/v1 \
@@ -260,7 +289,7 @@ npm run dev      # Vite 开发服务器，/api 代理到 :8080
 npm run build    # 产物输出到 web/dist，由 Gin 托管
 ```
 
-页面分四块：**站点配置**（增删改、启用开关、单站点全量/增量采集、一键批量采集）、**资源库**（采集到的影片以海报卡片展示，每张卡片显示**资源名 + 海报图 + 更新集数**，图片加载失败自动退化占位；顶部可按**视频名称**检索、按**分类 / 地域 / 站点**筛选、按**更新时间**或**评分**升降序排序，分页浏览）、**视频分类**（按资源站列出自动生成的分类、站点分类 ID、影片数，点「查看影片」直接跳到该分类的影片列表）、**采集记录**（每次采集的统计与状态）。
+页面分四块：**站点配置**（增删改、启用开关；顶部「采集任务」卡片显示并发上限、运行/排队数、任务实时进度，可**暂停**运行中的任务并**继续**已暂停的任务，一键批量采集全部站点；站点行内也可直接发起全量/增量或暂停）、**资源库**（采集到的影片以海报卡片展示，每张卡片显示**资源名 + 海报图 + 更新集数**，图片加载失败自动退化占位；顶部可按**视频名称**检索、按**分类 / 地域 / 站点**筛选、按**更新时间**或**评分**升降序排序，分页浏览）、**视频分类**（按资源站列出自动生成的分类、站点分类 ID、影片数，点「查看影片」直接跳到该分类的影片列表）、**采集记录**（每次采集的统计与状态，`已暂停` 的记录可直接「继续」从断点续采）。
 
 资源库点开卡片进入资源详情：顶部是播放器，下方是**播放组（线路）**与**剧集**选择，切换即换源；m3u8 走 hls.js（Safari 原生播放），mp4/webm 直链直接播放，非直链地址给出「在新窗口打开」入口。另有「标准字段」「扩展字段」两个页签，可按 14 个分组查看全部 91 个标准字段（支持「只看非空」）与站点自定义字段。`web/dist` 已随仓库提供，clone 后无需构建前端即可运行；未知前端路由由 Gin 回退到 `index.html`。
 
@@ -310,7 +339,7 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 
 ## 测试
 
-`go test ./...` 覆盖**四层依赖方向守卫**、**utils 横切纯洁性守卫**、**仓储层一实体一对象守卫**、**`/api/{模块}/{版本}` 路由规范守卫**、配置加载、工具函数、站点/影片/任务/**分类** CRUD、分类自动创建与按站点隔离、分类幂等与改名、分类影片数与按分类筛选、**二级分类（苹果CMS type_pid / type_id_1 父子关联、父级缺失暂存孤儿、父级出现后自动挂接）**、去重 upsert、**字段清单与实体一致性**、**全字段零丢失解析（数字/字符串/null/对象/数组/自定义字段）**、**播放组解析（多线路 `$$$`/`#`/`$` 分隔符、默认/线路N 命名、无 `$` 回退）**、**全字段指纹与全字段写回**、URL 拼装、**`code != 1` 拒绝解析**、全量/增量/游标/去重/失败回写，**资源检索（名称 / 地域筛选、按更新时间与评分升降序排列、地域枚举去重）**，以及通过 HTTP 接口触发采集与字段元数据/详情/分类（含二级树）/播放组/地域与排序检索接口的完整链路。采集测试用本地 HTTP 模拟站点，不依赖外网。
+`go test ./...` 覆盖**四层依赖方向守卫**、**utils 横切纯洁性守卫**、**仓储层一实体一对象守卫**、**`/api/{模块}/{版本}` 路由规范守卫**、配置加载、工具函数、站点/影片/任务/**分类** CRUD、分类自动创建与按站点隔离、分类幂等与改名、分类影片数与按分类筛选、**二级分类（苹果CMS type_pid / type_id_1 父子关联、父级缺失暂存孤儿、父级出现后自动挂接）**、去重 upsert、**字段清单与实体一致性**、**全字段零丢失解析（数字/字符串/null/对象/数组/自定义字段）**、**播放组解析（多线路 `$$$`/`#`/`$` 分隔符、默认/线路N 命名、无 `$` 回退）**、**全字段指纹与全字段写回**、URL 拼装、**`code != 1` 拒绝解析**、全量/增量/游标/去重/失败回写，**资源检索（名称 / 地域筛选、按更新时间与评分升降序排列、地域枚举去重）**、**采集任务调度（异步入队、并发上限运行时调整、运行中暂停、按续采页码继续、同站点互斥）**，以及通过 HTTP 接口触发采集与字段元数据/详情/分类（含二级树）/播放组/地域与排序检索/任务管理接口的完整链路。采集测试用本地 HTTP 模拟站点，不依赖外网。
 
 HTTP 链路测试位于 `internal/router`（装配后打真实请求，同时校验新路由结构与旧路由已下线），采集编排测试位于 `internal/service`，协议解析测试位于 `internal/service/collector`，纯工具测试位于 `internal/utils`；`internal/repository` 下按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go`，另有 `store_test.go` 校验连接与四个对象装配。SQLite 使用纯 Go 的 modernc.org/sqlite 驱动（经 github.com/glebarez/sqlite 接入 GORM），无需本机 gcc，测试直接运行即可（`CGO_ENABLED=0`）。
 

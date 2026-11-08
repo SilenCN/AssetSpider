@@ -29,6 +29,12 @@ func New(cfg *config.Config) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("初始化数据库失败: %w", err)
 	}
+	// 任务调度状态只存在于进程内存，重启后遗留的 running/queued 记录无法再推进，
+	// 统一标记为中断，避免页面一直显示「进行中」（paused 的任务仍可继续）。
+	if _, err := repos.Jobs.ResetInterrupted("服务重启，任务已中断"); err != nil {
+		_ = repos.Close()
+		return nil, fmt.Errorf("清理中断任务失败: %w", err)
+	}
 
 	// 第 3 层：业务服务，各自只注入需要的实体仓储
 	healthSvc := service.NewHealthService(repos.Sources, repos.Videos, repos.Path())
@@ -46,6 +52,7 @@ func New(cfg *config.Config) (*App, error) {
 		Asset:    controller.NewAssetController(assetSvc),
 		Source:   controller.NewSourceController(sourceSvc),
 		Crawl:    controller.NewCrawlController(crawlSvc),
+		Task:     controller.NewTaskController(crawlSvc),
 		Video:    controller.NewVideoController(videoSvc),
 		Category: controller.NewCategoryController(categorySvc),
 		Meta:     controller.NewMetaController(metaSvc),

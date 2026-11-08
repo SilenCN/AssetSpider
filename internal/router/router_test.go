@@ -2,13 +2,16 @@ package router_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/SilenCN/AssetSpider/internal/app"
 	"github.com/SilenCN/AssetSpider/internal/config"
@@ -379,7 +382,7 @@ func TestAPIRoutesFollowModuleVersionConvention(t *testing.T) {
 	modules := map[string]bool{
 		"system": true, "assets": true, "sources": true,
 		"crawls": true, "videos": true, "categories": true,
-		"meta": true, "jobs": true,
+		"meta": true, "jobs": true, "tasks": true,
 	}
 	forbidden := map[string]bool{
 		"crawl": true, "crawls-run": true, "create": true, "update": true,
@@ -739,4 +742,197 @@ func TestVideoAreasAndSortEndpoint(t *testing.T) {
 	if got := get("q=影片A"); got.Total != 1 || got.Items[0].VodName != "测试影片A" {
 		t.Errorf("名称检索异常: %+v", got)
 	}
+}
+
+// TestTaskPauseResumeAndCapacity 验证采集任务的手动暂停/继续与并发上限配置：
+// 任务异步入队 → 运行中可暂停（保存续采页码）→ 继续时从暂停页码接着采。
+func TestTaskPauseResumeAndCapacity(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	// 慢速分页站点：每页 1 条、共 40 页，每页 sleep 50ms，
+	// 保证「暂停」一定发生在采集中途，而不是采集结束后。
+	var mu sync.Mutex
+	pageHits := 0
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		page, _ := strconv.Atoi(req.URL.Query().Get("pg"))
+		if page < 1 {
+			page = 1
+		}
+		mu.Lock()
+		pageHits++
+		mu.Unlock()
+		time.Sleep(50 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": 1, "msg": "ok", "page": page, "pagecount": 40, "limit": "1", "total": 40,
+			"list": []map[string]interface{}{{
+				"vod_id": 1000 + page, "vod_name": fmt.Sprintf("暂停测试%d", page),
+				"type_name": "动作片", "vod_area": "大陆", "vod_score": "8.0",
+				"vod_time": fmt.Sprintf("2026-11-07 10:%02d:00", page%60),
+			}},
+		})
+	}))
+	defer site.Close()
+
+	if w := doJSON(r, http.MethodPost, "/api/sources/v1", map[string]interface{}{
+		"name": "慢速站点", "apiBase": site.URL + "/api.php/provide/vod/",
+		"format": "maccms_json", "enabled": true, "incrementalHours": 24,
+	}); w.Code != http.StatusCreated {
+		t.Fatalf("创建站点失败: %d %s", w.Code, w.Body.String())
+	}
+
+	// ---- 并发上限 ----
+	w := doJSON(r, http.MethodPut, "/api/tasks/v1/capacity", map[string]int{"maxConcurrent": 2})
+	var cap struct {
+		MaxConcurrent int `json:"maxConcurrent"`
+		Running       int `json:"running"`
+		Queued        int `json:"queued"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &cap) != nil || cap.MaxConcurrent != 2 {
+		t.Fatalf("调整并发上限失败: %d %s", w.Code, w.Body.String())
+	}
+	if w := doJSON(r, http.MethodPut, "/api/tasks/v1/capacity", map[string]int{"maxConcurrent": 0}); w.Code != http.StatusBadRequest {
+		t.Fatalf("非法并发上限应返回 400，实际 %d", w.Code)
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/tasks/v1/capacity", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"maxConcurrent":2`) {
+		t.Fatalf("读取并发上限异常: %d %s", w.Code, w.Body.String())
+	}
+
+	// ---- 异步入队 ----
+	w = doJSON(r, http.MethodPost, "/api/tasks/v1", map[string]interface{}{"sourceId": 1, "mode": "full"})
+	var created struct {
+		JobID  uint   `json:"jobId"`
+		Status string `json:"status"`
+	}
+	if w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &created) != nil || created.JobID == 0 {
+		t.Fatalf("创建任务异常: %d %s", w.Code, w.Body.String())
+	}
+
+	// 同站点不允许并发采集
+	if w := doJSON(r, http.MethodPost, "/api/tasks/v1",
+		map[string]interface{}{"sourceId": 1, "mode": "incremental"}); w.Code != http.StatusConflict {
+		t.Fatalf("同站点重复发起应返回 409，实际 %d %s", w.Code, w.Body.String())
+	}
+	// 不存在的任务
+	if w := doJSON(r, http.MethodPut, "/api/tasks/v1/999999",
+		map[string]string{"status": "paused"}); w.Code != http.StatusNotFound {
+		t.Fatalf("暂停未知任务应返回 404，实际 %d", w.Code)
+	}
+
+	type taskItem struct {
+		JobID  uint   `json:"jobId"`
+		Status string `json:"status"`
+		Pages  int    `json:"pages"`
+	}
+	type taskList struct {
+		Items []taskItem `json:"items"`
+	}
+	listTasks := func() taskList {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/tasks/v1", nil))
+		var out taskList
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &out) != nil {
+			t.Fatalf("任务列表异常: %d %s", w.Code, w.Body.String())
+		}
+		return out
+	}
+	find := func(list taskList, jobID uint) (taskItem, bool) {
+		for _, it := range list.Items {
+			if it.JobID == jobID {
+				return it, true
+			}
+		}
+		return taskItem{}, false
+	}
+	waitFor := func(desc string, cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(6 * time.Second)
+		for !cond() {
+			if time.Now().After(deadline) {
+				t.Fatalf("等待超时：%s", desc)
+			}
+			time.Sleep(30 * time.Millisecond)
+		}
+	}
+
+	// 等到真正开跑且已完成至少 1 页
+	waitFor("任务进入运行态且有进度", func() bool {
+		it, ok := find(listTasks(), created.JobID)
+		return ok && it.Status == model.JobRunning && it.Pages >= 1
+	})
+
+	// ---- 暂停 ----
+	w = doJSON(r, http.MethodPut, "/api/tasks/v1/"+strconv.Itoa(int(created.JobID)),
+		map[string]string{"status": "paused"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("暂停任务失败: %d %s", w.Code, w.Body.String())
+	}
+	// 任务应在暂停后退出运行态（从任务表中移除）
+	waitFor("暂停后任务结束", func() bool {
+		_, ok := find(listTasks(), created.JobID)
+		return !ok
+	})
+
+	mu.Lock()
+	hitsAtPause := pageHits
+	mu.Unlock()
+	if hitsAtPause >= 40 {
+		t.Fatalf("暂停过晚，站点已被完整采集（%d 页）", hitsAtPause)
+	}
+
+	firstPaused := lastJob(t, r)
+	if firstPaused.Status != model.JobPaused || firstPaused.ResumePage <= 1 {
+		t.Fatalf("暂停后应记录续采页码: %+v", firstPaused)
+	}
+	if firstPaused.Pages < 1 {
+		t.Fatalf("暂停时应保留已完成的页数: %+v", firstPaused)
+	}
+
+	// ---- 继续：从暂停页码续采 ----
+	w = doJSON(r, http.MethodPut, "/api/tasks/v1/"+strconv.Itoa(int(firstPaused.ID)),
+		map[string]string{"status": "running"})
+	var resumed struct {
+		JobID uint `json:"jobId"`
+	}
+	if w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &resumed) != nil || resumed.JobID == 0 {
+		t.Fatalf("继续任务失败: %d %s", w.Code, w.Body.String())
+	}
+	if resumed.JobID == firstPaused.ID {
+		t.Fatalf("继续任务应创建新的采集记录")
+	}
+	waitFor("续采任务进入运行态且有进度", func() bool {
+		it, ok := find(listTasks(), resumed.JobID)
+		return ok && it.Status == model.JobRunning && it.Pages >= 1
+	})
+	if w := doJSON(r, http.MethodPut, "/api/tasks/v1/"+strconv.Itoa(int(resumed.JobID)),
+		map[string]string{"status": "paused"}); w.Code != http.StatusOK {
+		t.Fatalf("再次暂停失败: %d %s", w.Code, w.Body.String())
+	}
+	waitFor("续采任务结束", func() bool {
+		_, ok := find(listTasks(), resumed.JobID)
+		return !ok
+	})
+
+	secondPaused := lastJob(t, r)
+	if secondPaused.Status != model.JobPaused {
+		t.Fatalf("续采后暂停状态异常: %+v", secondPaused)
+	}
+	if secondPaused.ResumePage <= firstPaused.ResumePage {
+		t.Fatalf("续采应从暂停页码继续：首次 %d → 续采 %d",
+			firstPaused.ResumePage, secondPaused.ResumePage)
+	}
+}
+
+// lastJob 读取最近一条采集记录。
+func lastJob(t *testing.T, r *gin.Engine) model.CrawlJob {
+	t.Helper()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/jobs/v1?limit=1", nil))
+	var jobs []model.CrawlJob
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &jobs) != nil || len(jobs) != 1 {
+		t.Fatalf("采集记录异常: %d %s", w.Code, w.Body.String())
+	}
+	return jobs[0]
 }

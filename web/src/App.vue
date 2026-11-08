@@ -15,7 +15,10 @@ const videos = ref([])
 const categories = ref([])
 const categoryTree = ref([])
 const jobs = ref([])
-const busy = ref(false)
+const tasks = ref([])
+const capacity = ref({ maxConcurrent: 3, running: 0, queued: 0 })
+const maxConcurrent = ref(3)
+const capacityDirty = ref(false)
 const error = ref('')
 const notice = ref(null)
 
@@ -77,6 +80,14 @@ async function loadAreas() {
 async function loadJobs() {
   jobs.value = (await request('/api/jobs/v1?limit=50')) || []
 }
+// 采集任务（排队/运行/暂停）与并发容量
+async function loadTasks() {
+  const d = (await request('/api/tasks/v1')) || {}
+  tasks.value = d.items || []
+  if (d.capacity) capacity.value = d.capacity
+  // 用户正在输入时不覆盖输入框
+  if (!capacityDirty.value) maxConcurrent.value = capacity.value.maxConcurrent
+}
 async function loadCategories() {
   categories.value = (await request('/api/categories/v1')) || []
 }
@@ -89,7 +100,7 @@ async function refresh() {
   try {
     await Promise.all([
       loadHealth(), loadSources(), loadVideos(), loadJobs(),
-      loadCategories(), loadCategoryTree(), loadAreas(),
+      loadCategories(), loadCategoryTree(), loadAreas(), loadTasks(),
     ])
   } catch (e) {
     error.value = e.message
@@ -98,6 +109,11 @@ async function refresh() {
 
 function categoryName(id) {
   return categories.value.find(c => c.id === id)?.name || '-'
+}
+// 站点正在进行的采集任务（排队/运行），用于把「全量/增量」换成「暂停」
+function activeTaskOf(sourceId) {
+  return tasks.value.find(t =>
+    t.sourceId === sourceId && (t.status === 'running' || t.status === 'queued')) || null
 }
 function sourceName(id) {
   return sources.value.find(s => s.id === id)?.name || id
@@ -330,46 +346,62 @@ async function toggleSource(s) {
   } catch (e) { notify(e.message, 'err') }
 }
 
-// ---------- 采集 ----------
-function summarize(r) {
-  return `拉取 ${r.fetched} · 新增 ${r.new} · 更新 ${r.updated} · 未变 ${r.unchanged} · ${r.pages} 页`
-}
-
-async function crawlOne(s, mode) {
-  if (busy.value) return
-  busy.value = true
-  const label = mode === 'full' ? '全量' : '增量'
-  notify(`正在对「${s.name}」执行${label}采集…`, 'info')
+// ---------- 采集任务 ----------
+// 采集改为异步任务：发起后立即返回，进度在「采集任务」里实时轮询；
+// 运行中的任务可随时手动暂停（已完成页的数据已入库，续采页码会保存）。
+async function startTask(s, mode) {
+  const label = modeLabel(mode)
   try {
-    const r = await request(`/api/sources/v1/${s.id}/crawls`, jsonOptions('POST', { mode }))
-    notify(`「${s.name}」${label}采集完成：${summarize(r)}`)
-    await refresh()
-  } catch (e) {
-    notify(`${label}采集失败：${e.message}`, 'err')
-    error.value = e.message
-  } finally {
-    busy.value = false
-  }
+    const t = await request('/api/tasks/v1', jsonOptions('POST', { sourceId: s.id, mode }))
+    notify(`「${s.name}」${label}采集已入队（任务 #${t.jobId}）`, 'info')
+    await loadTasks()
+  } catch (e) { notify(e.message, 'err') }
 }
 
 async function crawlAll(mode) {
-  if (busy.value) return
-  busy.value = true
-  const label = mode === 'full' ? '全量' : '增量'
-  notify(`正在对全部启用站点执行${label}采集…`, 'info')
-  try {
-    const d = await request('/api/crawls/v1', jsonOptions('POST', { mode }))
-    const list = d.results || []
-    const ok = list.filter(r => r.status === 'success').length
-    const text = `${label}采集结束：${ok}/${list.length} 个站点成功`
-    notify(d.error ? `${text}；${d.error}` : text, d.error ? 'err' : 'ok')
-    await refresh()
-  } catch (e) {
-    notify(`批量采集失败：${e.message}`, 'err')
-    error.value = e.message
-  } finally {
-    busy.value = false
+  const list = sources.value.filter(s => s.enabled)
+  if (!list.length) { notify('没有启用的站点', 'err'); return }
+  const label = modeLabel(mode)
+  let ok = 0
+  const failures = []
+  for (const s of list) {
+    try {
+      await request('/api/tasks/v1', jsonOptions('POST', { sourceId: s.id, mode }))
+      ok++
+    } catch (e) { failures.push(`${s.name}: ${e.message}`) }
   }
+  if (ok) {
+    notify(`已提交 ${ok}/${list.length} 个${label}任务，超出并发上限的会在队列中等待`, failures.length ? 'err' : 'ok')
+  } else {
+    notify(`批量采集失败：${failures[0] || '未知错误'}`, 'err')
+  }
+  await loadTasks()
+}
+
+async function pauseTask(jobId) {
+  try {
+    await request(`/api/tasks/v1/${jobId}`, jsonOptions('PUT', { status: 'paused' }))
+    notify(`任务 #${jobId} 已暂停，进度已保存`, 'ok')
+    await Promise.all([loadTasks(), loadJobs()])
+  } catch (e) { notify(e.message, 'err') }
+}
+
+async function resumeTask(jobId) {
+  try {
+    const t = await request(`/api/tasks/v1/${jobId}`, jsonOptions('PUT', { status: 'running' }))
+    notify(`已继续采集（新任务 #${t.jobId}）`, 'ok')
+    await Promise.all([loadTasks(), loadJobs()])
+  } catch (e) { notify(e.message, 'err') }
+}
+
+async function saveCapacity() {
+  try {
+    const c = await request('/api/tasks/v1/capacity',
+      jsonOptions('PUT', { maxConcurrent: Number(maxConcurrent.value) }))
+    capacity.value = c
+    capacityDirty.value = false
+    notify(`并发上限已调整为 ${c.maxConcurrent} 个任务`)
+  } catch (e) { notify(e.message, 'err') }
 }
 
 function searchVideos() { videoPage.value = 1; loadVideos().catch(e => { error.value = e.message }) }
@@ -386,14 +418,30 @@ function formatTime(value) {
 }
 function modeLabel(m) { return m === 'full' ? '全量' : '增量' }
 function statusLabel(s) {
-  return { success: '成功', failed: '失败', running: '进行中', never: '未采集' }[s] || s || '-'
+  return {
+    success: '成功', failed: '失败', running: '进行中', queued: '排队中',
+    paused: '已暂停', never: '未采集',
+  }[s] || s || '-'
 }
 function short(text, n = 46) {
   const s = String(text || '')
   return s.length > n ? s.slice(0, n) + '…' : s
 }
 
-onMounted(() => { refresh(); loadFieldMeta() })
+// 任务进度轮询：页面不可见时暂停，避免无谓请求
+let taskTimer = null
+onMounted(() => {
+  refresh()
+  loadFieldMeta()
+  taskTimer = setInterval(() => {
+    if (document.hidden) return
+    loadTasks().catch(() => {})
+    if (tasks.value.some(t => t.status !== 'success' && t.status !== 'failed')) {
+      loadJobs().catch(() => {})
+    }
+  }, 3000)
+})
+onBeforeUnmount(() => { clearInterval(taskTimer) })
 </script>
 
 <template>
@@ -424,13 +472,49 @@ onMounted(() => { refresh(); loadFieldMeta() })
     <template v-if="tab === 'sources'">
       <section class="card">
         <div class="list-head">
-          <h2>批量采集</h2>
-          <span class="muted">对全部启用站点执行，SQLite 下串行执行</span>
+          <h2>采集任务</h2>
+          <span class="muted">
+            运行 {{ capacity.running }} / {{ capacity.maxConcurrent }} · 排队 {{ capacity.queued }}
+          </span>
         </div>
         <div class="actions">
-          <button @click="crawlAll('full')" :disabled="busy">全量采集全部站点</button>
-          <button class="ghost" @click="crawlAll('incremental')" :disabled="busy">增量采集全部站点</button>
-          <span v-if="busy" class="muted">采集中，请稍候…</span>
+          <button @click="crawlAll('full')">全量采集全部站点</button>
+          <button class="ghost" @click="crawlAll('incremental')">增量采集全部站点</button>
+          <label class="field inline">最多同时运行
+            <input v-model.number="maxConcurrent" type="number" min="1" max="64"
+                   @input="capacityDirty = true" />
+          </label>
+          <button class="ghost" :disabled="!capacityDirty" @click="saveCapacity">保存上限</button>
+        </div>
+        <p class="hint">
+          采集为异步任务：发起后立即入队，同时运行的任务数不超过上面的上限，其余排队等待。
+          运行中的任务可随时<b>暂停</b>——已完成分页的数据已经入库，全量采集的续采页码与增量采集的游标都会保存，
+          点「继续」即可从断点接着采，无需从头再来。
+        </p>
+        <p v-if="!tasks.length" class="empty">当前没有排队或运行中的采集任务。</p>
+        <div v-else class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>任务</th><th>站点</th><th>模式</th><th>状态</th><th>进度</th><th>新增 / 更新</th><th>已运行</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="t in tasks" :key="t.jobId">
+                <td class="mono">#{{ t.jobId }}</td>
+                <td class="host">{{ t.sourceName }}</td>
+                <td>{{ modeLabel(t.mode) }}</td>
+                <td><span class="badge" :class="t.status">{{ statusLabel(t.status) }}</span></td>
+                <td class="mono">{{ t.pages }} 页 · {{ t.fetched }} 条</td>
+                <td class="mono"><span class="up">{{ t.new }}</span> / {{ t.updated }}</td>
+                <td class="muted">{{ t.elapsedSeconds }}s</td>
+                <td class="ops">
+                  <button v-if="t.status === 'running' || t.status === 'queued'"
+                          class="mini danger" @click="pauseTask(t.jobId)">暂停</button>
+                  <button v-else-if="t.status === 'paused'"
+                          class="mini ghost" @click="resumeTask(t.jobId)">继续</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -479,8 +563,14 @@ onMounted(() => { refresh(); loadFieldMeta() })
                   <div class="mono tiny">{{ s.lastCursor || '-' }}</div>
                 </td>
                 <td class="ops">
-                  <button class="mini" @click="crawlOne(s, 'full')" :disabled="busy">全量</button>
-                  <button class="mini ghost" @click="crawlOne(s, 'incremental')" :disabled="busy">增量</button>
+                  <template v-if="activeTaskOf(s.id)">
+                    <span class="muted tiny">{{ statusLabel(activeTaskOf(s.id).status) }}…</span>
+                    <button class="mini danger" @click="pauseTask(activeTaskOf(s.id).jobId)">暂停</button>
+                  </template>
+                  <template v-else>
+                    <button class="mini" @click="startTask(s, 'full')">全量</button>
+                    <button class="mini ghost" @click="startTask(s, 'incremental')">增量</button>
+                  </template>
                   <button class="mini ghost" @click="editSource(s)">编辑</button>
                   <button class="mini ghost" @click="toggleSource(s)">{{ s.enabled ? '停用' : '启用' }}</button>
                   <button class="mini danger" @click="removeSource(s)">删除</button>
@@ -582,7 +672,7 @@ onMounted(() => { refresh(); loadFieldMeta() })
         <div v-else class="table-wrap">
           <table>
             <thead>
-              <tr><th>ID</th><th>站点</th><th>模式</th><th>状态</th><th>页数</th><th>拉取</th><th>新增</th><th>更新</th><th>未变</th><th>开始时间</th><th>说明</th></tr>
+              <tr><th>ID</th><th>站点</th><th>模式</th><th>状态</th><th>页数</th><th>拉取</th><th>新增</th><th>更新</th><th>未变</th><th>开始时间</th><th>说明</th><th>操作</th></tr>
             </thead>
             <tbody>
               <tr v-for="j in jobs" :key="j.id">
@@ -597,6 +687,11 @@ onMounted(() => { refresh(); loadFieldMeta() })
                 <td class="mono muted">{{ j.unchanged }}</td>
                 <td class="muted">{{ formatTime(j.startedAt) }}</td>
                 <td class="muted msg" :title="j.message">{{ short(j.message || '-', 30) }}</td>
+                <td class="ops">
+                  <button v-if="j.status === 'paused'" class="mini" @click="resumeTask(j.id)">继续</button>
+                  <button v-else-if="j.status === 'running'" class="mini danger" @click="pauseTask(j.id)">暂停</button>
+                  <span v-else class="muted">-</span>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -731,6 +826,8 @@ th { color: #86909c; font-weight: 500; }
 .badge.off { background: #f2f3f5; color: #86909c; }
 .badge.failed { background: #fff1f0; color: #f53f3f; }
 .badge.running { background: #e8f3ff; color: #165dff; }
+.badge.queued { background: #f5f0ff; color: #722ed1; }
+.badge.paused { background: #fff7e8; color: #d25f00; }
 .ops { display: flex; gap: 5px; }
 .pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 16px; font-size: 13px; color: #4e5969; }
 .empty { color: #86909c; margin: 8px 0; }

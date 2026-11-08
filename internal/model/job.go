@@ -9,8 +9,13 @@ const (
 )
 
 // 采集任务状态。
+//
+// queued 表示已进入队列、正在等待并发槽位；paused 表示被手动暂停，
+// 进度（增量游标 / 全量续采页码）已保存，可从 ResumePage 继续。
 const (
+	JobQueued  = "queued"
 	JobRunning = "running"
+	JobPaused  = "paused"
 	JobSuccess = "success"
 	JobFailed  = "failed"
 )
@@ -29,6 +34,11 @@ type CrawlJob struct {
 	Unchanged int `json:"unchanged"` // 无变化条数
 	Pages     int `json:"pages"`     // 实际请求页数
 	Total     int `json:"total"`     // 站点报告的总量
+
+	// ResumePage 是「下一次该从第几页开始」：全量采集被暂停时写入，
+	// 重新发起同模式采集时从这里续采，避免从头再拉一遍。
+	// 采集正常结束或失败时为 1（表示从头开始）。
+	ResumePage int `json:"resumePage"`
 
 	Message    string     `gorm:"size:1024" json:"message"`
 	StartedAt  time.Time  `json:"startedAt"`

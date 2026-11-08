@@ -39,7 +39,7 @@ type CollectorConfig struct {
 	PageSize       int    `yaml:"page_size"`                 // 0 表示由站点返回决定；>0 时附加苹果CMS 的 pagesize 参数（通常上限 100）
 	UserAgent      string `yaml:"user_agent"`                // 请求 UA
 	DefaultHours   int    `yaml:"default_incremental_hours"` // 站点未配置时默认增量时间窗
-	Parallel       int    `yaml:"parallel"`                  // 批量采集的并发站点数，建议保持 1
+	MaxConcurrent  int    `yaml:"max_concurrent"`            // 同时运行的采集任务上限，超出部分排队；运行时可通过接口调整
 }
 
 // Default 返回开箱即用的默认配置。
@@ -54,7 +54,7 @@ func Default() *Config {
 			PageSize:       0,
 			UserAgent:      "AssetSpider/1.0 (+maccms-json-collector)",
 			DefaultHours:   24,
-			Parallel:       1,
+			MaxConcurrent:  3,
 		},
 	}
 }
@@ -93,11 +93,15 @@ func Load(path string) (*Config, error) {
 		{"ASSETSPIDER_COLLECTOR_MAX_PAGES", &cfg.Collector.MaxPages},
 		{"ASSETSPIDER_COLLECTOR_PAGE_SIZE", &cfg.Collector.PageSize},
 		{"ASSETSPIDER_COLLECTOR_DEFAULT_HOURS", &cfg.Collector.DefaultHours},
-		{"ASSETSPIDER_COLLECTOR_PARALLEL", &cfg.Collector.Parallel},
+		{"ASSETSPIDER_COLLECTOR_MAX_CONCURRENT", &cfg.Collector.MaxConcurrent},
 	} {
 		if err := utils.EnvInt(item.name, item.dst); err != nil {
 			return nil, err
 		}
+	}
+	// 兼容旧版本环境变量名：并行站点数已升级为全局任务并发上限。
+	if err := utils.EnvInt("ASSETSPIDER_COLLECTOR_PARALLEL", &cfg.Collector.MaxConcurrent); err != nil {
+		return nil, err
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -130,8 +134,8 @@ func (c *Config) Validate() error {
 	if cc.DefaultHours <= 0 {
 		return fmt.Errorf("collector.default_incremental_hours 必须大于 0")
 	}
-	if cc.Parallel <= 0 {
-		return fmt.Errorf("collector.parallel 必须大于 0")
+	if cc.MaxConcurrent <= 0 {
+		return fmt.Errorf("collector.max_concurrent 必须大于 0")
 	}
 	return nil
 }
