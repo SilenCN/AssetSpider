@@ -425,7 +425,7 @@ async function pauseTask(jobId) {
 async function resumeTask(jobId) {
   try {
     const t = await request(`/api/tasks/v1/${jobId}`, jsonOptions('PUT', { status: 'running' }))
-    notify(`已继续采集（新任务 #${t.jobId}）`, 'ok')
+    notify(`任务 #${t.jobId} 已继续，从暂停页接着采（同一记录，统计累加）`, 'ok')
     await Promise.all([loadTasks(), loadJobs()])
   } catch (e) { notify(e.message, 'err') }
 }
@@ -434,16 +434,16 @@ async function resumeTask(jobId) {
 async function retryTask(jobId) {
   try {
     const t = await request(`/api/tasks/v1/${jobId}/retry`, { method: 'POST' })
-    notify(`任务 #${t.jobId} 已重新入队，将从上次失败的页面继续（统计累加）`, 'ok')
+    notify(`任务 #${t.jobId} 已重新入队，从失败页继续（同一记录，统计累加）`, 'ok')
     await Promise.all([loadTasks(), loadJobs()])
   } catch (e) { notify(e.message, 'err') }
 }
 
-// 已结束任务：忽略断点，从第 1 页重新采集
+// 已结束任务：复用原记录，忽略断点从第 1 页重新采集，统计清零
 async function rerunTask(jobId) {
   try {
     const t = await request(`/api/tasks/v1/${jobId}/rerun`, { method: 'POST' })
-    notify(`已重新运行任务 #${jobId}（新任务 #${t.jobId}），从第 1 页开始`, 'ok')
+    notify(`任务 #${t.jobId} 已重新运行，从第 1 页开始（同一记录，统计已清零）`, 'ok')
     await Promise.all([loadTasks(), loadJobs()])
   } catch (e) { notify(e.message, 'err') }
 }
@@ -572,7 +572,8 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
           采集为异步任务：发起后立即入队，同时运行的任务数不超过上面的上限，其余排队等待。
           运行中的任务可随时<b>暂停</b>——已完成分页的数据已经入库，全量采集的续采页码与增量采集的游标都会保存，
           点「继续」即可从断点接着采。抓取失败会<b>自动退避重试</b>（次数由 <code>collector.retry_times</code> 配置），
-          仍然失败的任务可在「采集记录」里<b>手动重试</b>（从失败页续采）或<b>重新运行</b>（从第 1 页重来）。
+          仍然失败的任务可在「采集记录」里<b>手动重试</b>（从失败页续采）或<b>重新运行</b>（从第 1 页重来）——
+          两者都<b>复用原任务记录</b>，不会多出一条历史。
         </p>
         <p v-if="!tasks.length" class="empty">当前没有排队或运行中的采集任务。</p>
         <div v-else class="table-wrap">
