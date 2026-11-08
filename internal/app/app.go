@@ -45,6 +45,8 @@ func New(cfg *config.Config) (*App, error) {
 	categorySvc := service.NewCategoryService(repos.Categories, repos.Videos)
 	metaSvc := service.NewMetaService()
 	jobSvc := service.NewJobService(repos.Jobs)
+	// 采集记录页要显示运行中任务的实时进度，这里把调度层注入为进度来源。
+	jobSvc.SetLiveSource(crawlSvc)
 
 	// 第 2 层：HTTP 控制器（注入对应服务）
 	set := controller.Set{

@@ -34,12 +34,14 @@ type WebConfig struct {
 
 // CollectorConfig 描述视频站点 JSON 采集器。
 type CollectorConfig struct {
-	TimeoutSeconds int    `yaml:"timeout_seconds"`           // 单次 HTTP 请求超时（秒）
-	MaxPages       int    `yaml:"max_pages"`                 // 单次采集最多遍历的页数，防止失控
-	PageSize       int    `yaml:"page_size"`                 // 0 表示由站点返回决定；>0 时附加苹果CMS 的 pagesize 参数（通常上限 100）
-	UserAgent      string `yaml:"user_agent"`                // 请求 UA
-	DefaultHours   int    `yaml:"default_incremental_hours"` // 站点未配置时默认增量时间窗
-	MaxConcurrent  int    `yaml:"max_concurrent"`            // 同时运行的采集任务上限，超出部分排队；运行时可通过接口调整
+	TimeoutSeconds      int    `yaml:"timeout_seconds"`           // 单次 HTTP 请求超时（秒）
+	MaxPages            int    `yaml:"max_pages"`                 // 单次采集最多遍历的页数，防止失控
+	PageSize            int    `yaml:"page_size"`                 // 0 表示由站点返回决定；>0 时附加苹果CMS 的 pagesize 参数（通常上限 100）
+	UserAgent           string `yaml:"user_agent"`                // 请求 UA
+	DefaultHours        int    `yaml:"default_incremental_hours"` // 站点未配置时默认增量时间窗
+	MaxConcurrent       int    `yaml:"max_concurrent"`            // 同时运行的采集任务上限，超出部分排队；运行时可通过接口调整
+	RetryTimes          int    `yaml:"retry_times"`               // 单次采集失败后的自动重试次数，0 表示不自动重试
+	RetryBackoffSeconds int    `yaml:"retry_backoff_seconds"`     // 首次自动重试的等待秒数，之后按 2 倍退避（上限 30 秒）
 }
 
 // Default 返回开箱即用的默认配置。
@@ -49,12 +51,14 @@ func Default() *Config {
 		Database: DatabaseConfig{Path: "data/assetspider.db"},
 		Web:      WebConfig{Dir: "web/dist"},
 		Collector: CollectorConfig{
-			TimeoutSeconds: 20,
-			MaxPages:       1000,
-			PageSize:       0,
-			UserAgent:      "AssetSpider/1.0 (+maccms-json-collector)",
-			DefaultHours:   24,
-			MaxConcurrent:  3,
+			TimeoutSeconds:      20,
+			MaxPages:            1000,
+			PageSize:            0,
+			UserAgent:           "AssetSpider/1.0 (+maccms-json-collector)",
+			DefaultHours:        24,
+			MaxConcurrent:       3,
+			RetryTimes:          2,
+			RetryBackoffSeconds: 3,
 		},
 	}
 }
@@ -94,6 +98,8 @@ func Load(path string) (*Config, error) {
 		{"ASSETSPIDER_COLLECTOR_PAGE_SIZE", &cfg.Collector.PageSize},
 		{"ASSETSPIDER_COLLECTOR_DEFAULT_HOURS", &cfg.Collector.DefaultHours},
 		{"ASSETSPIDER_COLLECTOR_MAX_CONCURRENT", &cfg.Collector.MaxConcurrent},
+		{"ASSETSPIDER_COLLECTOR_RETRY_TIMES", &cfg.Collector.RetryTimes},
+		{"ASSETSPIDER_COLLECTOR_RETRY_BACKOFF", &cfg.Collector.RetryBackoffSeconds},
 	} {
 		if err := utils.EnvInt(item.name, item.dst); err != nil {
 			return nil, err
@@ -136,6 +142,12 @@ func (c *Config) Validate() error {
 	}
 	if cc.MaxConcurrent <= 0 {
 		return fmt.Errorf("collector.max_concurrent 必须大于 0")
+	}
+	if cc.RetryTimes < 0 {
+		return fmt.Errorf("collector.retry_times 不能为负")
+	}
+	if cc.RetryBackoffSeconds <= 0 {
+		return fmt.Errorf("collector.retry_backoff_seconds 必须大于 0")
 	}
 	return nil
 }

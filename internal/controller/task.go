@@ -84,6 +84,36 @@ func (t *TaskController) Update(c *gin.Context) {
 	}
 }
 
+// Retry 手动重试一条失败的任务：从失败页续采，不重复已完成的页面。
+func (t *TaskController) Retry(c *gin.Context) {
+	id, err := utils.ParseUintParam(c.Param("id"))
+	if err != nil {
+		badRequest(c, err.Error())
+		return
+	}
+	view, err := t.svc.RetryTask(id)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusAccepted, view)
+}
+
+// Rerun 重新运行一条已结束的任务：忽略断点，从第 1 页重新采集。
+func (t *TaskController) Rerun(c *gin.Context) {
+	id, err := utils.ParseUintParam(c.Param("id"))
+	if err != nil {
+		badRequest(c, err.Error())
+		return
+	}
+	view, err := t.svc.RerunTask(id)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusAccepted, view)
+}
+
 // Capacity 读取并发容量。
 func (t *TaskController) Capacity(c *gin.Context) {
 	c.JSON(http.StatusOK, t.svc.Capacity())

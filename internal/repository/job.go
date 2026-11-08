@@ -57,6 +57,7 @@ func (r *jobRepository) FinishJob(job *model.CrawlJob, status, message string) e
 		"pages":       job.Pages,
 		"total":       job.Total,
 		"resume_page": job.ResumePage,
+		"attempt":     job.Attempt,
 		"finished_at": now,
 	}).Error
 }

@@ -53,13 +53,15 @@ func registerV1(api *gin.RouterGroup, set controller.Set) {
 	crawls := api.Group("/crawls/" + APIVersion)
 	crawls.POST("", set.Crawl.RunAll)
 
-	// 采集任务：异步入队、查询进度、暂停/继续，以及并发上限配置
+	// 采集任务：异步入队、查询进度、暂停/继续/重试/重新运行，以及并发上限配置
 	tasks := api.Group("/tasks/" + APIVersion)
 	tasks.GET("", set.Task.List)
 	tasks.POST("", set.Task.Create)
 	tasks.GET("/capacity", set.Task.Capacity)
 	tasks.PUT("/capacity", set.Task.SetCapacity)
 	tasks.PUT("/:id", set.Task.Update)
+	tasks.POST("/:id/retry", set.Task.Retry) // 失败任务：从失败页续采
+	tasks.POST("/:id/rerun", set.Task.Rerun) // 已结束任务：从第 1 页重新运行
 
 	// 入库影片；category_id 可按自动归档的分类过滤
 	videos := api.Group("/videos/" + APIVersion)

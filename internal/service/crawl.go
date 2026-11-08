@@ -91,7 +91,7 @@ func NewCrawlService(
 
 // RunOne 同步执行一次采集，调用方阻塞直到任务结束（成功/暂停/失败）。
 func (s *CrawlService) RunOne(ctx context.Context, id uint, mode string) (*RunResult, error) {
-	task, src, err := s.begin(id, mode)
+	task, src, err := s.begin(id, mode, startOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -196,13 +196,16 @@ func (s *CrawlService) crawl(
 				res.ResumePage = page
 				return ErrPaused
 			}
+			res.ResumePage = page
 			return err
 		}
+		// 抓取前先把「当前页」报到任务视图，列表能看到逐页推进。
+		task.setPage(page)
 		list, err := s.fetcher.FetchList(ctx, *src, page, hours)
 		if err != nil {
 			// 暂停会取消在途请求，此处不能当失败处理。
+			res.ResumePage = page // 失败页即续采页，手动/自动重试都从这里开始
 			if task.paused() {
-				res.ResumePage = page
 				return ErrPaused
 			}
 			return fmt.Errorf("第 %d 页采集失败: %w", page, err)
@@ -241,6 +244,7 @@ func (s *CrawlService) crawl(
 		// 分类在入库前确定，保证 Video.CategoryID 与分类记录同批写回。
 		ids, err := s.categories.EnsureForVideos(src.ID, videos)
 		if err != nil {
+			res.ResumePage = page
 			return fmt.Errorf("第 %d 页分类归档失败: %w", page, err)
 		}
 		for i := range videos {
@@ -252,13 +256,14 @@ func (s *CrawlService) crawl(
 
 		stats, err := s.videos.UpsertVideos(videos)
 		if err != nil {
+			res.ResumePage = page
 			return fmt.Errorf("第 %d 页入库失败: %w", page, err)
 		}
 		res.Fetched += len(videos)
 		res.New += stats.New
 		res.Updated += stats.Updated
 		res.Unchanged += stats.Unchanged
-		task.progress(res) // 让任务列表实时看到进度
+		task.progress(res, pageCount) // 让任务列表实时看到进度与总页数
 
 		if pageCount > 0 && page >= pageCount {
 			break

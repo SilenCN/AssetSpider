@@ -35,10 +35,18 @@ type CrawlJob struct {
 	Pages     int `json:"pages"`     // 实际请求页数
 	Total     int `json:"total"`     // 站点报告的总量
 
-	// ResumePage 是「下一次该从第几页开始」：全量采集被暂停时写入，
-	// 重新发起同模式采集时从这里续采，避免从头再拉一遍。
-	// 采集正常结束或失败时为 1（表示从头开始）。
+	// ResumePage 是「下一次该从第几页开始」：全量采集被暂停或失败时写入，
+	// 继续采集 / 手动重试时从这里续采，避免从头再拉一遍。
+	// 采集正常结束或从第 1 页重新运行时为 1（表示从头开始）。
 	ResumePage int `json:"resumePage"`
+
+	// Attempt 是这条任务实际执行过的尝试次数（含失败后的自动重试），
+	// 1 表示首次尝试就结束。用于在记录里区分「重试后成功」与「一次成功」。
+	Attempt int `json:"attempt"`
+
+	// RetryOf 记录这条任务是手动「重试 / 重新运行」哪条记录产生的，
+	// 0 表示原始任务。仅用于展示来源，不参与调度。
+	RetryOf uint `gorm:"index" json:"retryOf"`
 
 	Message    string     `gorm:"size:1024" json:"message"`
 	StartedAt  time.Time  `json:"startedAt"`

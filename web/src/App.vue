@@ -394,6 +394,44 @@ async function resumeTask(jobId) {
   } catch (e) { notify(e.message, 'err') }
 }
 
+// 失败任务：从失败页续采（不重复已完成的页面）
+async function retryTask(jobId) {
+  try {
+    const t = await request(`/api/tasks/v1/${jobId}/retry`, { method: 'POST' })
+    notify(`已重试任务 #${jobId}（新任务 #${t.jobId}），从失败页继续`, 'ok')
+    await Promise.all([loadTasks(), loadJobs()])
+  } catch (e) { notify(e.message, 'err') }
+}
+
+// 已结束任务：忽略断点，从第 1 页重新采集
+async function rerunTask(jobId) {
+  try {
+    const t = await request(`/api/tasks/v1/${jobId}/rerun`, { method: 'POST' })
+    notify(`已重新运行任务 #${jobId}（新任务 #${t.jobId}），从第 1 页开始`, 'ok')
+    await Promise.all([loadTasks(), loadJobs()])
+  } catch (e) { notify(e.message, 'err') }
+}
+
+// ---------- 进度展示 ----------
+// percent 为 -1 表示总量未知，进度条走不定态动画。
+function barWidth(t) {
+  const p = t?.percent
+  if (p === undefined || p === null || p < 0) return '100%'
+  return Math.max(2, Math.min(100, p)) + '%'
+}
+function isIndeterminate(t) {
+  return t?.percent === undefined || t?.percent === null || t.percent < 0
+}
+function fmtEta(sec) {
+  if (!sec || sec <= 0) return ''
+  if (sec < 60) return `${sec} 秒`
+  return `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`
+}
+function taskStatusText(t) {
+  if (t.retryInSeconds > 0) return `等待重试 ${t.retryInSeconds}s`
+  return statusLabel(t.status)
+}
+
 async function saveCapacity() {
   try {
     const c = await request('/api/tasks/v1/capacity',
@@ -436,10 +474,8 @@ onMounted(() => {
   taskTimer = setInterval(() => {
     if (document.hidden) return
     loadTasks().catch(() => {})
-    if (tasks.value.some(t => t.status !== 'success' && t.status !== 'failed')) {
-      loadJobs().catch(() => {})
-    }
-  }, 3000)
+    if (tasks.value.length) loadJobs().catch(() => {})
+  }, 1500)
 })
 onBeforeUnmount(() => { clearInterval(taskTimer) })
 </script>
@@ -489,22 +525,41 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
         <p class="hint">
           采集为异步任务：发起后立即入队，同时运行的任务数不超过上面的上限，其余排队等待。
           运行中的任务可随时<b>暂停</b>——已完成分页的数据已经入库，全量采集的续采页码与增量采集的游标都会保存，
-          点「继续」即可从断点接着采，无需从头再来。
+          点「继续」即可从断点接着采。抓取失败会<b>自动退避重试</b>（次数由 <code>collector.retry_times</code> 配置），
+          仍然失败的任务可在「采集记录」里<b>手动重试</b>（从失败页续采）或<b>重新运行</b>（从第 1 页重来）。
         </p>
         <p v-if="!tasks.length" class="empty">当前没有排队或运行中的采集任务。</p>
         <div v-else class="table-wrap">
           <table>
             <thead>
-              <tr><th>任务</th><th>站点</th><th>模式</th><th>状态</th><th>进度</th><th>新增 / 更新</th><th>已运行</th><th>操作</th></tr>
+              <tr><th>任务</th><th>站点</th><th>模式</th><th>状态</th><th class="prog-col">实时进度</th><th>新增 / 更新</th><th>速率</th><th>已运行</th><th>操作</th></tr>
             </thead>
             <tbody>
               <tr v-for="t in tasks" :key="t.jobId">
                 <td class="mono">#{{ t.jobId }}</td>
                 <td class="host">{{ t.sourceName }}</td>
-                <td>{{ modeLabel(t.mode) }}</td>
-                <td><span class="badge" :class="t.status">{{ statusLabel(t.status) }}</span></td>
-                <td class="mono">{{ t.pages }} 页 · {{ t.fetched }} 条</td>
+                <td>
+                  {{ modeLabel(t.mode) }}
+                  <div v-if="t.maxAttempts > 1" class="tiny">第 {{ t.attempt }}/{{ t.maxAttempts }} 次尝试</div>
+                </td>
+                <td>
+                  <span class="badge" :class="t.retryInSeconds > 0 ? 'paused' : t.status">{{ taskStatusText(t) }}</span>
+                </td>
+                <td class="prog-col">
+                  <div class="prog-track" :class="{ indet: isIndeterminate(t) }">
+                    <i :style="{ width: barWidth(t) }"></i>
+                  </div>
+                  <div class="prog-meta">
+                    <b>{{ isIndeterminate(t) ? '—' : Math.floor(t.percent) + '%' }}</b>
+                    <span v-if="t.pageCount > 0">{{ t.page }} / {{ t.pageCount }} 页</span>
+                    <span v-else>{{ t.pages }} 页</span>
+                    <span>{{ t.fetched }} 条</span>
+                    <span v-if="t.etaSeconds > 0">剩余 {{ fmtEta(t.etaSeconds) }}</span>
+                  </div>
+                  <div v-if="t.message" class="tiny msg" :title="t.message">{{ short(t.message, 60) }}</div>
+                </td>
                 <td class="mono"><span class="up">{{ t.new }}</span> / {{ t.updated }}</td>
+                <td class="mono muted">{{ t.itemsPerSecond > 0 ? t.itemsPerSecond.toFixed(1) + ' 条/秒' : '-' }}</td>
                 <td class="muted">{{ t.elapsedSeconds }}s</td>
                 <td class="ops">
                   <button v-if="t.status === 'running' || t.status === 'queued'"
@@ -676,11 +731,28 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
             </thead>
             <tbody>
               <tr v-for="j in jobs" :key="j.id">
-                <td class="mono">{{ j.id }}</td>
+                <td class="mono">
+                  {{ j.id }}
+                  <div v-if="j.retryOf" class="tiny">源自 #{{ j.retryOf }}</div>
+                </td>
                 <td class="host">{{ j.sourceName }}</td>
                 <td>{{ modeLabel(j.mode) }}</td>
-                <td><span class="badge" :class="j.status">{{ statusLabel(j.status) }}</span></td>
-                <td class="mono">{{ j.pages }}</td>
+                <td>
+                  <span class="badge" :class="j.status">{{ j.live && j.live.retryInSeconds > 0 ? taskStatusText(j.live) : statusLabel(j.status) }}</span>
+                  <div v-if="j.attempt > 1" class="tiny">尝试 {{ j.attempt }} 次</div>
+                </td>
+                <td class="mono">
+                  <template v-if="j.live">
+                    <div class="prog-track sm" :class="{ indet: isIndeterminate(j.live) }">
+                      <i :style="{ width: barWidth(j.live) }"></i>
+                    </div>
+                    <div class="tiny">
+                      {{ j.live.pageCount > 0 ? j.live.page + '/' + j.live.pageCount : j.live.pages }} 页
+                      · {{ j.live.pageCount > 0 ? Math.floor(j.live.percent) + '%' : '进行中' }}
+                    </div>
+                  </template>
+                  <template v-else>{{ j.pages }}</template>
+                </td>
                 <td class="mono">{{ j.fetched }}</td>
                 <td class="mono up">{{ j.new }}</td>
                 <td class="mono">{{ j.updated }}</td>
@@ -688,9 +760,14 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
                 <td class="muted">{{ formatTime(j.startedAt) }}</td>
                 <td class="muted msg" :title="j.message">{{ short(j.message || '-', 30) }}</td>
                 <td class="ops">
-                  <button v-if="j.status === 'paused'" class="mini" @click="resumeTask(j.id)">继续</button>
-                  <button v-else-if="j.status === 'running'" class="mini danger" @click="pauseTask(j.id)">暂停</button>
-                  <span v-else class="muted">-</span>
+                  <template v-if="j.status === 'running' || j.status === 'queued'">
+                    <button class="mini danger" @click="pauseTask(j.id)">暂停</button>
+                  </template>
+                  <template v-else>
+                    <button v-if="j.status === 'paused'" class="mini" @click="resumeTask(j.id)">继续</button>
+                    <button v-if="j.status === 'failed'" class="mini" @click="retryTask(j.id)">重试</button>
+                    <button class="mini ghost" @click="rerunTask(j.id)">重新运行</button>
+                  </template>
                 </td>
               </tr>
             </tbody>
@@ -829,6 +906,20 @@ th { color: #86909c; font-weight: 500; }
 .badge.queued { background: #f5f0ff; color: #722ed1; }
 .badge.paused { background: #fff7e8; color: #d25f00; }
 .ops { display: flex; gap: 5px; }
+/* 实时进度条（任务列表 / 采集记录） */
+.prog-col { min-width: 220px; white-space: normal; }
+.prog-track { position: relative; height: 6px; border-radius: 4px; background: #eef1f5; overflow: hidden; }
+.prog-track.sm { height: 4px; margin-bottom: 3px; }
+.prog-track i { display: block; height: 100%; width: 0; background: #165dff; border-radius: 4px; transition: width .4s ease; }
+.prog-track.indet i {
+  background: linear-gradient(90deg, #165dff 25%, #a3c4ff 50%, #165dff 75%);
+  background-size: 200% 100%;
+  animation: prog-indet 1.2s linear infinite;
+}
+@keyframes prog-indet { from { background-position: 120% 0; } to { background-position: -80% 0; } }
+.prog-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin-top: 5px; font-size: 11px; color: #86909c; }
+.prog-meta b { color: #1f2329; font-size: 12px; }
+.tiny.msg { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 16px; font-size: 13px; color: #4e5969; }
 .empty { color: #86909c; margin: 8px 0; }
 .error { background: #fff1f0; color: #f53f3f; padding: 10px 14px; border-radius: 6px; margin-top: 16px; }
