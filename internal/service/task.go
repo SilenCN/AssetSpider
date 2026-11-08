@@ -577,6 +577,10 @@ func (s *CrawlService) settle(task *crawlTask, res *RunResult, status, msg strin
 	if err := s.jobs.FinishJob(job, status, msg); err != nil {
 		return res, fmt.Errorf("写入采集记录失败: %w", err)
 	}
+	// 采集记录一旦写成终态就从运行时任务表里摘掉：否则「记录已结束、任务列表里
+	// 还在运行」的窗口会随后面的站点状态回写一起被拉长，轮询容易读到自相矛盾的视图。
+	// 这里是幂等的，runTask 的 defer 仍会兜底。
+	s.releaseSite(task)
 
 	cursor := ""
 	if status == model.JobSuccess || status == model.JobPaused {

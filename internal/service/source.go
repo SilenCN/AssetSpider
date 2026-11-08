@@ -17,6 +17,8 @@ type SourceInput struct {
 	Enabled          *bool  `json:"enabled"`
 	IncrementalHours int    `json:"incrementalHours"`
 	MaxPages         int    `json:"maxPages"`
+	ParseAPI         string `json:"parseApi"`   // 视频解析地址，播放时拼在播放地址前
+	PlayDomain       string `json:"playDomain"` // 视频播放域名，播放时替换原地址域名
 }
 
 func (in SourceInput) validate() error {
@@ -34,6 +36,12 @@ func (in SourceInput) validate() error {
 	if in.IncrementalHours < 0 || in.MaxPages < 0 {
 		return invalid("增量小时数与最大页数不能为负")
 	}
+	if _, err := NormalizeParseAPI(in.ParseAPI); err != nil {
+		return invalid("%s", err.Error())
+	}
+	if _, err := NormalizePlayDomain(in.PlayDomain); err != nil {
+		return invalid("%s", err.Error())
+	}
 	return nil
 }
 
@@ -45,6 +53,13 @@ func (in SourceInput) apply(dst *model.Source) *model.Source {
 		dst.Format = model.FormatMacCMSJSON
 	}
 	dst.ExtraParams = strings.TrimSpace(in.ExtraParams)
+	// 规范化后入库：域名补全协议、去掉尾斜杠，播放时可直接拼接。
+	if v, err := NormalizeParseAPI(in.ParseAPI); err == nil {
+		dst.ParseAPI = v
+	}
+	if v, err := NormalizePlayDomain(in.PlayDomain); err == nil {
+		dst.PlayDomain = v
+	}
 	if in.Enabled != nil {
 		dst.Enabled = *in.Enabled
 	} else if dst.ID == 0 {

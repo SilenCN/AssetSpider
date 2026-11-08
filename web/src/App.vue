@@ -209,6 +209,13 @@ const isHls = computed(() => /\.m3u8(\?|#|$)/i.test(currentUrl.value))
 const isDirectVideo = computed(() => /\.(mp4|webm|ogg|mov)(\?|#|$)/i.test(currentUrl.value))
 const canPlay = computed(() => isHls.value || isDirectVideo.value)
 
+// 站点配置了「视频解析地址」时，播放地址已被后端拼接成解析服务的网页地址，
+// <video> 无法直链播放（地址里常带 ?url=...m3u8，不能按后缀判断为媒体流），
+// 因此统一改用 iframe 承载解析页面；未配置解析地址时仍按后缀走 hls.js / 直链。
+const detailSource = computed(() => sources.value.find(s => s.id === detail.value?.sourceId) || null)
+const parseEnabled = computed(() => !!detailSource.value?.parseApi)
+const useFrame = computed(() => !!currentUrl.value && parseEnabled.value)
+
 function destroyPlayer() {
   if (hlsInstance) {
     try { hlsInstance.destroy() } catch (e) { /* 忽略销毁异常 */ }
@@ -225,6 +232,7 @@ function destroyPlayer() {
 async function mountPlayer() {
   destroyPlayer()
   await nextTick()
+  if (useFrame.value) return // 解析地址走 iframe，无需挂载 <video>
   const el = playerEl.value
   const url = currentUrl.value
   if (!el || !url || !canPlay.value) return
@@ -289,6 +297,7 @@ onBeforeUnmount(destroyPlayer)
 const emptyForm = () => ({
   id: null, name: '', apiBase: '', format: 'seacms_json', extraParams: '',
   incrementalHours: 24, maxPages: 0, enabled: true,
+  parseApi: '', playDomain: '',
 })
 const form = reactive(emptyForm())
 const editing = computed(() => !!form.id)
@@ -301,6 +310,7 @@ function sourcePayload(s) {
     extraParams: s.extraParams || '', enabled: s.enabled,
     incrementalHours: Number(s.incrementalHours) || 0,
     maxPages: Number(s.maxPages) || 0,
+    parseApi: s.parseApi || '', playDomain: s.playDomain || '',
   }
 }
 
@@ -309,6 +319,7 @@ function editSource(s) {
     id: s.id, name: s.name, apiBase: s.apiBase, format: s.format,
     extraParams: s.extraParams, incrementalHours: s.incrementalHours,
     maxPages: s.maxPages, enabled: s.enabled,
+    parseApi: s.parseApi || '', playDomain: s.playDomain || '',
   })
   tab.value = 'sources'
   window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -591,6 +602,8 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
           <input v-model="form.name" placeholder="站点名称 *" required />
           <input v-model="form.apiBase" class="wide" placeholder="JSON 接口地址 * 例：https://site.com/api.php/provide/vod/" required />
           <input v-model="form.extraParams" placeholder="附加参数，如 t=1&amp;wd=电影" />
+          <input v-model="form.parseApi" class="wide" placeholder="视频解析地址（可选）例：https://jx.example.com/?url= 或含 {url} 占位符" />
+          <input v-model="form.playDomain" class="wide" placeholder="视频播放域名（可选）例：https://cdn.example.com —— 播放时替换原地址域名" />
           <label class="field">增量小时数
             <input v-model.number="form.incrementalHours" type="number" min="0" />
           </label>
@@ -602,6 +615,7 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
           <button v-if="editing" type="button" class="ghost" @click="resetForm">取消</button>
         </form>
         <p class="hint">采集协议：苹果CMS V10 Provide <code>api.php/provide/vod/?ac=videolist</code>，返回 JSON 的 <code>page / pagecount / total / list[]</code>（含 <code>vod_play_url</code> 播放地址）。增量采集附加 <code>h=&lt;小时数&gt;</code> 并按 <code>vod_time</code> 游标去重。接口返回的<strong>全部标准字段</strong>结构化入库，站点自定义字段存入 <code>extra</code>，不丢字段。</p>
+        <p class="hint">播放增强（都只影响播放时的地址，<strong>不改动入库的原始地址</strong>）：填了<strong>视频解析地址</strong>，播放地址变成「解析地址 + 原地址」（解析地址含 <code>{url}</code> 时按占位符拼接），此时详情页用解析页面播放；填了<strong>视频播放域名</strong>，播放时用该域名替换原地址的协议与域名，保留路径与参数。两者同时配置时先换域名、再拼解析地址。</p>
       </section>
 
       <section class="card">
@@ -618,7 +632,14 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
             <tbody>
               <tr v-for="s in sources" :key="s.id">
                 <td class="mono hide-sm">{{ s.id }}</td>
-                <td class="host">{{ s.name }}</td>
+                <td class="host">
+                  {{ s.name }}
+                  <div v-if="s.parseApi || s.playDomain" class="tiny muted" :title="[s.parseApi && ('解析：' + s.parseApi), s.playDomain && ('播放域名：' + s.playDomain)].filter(Boolean).join(' / ')">
+                    <span v-if="s.parseApi">解析播放</span>
+                    <span v-if="s.parseApi && s.playDomain"> · </span>
+                    <span v-if="s.playDomain">域名替换</span>
+                  </div>
+                </td>
                 <td class="url hide-sm" :title="s.apiBase">{{ short(s.apiBase, 38) }}</td>
                 <td>
                   <span class="badge" :class="s.enabled ? 'on' : 'off'">{{ s.enabled ? '启用' : '停用' }}</span>
@@ -812,8 +833,16 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
         <div class="modal-body">
           <template v-if="detailTab === 'play'">
             <div class="player-wrap">
-              <video ref="playerEl" class="player" controls playsinline preload="metadata"></video>
+              <video v-show="!useFrame" ref="playerEl" class="player" controls playsinline preload="metadata"></video>
+              <iframe v-if="useFrame" :key="currentUrl" class="player-frame" :src="currentUrl"
+                      allow="autoplay; fullscreen; encrypted-media" allowfullscreen
+                      referrerpolicy="no-referrer"></iframe>
               <p v-if="!playGroups.length" class="empty">该影片没有播放地址（vod_play_url 为空）。</p>
+              <p v-else-if="useFrame" class="hint">
+                已按站点配置拼接<strong>视频解析地址</strong>，下面用解析页面播放；若解析站要求手动播放，
+                可在<strong>解析页面内</strong>点击播放。
+                <a v-if="currentUrl" :href="currentUrl" target="_blank" rel="noopener" class="ep-url">在新窗口打开</a>
+              </p>
               <p v-else-if="!canPlay" class="hint">
                 当前集不是可直链播放的视频地址：<code>{{ currentUrl || '（空地址）' }}</code>
                 <a v-if="currentUrl" :href="currentUrl" target="_blank" rel="noopener" class="ep-url">在新窗口打开</a>
@@ -837,7 +866,11 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
                 >{{ ep.name || ('第' + (ei + 1) + '集') }}</button>
                 <span v-if="!currentEpisodes.length" class="muted">该线路暂无剧集。</span>
               </div>
-              <p v-if="currentEpisode?.url" class="play-url">{{ currentEpisode.url }}</p>
+              <p v-if="currentEpisode?.url" class="play-url">
+                <span v-if="detailSource?.playDomain" class="badge on">播放域名已替换</span>
+                <span v-if="parseEnabled" class="badge on">已拼接解析地址</span>
+                {{ currentEpisode.url }}
+              </p>
             </template>
           </template>
           <template v-else-if="detailTab === 'fields'">
@@ -982,6 +1015,7 @@ th { color: #86909c; font-weight: 500; }
 /* 详情播放器与线路 / 剧集选择 */
 .player-wrap { margin-top: 4px; }
 .player { width: 100%; max-height: 420px; background: #000; border-radius: 8px; display: block; }
+.player-frame { width: 100%; aspect-ratio: 16 / 9; max-height: 420px; border: 0; border-radius: 8px; background: #000; display: block; }
 .group-tabs, .ep-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .ep-chips { max-height: 168px; overflow-y: auto; padding: 2px; }
 .play-url { margin: 10px 0 0; font-size: 11px; color: #86909c; word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
@@ -1054,6 +1088,7 @@ th { color: #86909c; font-weight: 500; }
   .modal-tabs button { padding: 5px 10px; }
   .modal-body { padding: 4px 16px 20px; }
   .player { max-height: 56vh; }
+  .player-frame { max-height: 56vh; }
   .field-grid { grid-template-columns: 1fr; }
   .field-item.long .field-v { max-height: 180px; }
   .kv-table th { width: auto; }

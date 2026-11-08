@@ -41,7 +41,7 @@ func New(cfg *config.Config) (*App, error) {
 	assetSvc := service.NewAssetService(repos.Assets)
 	sourceSvc := service.NewSourceService(repos.Sources, repos.Videos)
 	crawlSvc := service.NewCrawlService(repos.Sources, repos.Videos, repos.Categories, repos.Jobs, cfg.Collector)
-	videoSvc := service.NewVideoService(repos.Videos)
+	videoSvc := service.NewVideoService(repos.Videos, repos.Sources)
 	categorySvc := service.NewCategoryService(repos.Categories, repos.Videos)
 	metaSvc := service.NewMetaService()
 	jobSvc := service.NewJobService(repos.Jobs)

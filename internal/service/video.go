@@ -30,11 +30,75 @@ type VideoListQuery struct {
 
 // VideoService 处理入库影片的查询与分页规则。
 type VideoService struct {
-	videos repository.VideoRepository
+	videos  repository.VideoRepository
+	sources repository.SourceRepository
 }
 
-func NewVideoService(videos repository.VideoRepository) *VideoService {
-	return &VideoService{videos: videos}
+func NewVideoService(videos repository.VideoRepository, sources repository.SourceRepository) *VideoService {
+	return &VideoService{videos: videos, sources: sources}
+}
+
+// playRewriters 读取站点配置，返回 sourceID → 播放地址改写器。
+// 只有配置了「视频解析地址」或「视频播放域名」的站点才会出现在结果里，
+// 未配置时整批查询连 JSON 都不解析，不影响性能。
+func (s *VideoService) playRewriters() (map[uint]PlayURLRewriter, error) {
+	if s.sources == nil {
+		return nil, nil
+	}
+	srcs, err := s.sources.ListSources()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uint]PlayURLRewriter, len(srcs))
+	for _, src := range srcs {
+		if r := NewPlayURLRewriterFrom(src); r.Enabled() {
+			out[src.ID] = r
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// applyPlayRewrite 就地改写影片播放组里的地址（只改内存副本，不回写数据库）。
+func applyPlayRewrite(v *model.Video, r PlayURLRewriter) {
+	if v.VodPlayList == "" || !r.Enabled() {
+		return
+	}
+	var groups []model.PlayGroup
+	if err := json.Unmarshal([]byte(v.VodPlayList), &groups); err != nil {
+		return // 播放组数据损坏时保持原样，交由详情页提示
+	}
+	changed := false
+	for i := range groups {
+		for j := range groups[i].Episodes {
+			if next := r.Rewrite(groups[i].Episodes[j].Url); next != groups[i].Episodes[j].Url {
+				groups[i].Episodes[j].Url = next
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return
+	}
+	if b, err := json.Marshal(groups); err == nil {
+		v.VodPlayList = string(b)
+	}
+}
+
+// rewriteVideos 按站点配置批量改写播放地址。
+func (s *VideoService) rewriteVideos(items []model.Video) error {
+	rewriters, err := s.playRewriters()
+	if err != nil {
+		return err
+	}
+	for i := range items {
+		if r, ok := rewriters[items[i].SourceID]; ok {
+			applyPlayRewrite(&items[i], r)
+		}
+	}
+	return nil
 }
 
 func (s *VideoService) List(query VideoListQuery) (VideoList, error) {
@@ -55,6 +119,10 @@ func (s *VideoService) List(query VideoListQuery) (VideoList, error) {
 		Size:       size,
 	})
 	if err != nil {
+		return VideoList{}, err
+	}
+	// 列表里带 vod_play_list，详情弹窗直接复用，因此这里也要应用站点改写。
+	if err := s.rewriteVideos(items); err != nil {
 		return VideoList{}, err
 	}
 	return VideoList{Items: items, Total: total, Page: page, Size: size}, nil
@@ -78,11 +146,19 @@ func (s *VideoService) Get(id uint) (*model.Video, error) {
 	if err != nil {
 		return nil, wrapRepo(err)
 	}
+	rewriters, err := s.playRewriters()
+	if err != nil {
+		return nil, err
+	}
+	if r, ok := rewriters[v.SourceID]; ok {
+		applyPlayRewrite(v, r)
+	}
 	return v, nil
 }
 
 // GetPlayGroups 返回单条影片按苹果CMS 字段解析出的结构化播放组。
 // 若影片无播放地址（vod_play_list 为空），返回空切片而非错误。
+// 播放地址会按所属站点配置替换域名 / 拼接解析地址。
 func (s *VideoService) GetPlayGroups(id uint) ([]model.PlayGroup, error) {
 	v, err := s.videos.GetVideo(id)
 	if err != nil {
@@ -90,6 +166,13 @@ func (s *VideoService) GetPlayGroups(id uint) ([]model.PlayGroup, error) {
 	}
 	if v.VodPlayList == "" {
 		return []model.PlayGroup{}, nil
+	}
+	rewriters, err := s.playRewriters()
+	if err != nil {
+		return nil, err
+	}
+	if r, ok := rewriters[v.SourceID]; ok {
+		applyPlayRewrite(v, r)
 	}
 	var groups []model.PlayGroup
 	if err := json.Unmarshal([]byte(v.VodPlayList), &groups); err != nil {

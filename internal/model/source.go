@@ -23,6 +23,15 @@ type Source struct {
 	// ExtraParams 是附加查询串，例如 "t=1&wd=电影"，可覆盖默认的 ac=videolist。
 	ExtraParams string `gorm:"size:512" json:"extraParams"`
 
+	// ParseAPI 是视频解析地址（如 https://jx.example.com/?url=）。
+	// 配置后播放时把解析地址拼在播放地址前面，交给解析服务跳转播放。
+	// 支持用 {url} 占位符指定插入位置，未包含占位符时直接前缀拼接。
+	ParseAPI string `gorm:"size:512" json:"parseApi"`
+
+	// PlayDomain 是视频播放域名（如 https://cdn.example.com）。
+	// 配置后播放时用它替换原播放地址中的「协议 + 域名」，只保留原地址的路径与查询串。
+	PlayDomain string `gorm:"size:255" json:"playDomain"`
+
 	// 不设 default:true，否则 GORM 会把显式的 false 当作零值跳过并套用默认值。
 	Enabled          bool `gorm:"not null;index" json:"enabled"`
 	IncrementalHours int  `gorm:"not null;default:24" json:"incrementalHours"`

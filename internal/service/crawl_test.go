@@ -393,7 +393,7 @@ func TestCrawlStoresPlayGroups(t *testing.T) {
 	}
 
 	// 通过 VideoService 子资源接口取播放组
-	svcV := NewVideoService(st.Videos)
+	svcV := NewVideoService(st.Videos, st.Sources)
 	got, err := svcV.GetPlayGroups(v.ID)
 	if err != nil {
 		t.Fatalf("GetPlayGroups 失败: %v", err)

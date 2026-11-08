@@ -1466,3 +1466,103 @@ func TestTaskProgressPersistedWhileRunning(t *testing.T) {
 		t.Fatalf("任务正常结束后续采页应回到 1，实际 %d", job.ResumePage)
 	}
 }
+
+// TestSourcePlayRewriteAPI 验证站点的「视频解析地址 / 视频播放域名」配置：
+// 入库保存原始地址，读取影片列表与播放组时按配置改写（先换域名，再拼解析地址）。
+func TestSourcePlayRewriteAPI(t *testing.T) {
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		rec := map[string]interface{}{
+			"vod_id": 301, "vod_name": "改写地址影片", "type_id": 6, "type_name": "动作片",
+			"vod_time": "2026-11-08 10:00:00", "vod_play_from": "m3u8",
+			"vod_play_url": "第1集$https://dead.example.net/v/1/index.m3u8",
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": 1, "msg": "ok", "page": 1, "pagecount": 1,
+			"limit": "20", "total": 1, "list": []interface{}{rec},
+		})
+	}))
+	t.Cleanup(mock.Close)
+
+	r, _ := newTestRouter(t)
+
+	// 1. 带解析地址与播放域名创建站点：域名会被规范化
+	w := doJSON(r, http.MethodPost, "/api/sources/v1", map[string]interface{}{
+		"name": "改写站点", "apiBase": mock.URL + "/api.php/provide/vod/", "enabled": true,
+		"parseApi":   "https://jx.example.com/?url=",
+		"playDomain": " cdn.example.com/ ",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("创建站点失败: %d %s", w.Code, w.Body.String())
+	}
+	var src model.Source
+	if err := json.Unmarshal(w.Body.Bytes(), &src); err != nil {
+		t.Fatal(err)
+	}
+	if src.ParseAPI != "https://jx.example.com/?url=" || src.PlayDomain != "https://cdn.example.com" {
+		t.Fatalf("播放配置未按预期规范化: parseApi=%q playDomain=%q", src.ParseAPI, src.PlayDomain)
+	}
+
+	// 2. 采集后读取列表：播放地址应已被改写
+	if w := doJSON(r, http.MethodPost,
+		"/api/sources/v1/"+strconv.Itoa(int(src.ID))+"/crawls?mode=full", nil); w.Code != http.StatusOK {
+		t.Fatalf("采集失败: %d %s", w.Code, w.Body.String())
+	}
+	want := "https://jx.example.com/?url=https://cdn.example.com/v/1/index.m3u8"
+	listVideos := func() model.Video {
+		t.Helper()
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1?q=改写地址影片", nil))
+		var out struct {
+			Items []model.Video `json:"items"`
+		}
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &out) != nil || len(out.Items) != 1 {
+			t.Fatalf("查询影片失败: %d %s", w.Code, w.Body.String())
+		}
+		return out.Items[0]
+	}
+	v := listVideos()
+	var groups []model.PlayGroup
+	if err := json.Unmarshal([]byte(v.VodPlayList), &groups); err != nil || len(groups) != 1 {
+		t.Fatalf("播放组数据异常: %v %s", err, v.VodPlayList)
+	}
+	if got := groups[0].Episodes[0].Url; got != want {
+		t.Fatalf("列表播放地址改写异常: %q，期望 %q", got, want)
+	}
+
+	// 3. 播放组子资源同样改写
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/api/videos/v1/"+strconv.Itoa(int(v.ID))+"/play-groups", nil))
+	var got []model.PlayGroup
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &got) != nil || len(got) != 1 {
+		t.Fatalf("播放组接口异常: %d %s", w.Code, w.Body.String())
+	}
+	if got[0].Episodes[0].Url != want {
+		t.Fatalf("播放组地址改写异常: %q", got[0].Episodes[0].Url)
+	}
+
+	// 4. 清空配置后恢复原始地址（数据库里始终是原始值）
+	if w := doJSON(r, http.MethodPut, "/api/sources/v1/"+strconv.Itoa(int(src.ID)), map[string]interface{}{
+		"name": src.Name, "apiBase": src.APIBase, "enabled": true, "incrementalHours": 24,
+		"parseApi": "", "playDomain": "",
+	}); w.Code != http.StatusOK {
+		t.Fatalf("更新站点失败: %d %s", w.Code, w.Body.String())
+	}
+	v = listVideos()
+	groups = nil
+	if err := json.Unmarshal([]byte(v.VodPlayList), &groups); err != nil || len(groups) != 1 {
+		t.Fatalf("播放组数据异常: %v", err)
+	}
+	if got := groups[0].Episodes[0].Url; got != "https://dead.example.net/v/1/index.m3u8" {
+		t.Fatalf("清空配置后应回到原始地址，实际 %q", got)
+	}
+
+	// 5. 非法解析地址被拒绝
+	if w := doJSON(r, http.MethodPost, "/api/sources/v1", map[string]interface{}{
+		"name": "非法解析站", "apiBase": mock.URL + "/api.php/provide/vod/",
+		"parseApi": "jx.example.com/?url=",
+	}); w.Code != http.StatusBadRequest {
+		t.Fatalf("非法解析地址应返回 400，实际 %d %s", w.Code, w.Body.String())
+	}
+}
