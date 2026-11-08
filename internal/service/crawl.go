@@ -263,7 +263,7 @@ func (s *CrawlService) crawl(
 		res.New += stats.New
 		res.Updated += stats.Updated
 		res.Unchanged += stats.Unchanged
-		task.progress(res, pageCount) // 让任务列表实时看到进度与总页数
+		task.progress(res, pageCount, page+1) // 让任务列表实时看到进度与总页数
 
 		if pageCount > 0 && page >= pageCount {
 			break

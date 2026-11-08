@@ -84,6 +84,7 @@ func TestCollectorYAMLAndEnvOverride(t *testing.T) {
 	t.Setenv("ASSETSPIDER_COLLECTOR_TIMEOUT", "55")
 	t.Setenv("ASSETSPIDER_COLLECTOR_PARALLEL", "2") // 旧变量名兼容：映射到并发上限
 	t.Setenv("ASSETSPIDER_COLLECTOR_USER_AGENT", "env-agent")
+	t.Setenv("ASSETSPIDER_COLLECTOR_PROGRESS_SAVE", "7")
 	cfg2, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
@@ -91,6 +92,9 @@ func TestCollectorYAMLAndEnvOverride(t *testing.T) {
 	if cfg2.Collector.TimeoutSeconds != 55 || cfg2.Collector.MaxConcurrent != 2 ||
 		cfg2.Collector.UserAgent != "env-agent" || cfg2.Collector.MaxPages != 37 {
 		t.Fatalf("环境变量覆盖异常: %+v", cfg2.Collector)
+	}
+	if cfg2.Collector.ProgressSaveSeconds != 7 {
+		t.Fatalf("进度落库间隔未按环境变量覆盖，实际 %d", cfg2.Collector.ProgressSaveSeconds)
 	}
 }
 
@@ -107,6 +111,11 @@ func TestCollectorValidation(t *testing.T) {
 	t.Setenv("ASSETSPIDER_COLLECTOR_MAX_CONCURRENT", "0")
 	if _, err := Load(""); err == nil {
 		t.Fatal("max_concurrent=0 应校验失败")
+	}
+	t.Setenv("ASSETSPIDER_COLLECTOR_MAX_CONCURRENT", "3")
+	t.Setenv("ASSETSPIDER_COLLECTOR_PROGRESS_SAVE", "0")
+	if _, err := Load(""); err == nil {
+		t.Fatal("progress_save_seconds=0 应校验失败")
 	}
 }
 

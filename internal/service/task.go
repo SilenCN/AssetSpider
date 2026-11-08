@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -88,9 +89,13 @@ type crawlTask struct {
 	added   int
 	updated int
 	changed int
-	message string
-	retryAt time.Time
-	cancel  context.CancelFunc
+	total   int
+	// resumeNext 是「下一轮该从第几页开始」，定期落库时写入 resume_page，
+	// 保证进程重启后能从断点续采而不是从头再来。
+	resumeNext int
+	message    string
+	retryAt    time.Time
+	cancel     context.CancelFunc
 
 	pauseOnce sync.Once
 	pauseCh   chan struct{}
@@ -119,6 +124,8 @@ func newCrawlTask(job *model.CrawlJob, maxAttempts int) *crawlTask {
 		added:       job.New,
 		updated:     job.Updated,
 		changed:     job.Unchanged,
+		total:       job.Total,
+		resumeNext:  job.ResumePage,
 		pauseCh:     make(chan struct{}),
 	}
 }
@@ -201,14 +208,37 @@ func (t *crawlTask) setPage(page int) {
 }
 
 // progress 把抓取循环的当前进度同步到任务视图。
-func (t *crawlTask) progress(res *RunResult, pageCount int) {
+// nextPage 是「下一轮该从第几页开始」，定期落库时写进 resume_page。
+func (t *crawlTask) progress(res *RunResult, pageCount, nextPage int) {
 	t.mu.Lock()
 	t.pages, t.fetched = res.Pages, res.Fetched
 	t.added, t.updated, t.changed = res.New, res.Updated, res.Unchanged
+	t.total = res.Total
+	if nextPage > 0 {
+		t.resumeNext = nextPage
+	}
 	if pageCount > 0 {
 		t.pageCnt = pageCount
 	}
 	t.mu.Unlock()
+}
+
+// persistSnapshot 取一份可直接写库的进度副本（只含统计与断点，不含终态字段）。
+// 返回副本而不是共享的 job 指针，避免与定期落库协程产生数据竞争。
+func (t *crawlTask) persistSnapshot() *model.CrawlJob {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return &model.CrawlJob{
+		ID:         t.job.ID,
+		Pages:      t.pages,
+		Fetched:    t.fetched,
+		New:        t.added,
+		Updated:    t.updated,
+		Unchanged:  t.changed,
+		Total:      t.total,
+		ResumePage: t.resumeNext,
+		Attempt:    t.attempt,
+	}
 }
 
 func (t *crawlTask) snapshot() TaskView {
@@ -372,6 +402,10 @@ func (s *CrawlService) runTask(ctx context.Context, task *crawlTask, src *model.
 	}
 	task.setStatus(model.JobRunning)
 
+	// 运行期间定期把进度写进采集记录，进程重启也不会丢掉已采的页。
+	stopSaver := s.startProgressSaver(task)
+	defer stopSaver()
+
 	res := &RunResult{
 		JobID: task.job.ID, SourceID: task.sourceID, SourceName: task.sourceName,
 		Mode: task.mode, StartedAt: task.job.StartedAt, ResumePage: task.job.ResumePage,
@@ -420,6 +454,8 @@ func (s *CrawlService) runTask(ctx context.Context, task *crawlTask, src *model.
 			msg = fmt.Sprintf("%s（已自动尝试 %d 次）", msg, task.attempt)
 		}
 	}
+	// 收尾前先停掉定期落库，避免与终态写入交叉。
+	stopSaver()
 	out, finishErr := s.settle(task, res, status, msg)
 	if finishErr != nil {
 		return out, finishErr
@@ -431,6 +467,52 @@ func (s *CrawlService) runTask(ctx context.Context, task *crawlTask, src *model.
 		return out, crawlErr
 	}
 	return out, nil
+}
+
+// startProgressSaver 启动「定期把运行进度写库」的协程，返回幂等的停止函数。
+//
+// 进程被强杀时内存里的进度会全部丢失，而 crawl_jobs 只在任务结束（成功/暂停/
+// 失败）时才写终态。这里按 collector.progress_save_seconds（默认 60 秒）滚动
+// 落库统计与续采页码，重启后 ResumePage 已指向下一页，重试即可接着采。
+//
+// 停止会等待正在进行的写库结束，保证不会与 settle 的终态写入交叉。
+func (s *CrawlService) startProgressSaver(task *crawlTask) func() {
+	interval := time.Duration(s.cfg.ProgressSaveSeconds) * time.Second
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	stop := make(chan struct{})
+	var once sync.Once
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				s.saveProgress(task)
+			}
+		}
+	}()
+	return func() {
+		once.Do(func() { close(stop) })
+		wg.Wait()
+	}
+}
+
+// saveProgress 写一次进度快照；还没有完成任何分页时不必写。
+func (s *CrawlService) saveProgress(task *crawlTask) {
+	job := task.persistSnapshot()
+	if job.Pages == 0 {
+		return
+	}
+	if err := s.jobs.SaveProgress(job); err != nil {
+		log.Printf("保存任务 #%d 进度失败: %v", job.ID, err)
+	}
 }
 
 // awaitRetry 在两次尝试之间退避等待；返回 false 表示被暂停或取消，应终止任务。

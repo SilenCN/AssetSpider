@@ -12,6 +12,7 @@ type JobRepository interface {
 	CreateJob(job *model.CrawlJob) error
 	ReopenJob(job *model.CrawlJob) error
 	StartJob(job *model.CrawlJob) error
+	SaveProgress(job *model.CrawlJob) error
 	FinishJob(job *model.CrawlJob, status, message string) error
 	GetJob(id uint) (*model.CrawlJob, error)
 	LastJob(sourceID uint, mode string) (*model.CrawlJob, error)
@@ -60,6 +61,26 @@ func (r *jobRepository) ReopenJob(job *model.CrawlJob) error {
 		"total":       job.Total,
 		"attempt":     job.Attempt,
 	}).Error
+}
+
+// SaveProgress 把运行中任务的进度写库（由调度层定期调用）。
+//
+// 只写统计、页码、续采页与尝试次数，**不动 status / finished_at / message**：
+// 这些属于终态，必须由 FinishJob 独占写入，否则定期落库会把已完成的任务
+// 覆盖回 running。进程意外退出后，重启时 ResetInterrupted 会把 running 记
+// 录标为中断，此时 resume_page 已指向下一页，重试即可从断点续采。
+func (r *jobRepository) SaveProgress(job *model.CrawlJob) error {
+	return r.db.Model(&model.CrawlJob{}).Where("id = ?", job.ID).
+		Updates(map[string]interface{}{
+			"pages":       job.Pages,
+			"fetched":     job.Fetched,
+			"new":         job.New,
+			"updated":     job.Updated,
+			"unchanged":   job.Unchanged,
+			"total":       job.Total,
+			"resume_page": job.ResumePage,
+			"attempt":     job.Attempt,
+		}).Error
 }
 
 // StartJob 把已排队的任务标记为运行中，并记录真正的开始时间。

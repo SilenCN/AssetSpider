@@ -542,11 +542,11 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
         <div v-else class="table-wrap">
           <table>
             <thead>
-              <tr><th>任务</th><th>站点</th><th>模式</th><th>状态</th><th class="prog-col">实时进度</th><th>拉取 / 新增 / 更新 / 未变</th><th>速率</th><th>已运行</th><th>操作</th></tr>
+              <tr><th class="hide-sm">任务</th><th>站点</th><th>模式</th><th>状态</th><th class="prog-col">实时进度</th><th title="拉取 / 新增 / 更新 / 未变">拉取/新增/更新/未变</th><th class="hide-sm">速率</th><th class="hide-sm">已运行</th><th>操作</th></tr>
             </thead>
             <tbody>
               <tr v-for="t in tasks" :key="t.jobId">
-                <td class="mono">#{{ t.jobId }}</td>
+                <td class="mono hide-sm">#{{ t.jobId }}</td>
                 <td class="host">{{ t.sourceName }}</td>
                 <td>
                   {{ modeLabel(t.mode) }}
@@ -571,8 +571,8 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
                 <td class="mono stats" :title="`拉取 ${t.fetched} 条，新增 ${t.new}，更新 ${t.updated}，未变 ${t.unchanged}`">
                   {{ t.fetched }} / <span class="up">{{ t.new }}</span> / {{ t.updated }} / <span class="muted">{{ t.unchanged }}</span>
                 </td>
-                <td class="mono muted">{{ t.itemsPerSecond > 0 ? t.itemsPerSecond.toFixed(1) + ' 条/秒' : '-' }}</td>
-                <td class="muted">{{ t.elapsedSeconds }}s</td>
+                <td class="mono muted hide-sm">{{ t.itemsPerSecond > 0 ? t.itemsPerSecond.toFixed(1) + ' 条/秒' : '-' }}</td>
+                <td class="muted hide-sm">{{ t.elapsedSeconds }}s</td>
                 <td class="ops">
                   <button v-if="t.status === 'running' || t.status === 'queued'"
                           class="mini danger" @click="pauseTask(t.jobId)">暂停</button>
@@ -611,21 +611,21 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
           <table>
             <thead>
               <tr>
-                <th>ID</th><th>名称</th><th>接口地址</th><th>状态</th><th>影片数</th>
-                <th>上次采集</th><th>游标 / 结果</th><th>操作</th>
+                <th class="hide-sm">ID</th><th>名称</th><th class="hide-sm">接口地址</th><th>状态</th><th>影片数</th>
+                <th class="hide-sm">上次采集</th><th class="hide-sm">游标 / 结果</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="s in sources" :key="s.id">
-                <td class="mono">{{ s.id }}</td>
+                <td class="mono hide-sm">{{ s.id }}</td>
                 <td class="host">{{ s.name }}</td>
-                <td class="url" :title="s.apiBase">{{ short(s.apiBase, 38) }}</td>
+                <td class="url hide-sm" :title="s.apiBase">{{ short(s.apiBase, 38) }}</td>
                 <td>
                   <span class="badge" :class="s.enabled ? 'on' : 'off'">{{ s.enabled ? '启用' : '停用' }}</span>
                 </td>
                 <td class="mono">{{ s.videoCount }}</td>
-                <td class="muted">{{ formatTime(s.lastSyncAt) }}</td>
-                <td class="muted">
+                <td class="muted hide-sm">{{ formatTime(s.lastSyncAt) }}</td>
+                <td class="muted hide-sm">
                   <span class="badge" :class="s.lastStatus">{{ statusLabel(s.lastStatus) }}</span>
                   <div class="mono tiny">{{ s.lastCursor || '-' }}</div>
                 </td>
@@ -739,7 +739,7 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
         <div v-else class="table-wrap">
           <table>
             <thead>
-              <tr><th>ID</th><th>站点</th><th>模式</th><th>状态</th><th>页数</th><th>拉取</th><th>新增</th><th>更新</th><th>未变</th><th>开始时间</th><th>说明</th><th>操作</th></tr>
+              <tr><th>ID</th><th>站点</th><th class="hide-sm">模式</th><th>状态</th><th>页数</th><th>拉取</th><th>新增</th><th>更新</th><th>未变</th><th class="hide-sm">开始时间</th><th class="hide-sm">说明</th><th>操作</th></tr>
             </thead>
             <tbody>
               <tr v-for="j in jobs" :key="j.id">
@@ -748,7 +748,7 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
                   <div v-if="j.retryOf" class="tiny">源自 #{{ j.retryOf }}</div>
                 </td>
                 <td class="host">{{ j.sourceName }}</td>
-                <td>{{ modeLabel(j.mode) }}</td>
+                <td class="hide-sm">{{ modeLabel(j.mode) }}</td>
                 <td>
                   <span class="badge" :class="j.status">{{ j.live ? taskStatusText(j.live) : statusLabel(j.status) }}</span>
                   <div v-if="stat(j, 'attempt') > 1" class="tiny">尝试 {{ stat(j, 'attempt') }} 次</div>
@@ -769,8 +769,8 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
                 <td class="mono up">{{ stat(j, 'new') }}</td>
                 <td class="mono">{{ stat(j, 'updated') }}</td>
                 <td class="mono muted">{{ stat(j, 'unchanged') }}</td>
-                <td class="muted">{{ formatTime(j.startedAt) }}</td>
-                <td class="muted msg" :title="jobMessage(j)">{{ short(jobMessage(j), 30) }}</td>
+                <td class="muted hide-sm">{{ formatTime(j.startedAt) }}</td>
+                <td class="muted msg hide-sm" :title="jobMessage(j)">{{ short(jobMessage(j), 30) }}</td>
                 <td class="ops">
                   <template v-if="j.status === 'running' || j.status === 'queued'">
                     <button class="mini danger" @click="pauseTask(j.id)">暂停</button>
@@ -991,4 +991,86 @@ th { color: #86909c; font-weight: 500; }
 .cat-row.child { background: #fafbfc; border-top: 1px solid #f0f1f3; padding-left: 34px; }
 .cat-row b { font-size: 14px; }
 .cat-children { }
+
+/* ---------- 手机端适配（≤760px） ---------- */
+/* 策略：表格保留横滚、隐藏次要列；表单与工具栏单列；弹窗与播放器铺满宽度。 */
+@media (max-width: 760px) {
+  body { overflow-x: hidden; } /* 兜底：任何元素都不应把整页撑出横向滚动 */
+  .page { padding: 16px 12px 44px; }
+  header h1 { font-size: 22px; }
+  header p { margin: 4px 0 10px; font-size: 13px; line-height: 1.6; }
+  .db { word-break: break-all; }
+  .stats { gap: 6px; }
+  .stat, .db { font-size: 11px; }
+
+  /* 顶部页签改为可横向滑动的单行，避免换行把内容挤下去 */
+  .tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    gap: 6px;
+    margin-top: 14px;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs button { flex: 0 0 auto; padding: 8px 13px; font-size: 13px; }
+  .tabs .refresh { margin-left: 4px; }
+
+  .card { padding: 14px; margin-top: 14px; border-radius: 8px; }
+  .card h2 { font-size: 15px; }
+  /* 标题行的右侧统计在窄屏改竖排，避免 nowrap 撑宽卡片、把整页挤出屏幕 */
+  .list-head { flex-direction: column; align-items: flex-start; gap: 2px; }
+  .list-head span { white-space: normal; }
+  .hint { font-size: 11px; line-height: 1.7; }
+  .hint code { word-break: break-all; }
+
+  /* 输入控件占满整行；16px 字号避免 iOS 聚焦时自动放大 */
+  form, .source-form, .actions, .toolbar { gap: 8px; }
+  input, select { flex: 1 1 100%; font-size: 16px; padding: 9px 10px; }
+  input.wide { flex: 1 1 100%; }
+  .field { flex: 1 1 100%; justify-content: space-between; }
+  .field input { width: 120px; flex: none; }
+  .check { flex: 1 1 100%; }
+  form button, .source-form button { flex: 1 1 auto; padding: 9px 14px; }
+  .toolbar button { flex: 1 1 auto; }
+  .toolbar .muted { flex: 1 1 100%; }
+
+  /* 表格横滚 + 隐藏次要列；再压一档内边距与字号，尽量让常用列在窄屏一次看全 */
+  .table-wrap { -webkit-overflow-scrolling: touch; }
+  th, td { padding: 7px 5px; font-size: 12px; }
+  .mono { font-size: 11px; }
+  .hide-sm { display: none; }
+  .prog-col { min-width: 140px; }
+  .url, .msg { max-width: 160px; }
+  .ops { gap: 4px; }
+  .ops button.mini { padding: 5px 7px; }
+
+  /* 详情弹窗全屏；播放器按比例收敛高度 */
+  .modal-mask { padding: 0; align-items: stretch; }
+  .modal { width: 100%; height: 100%; max-height: none; border-radius: 0; }
+  .modal-head { padding: 14px 16px; flex-wrap: wrap; gap: 8px; }
+  .modal-head h3 { font-size: 16px; }
+  .modal-tabs { padding: 10px 16px; gap: 6px; }
+  .modal-tabs button { padding: 5px 10px; }
+  .modal-body { padding: 4px 16px 20px; }
+  .player { max-height: 56vh; }
+  .field-grid { grid-template-columns: 1fr; }
+  .field-item.long .field-v { max-height: 180px; }
+  .kv-table th { width: auto; }
+
+  /* 资源卡片：窄屏两列 */
+  .res-grid { grid-template-columns: repeat(auto-fill, minmax(138px, 1fr)); gap: 10px; }
+  .res-poster-ph { font-size: 30px; }
+  .res-info { padding: 7px 8px 9px; }
+  .res-info h4 { font-size: 12px; }
+  .res-meta, .res-time { font-size: 10px; }
+
+  .cat-row { padding: 9px 10px; gap: 6px; }
+  .cat-row.child { padding-left: 18px; }
+  .cat-row b { font-size: 13px; }
+  .ep-name { min-width: 0; }
+  .ep-list { padding-left: 16px; }
+  .pager { gap: 10px; font-size: 12px; }
+  .notice, .error { font-size: 12px; padding: 8px 10px; }
+}
 </style>

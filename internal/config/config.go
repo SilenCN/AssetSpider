@@ -42,6 +42,7 @@ type CollectorConfig struct {
 	MaxConcurrent       int    `yaml:"max_concurrent"`            // 同时运行的采集任务上限，超出部分排队；运行时可通过接口调整
 	RetryTimes          int    `yaml:"retry_times"`               // 单次采集失败后的自动重试次数，0 表示不自动重试
 	RetryBackoffSeconds int    `yaml:"retry_backoff_seconds"`     // 首次自动重试的等待秒数，之后按 2 倍退避（上限 30 秒）
+	ProgressSaveSeconds int    `yaml:"progress_save_seconds"`     // 运行中任务把进度写库的间隔（秒），默认 60，避免重启丢进度
 }
 
 // Default 返回开箱即用的默认配置。
@@ -59,6 +60,7 @@ func Default() *Config {
 			MaxConcurrent:       3,
 			RetryTimes:          2,
 			RetryBackoffSeconds: 3,
+			ProgressSaveSeconds: 60,
 		},
 	}
 }
@@ -100,6 +102,7 @@ func Load(path string) (*Config, error) {
 		{"ASSETSPIDER_COLLECTOR_MAX_CONCURRENT", &cfg.Collector.MaxConcurrent},
 		{"ASSETSPIDER_COLLECTOR_RETRY_TIMES", &cfg.Collector.RetryTimes},
 		{"ASSETSPIDER_COLLECTOR_RETRY_BACKOFF", &cfg.Collector.RetryBackoffSeconds},
+		{"ASSETSPIDER_COLLECTOR_PROGRESS_SAVE", &cfg.Collector.ProgressSaveSeconds},
 	} {
 		if err := utils.EnvInt(item.name, item.dst); err != nil {
 			return nil, err
@@ -148,6 +151,9 @@ func (c *Config) Validate() error {
 	}
 	if cc.RetryBackoffSeconds <= 0 {
 		return fmt.Errorf("collector.retry_backoff_seconds 必须大于 0")
+	}
+	if cc.ProgressSaveSeconds <= 0 {
+		return fmt.Errorf("collector.progress_save_seconds 必须大于 0")
 	}
 	return nil
 }

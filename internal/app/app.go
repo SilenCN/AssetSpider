@@ -31,7 +31,7 @@ func New(cfg *config.Config) (*App, error) {
 	}
 	// 任务调度状态只存在于进程内存，重启后遗留的 running/queued 记录无法再推进，
 	// 统一标记为中断，避免页面一直显示「进行中」（paused 的任务仍可继续）。
-	if _, err := repos.Jobs.ResetInterrupted("服务重启，任务已中断"); err != nil {
+	if _, err := repos.Jobs.ResetInterrupted("服务重启，任务已中断（进度已定期保存，可重试从断点续采）"); err != nil {
 		_ = repos.Close()
 		return nil, fmt.Errorf("清理中断任务失败: %w", err)
 	}

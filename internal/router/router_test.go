@@ -1395,3 +1395,74 @@ func TestTaskPauseDuringRetryWait(t *testing.T) {
 		t.Fatalf("暂停说明异常: %s", job.Message)
 	}
 }
+
+// TestTaskProgressPersistedWhileRunning 验证运行中的任务会定期把进度写库：
+// 采集记录里能看到已完成的页数、统计与续采页，即使进程被杀也不会丢进度。
+func TestTaskProgressPersistedWhileRunning(t *testing.T) {
+	r, _ := newTestRouterWith(t, func(cfg *config.Config) {
+		cfg.Collector.RetryTimes = 0
+		cfg.Collector.ProgressSaveSeconds = 1 // 测试里把落库间隔压到 1 秒
+	})
+
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		page, _ := strconv.Atoi(req.URL.Query().Get("pg"))
+		if page < 1 {
+			page = 1
+		}
+		time.Sleep(300 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": 1, "msg": "ok", "page": page, "pagecount": 10, "limit": "1", "total": 10,
+			"list": []map[string]interface{}{{
+				"vod_id": 7000 + page, "vod_name": fmt.Sprintf("落库影片%d", page),
+				"type_name": "动作片", "vod_area": "大陆",
+				"vod_time": fmt.Sprintf("2026-11-08 10:%02d:00", page),
+			}},
+		})
+	}))
+	defer site.Close()
+
+	if w := doJSON(r, http.MethodPost, "/api/sources/v1", map[string]interface{}{
+		"name": "落库站点", "apiBase": site.URL + "/api.php/provide/vod/",
+		"format": "maccms_json", "enabled": true, "incrementalHours": 24,
+	}); w.Code != http.StatusCreated {
+		t.Fatalf("创建站点失败: %d %s", w.Code, w.Body.String())
+	}
+	w := doJSON(r, http.MethodPost, "/api/tasks/v1", map[string]interface{}{"sourceId": 1, "mode": "full"})
+	var created struct {
+		JobID uint `json:"jobId"`
+	}
+	if w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &created) != nil {
+		t.Fatalf("创建任务异常: %d %s", w.Code, w.Body.String())
+	}
+
+	// 运行中等待第一次落库：采集记录（落库值，非 live）里应出现已完成页数。
+	var persisted model.CrawlJob
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		job := jobByID(t, r, created.JobID)
+		if job.Status == model.JobRunning && job.Pages >= 2 {
+			persisted = job
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if persisted.Pages == 0 {
+		t.Fatalf("运行中未把进度写入采集记录（pages 仍为 0）")
+	}
+	if persisted.Fetched == 0 || persisted.Total != 10 {
+		t.Fatalf("落库的统计不完整: %+v", persisted)
+	}
+	// 续采页应指向「已完成页 + 1」，重启后重试即可从这里继续。
+	if persisted.ResumePage != persisted.Pages+1 {
+		t.Fatalf("落库的续采页应为 %d，实际 %d", persisted.Pages+1, persisted.ResumePage)
+	}
+
+	job := waitJobStatus(t, r, created.JobID, model.JobSuccess)
+	if job.Pages != 10 || job.Fetched != 10 {
+		t.Fatalf("任务结束统计异常: %+v", job)
+	}
+	if job.ResumePage != 1 {
+		t.Fatalf("任务正常结束后续采页应回到 1，实际 %d", job.ResumePage)
+	}
+}
