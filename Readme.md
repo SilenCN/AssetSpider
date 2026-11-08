@@ -99,13 +99,14 @@ go build -o bin/assetspider .
 
 ### 全字段保留（重点）
 
-资源站的字段因版本、二次开发、自定义模板差异很大，因此**不使用固定结构体反序列化**（那会静默丢弃未定义字段）。每条 `list[]` 记录在解析时同时保留三份数据：
+资源站的字段因版本、二次开发、自定义模板差异很大，因此**不使用固定结构体反序列化**（那会静默丢弃未定义字段）。每条 `list[]` 记录在解析时保留两份数据：
 
 | 层 | 落地位置 | 说明 |
 | --- | --- | --- |
 | 结构化标准列 | `videos` 表的 91 个 `vod_*` 列 | 依据 MacCMS V10 官方「视频字段」表，覆盖基础信息、图片、演职、上映、属性、统计、时间、来源、密码、播放/下载、分集剧情等 14 组；其中播放组相关列（`vod_play_from` / `vod_play_server` / `vod_play_note` / `vod_play_url` / `vod_play_list`）用于承载苹果CMS 的多线路播放数据，便于 SQL 查询与前端展示 |
-| 原始记录全文 | `videos.raw` | 接口返回的该条记录原始 JSON 全文（紧凑化、未裁剪），可还原任意字段 |
 | 扩展字段 | `videos.extra` | 接口返回但不在标准清单内的字段（站点自定义字段、嵌套对象、数组等），按**原始 JSON 值**保存 |
+
+> 不再保存整条记录的原始 JSON 全文（原 `videos.raw` 列）：标准列 + `extra` 已覆盖全部字段，再存一份全文只会重复占用存储，因此该列已移除。
 
 字段清单 `internal/model/video_fields.go` 的 `VodFields` 是唯一数据源：采集映射、入库更新、字段元数据接口、前端详情展示全部由它驱动，新增字段只需追加清单 + 实体字段。`model` 包的一致性测试会校验清单与实体、列名、json tag 严格对应，避免改动时漏字段。
 
@@ -168,7 +169,7 @@ go build -o bin/assetspider .
 
 ### 数据入库
 
-`videos` 表保存全部标准字段、原始 JSON、扩展字段、分类关联、内容指纹与首次/最近入库时间。每次采集生成一条 `crawl_jobs` 记录（模式、状态、页数、拉取/新增/更新/未变条数、耗时、错误信息），站点表回写上次采集状态与游标。
+`videos` 表保存全部标准字段、扩展字段、分类关联、内容指纹与首次/最近入库时间（不再冗余保存整条原始 JSON）。每次采集生成一条 `crawl_jobs` 记录（模式、状态、页数、拉取/新增/更新/未变条数、耗时、错误信息），站点表回写上次采集状态与游标。
 
 ## 配置
 
@@ -223,7 +224,7 @@ collector:
 | sources | DELETE | `/api/sources/v1/:id` | 删除站点，级联清理其影片与采集记录 |
 | sources | POST | `/api/sources/v1/:id/crawls` | 为该站点创建一次采集任务，同步返回结果摘要 |
 | crawls | POST | `/api/crawls/v1` | 对全部启用站点批量创建采集任务 |
-| videos | GET | `/api/videos/v1?source_id=&category_id=&q=&page=&size=` | 分页查询入库影片（返回全部字段、raw、extra、categoryId），`q` 匹配名称/别名/演员/导演/分类，`category_id` 按自动归档的分类过滤 |
+| videos | GET | `/api/videos/v1?source_id=&category_id=&q=&page=&size=` | 分页查询入库影片（返回全部字段、extra、categoryId），`q` 匹配名称/别名/演员/导演/分类，`category_id` 按自动归档的分类过滤 |
 | videos | GET | `/api/videos/v1/:id` | 单条影片完整记录 |
 | videos | GET | `/api/videos/v1/:id/play-groups` | 该影片的播放组数组（来自苹果CMS 播放组字段，已解析为结构化 JSON） |
 | categories | GET | `/api/categories/v1?source_id=` | 视频分类列表，含 `videoCount`；`source_id` 只看该资源站的一套分类 |
@@ -310,7 +311,7 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 
 HTTP 链路测试位于 `internal/router`（装配后打真实请求，同时校验新路由结构与旧路由已下线），采集编排测试位于 `internal/service`，协议解析测试位于 `internal/service/collector`，纯工具测试位于 `internal/utils`；`internal/repository` 下按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go`，另有 `store_test.go` 校验连接与四个对象装配。SQLite 使用纯 Go 的 modernc.org/sqlite 驱动（经 github.com/glebarez/sqlite 接入 GORM），无需本机 gcc，测试直接运行即可（`CGO_ENABLED=0`）。
 
-端到端可用模拟站点验证：91 个标准字段全部落库、`raw` 保留原始 JSON 全文、`extra` 保留自定义字段与嵌套对象、只改一个冷门字段也能触发更新、全量/增量/去重/幂等/批量采集、按站点自动分类归档与 Vue 页面托管均正常。
+端到端可用模拟站点验证：91 个标准字段全部落库、`extra` 保留自定义字段与嵌套对象（不再存整条 `raw`）、只改一个冷门字段也能触发更新、全量/增量/去重/幂等/批量采集、按站点自动分类归档与 Vue 页面托管均正常。
 
 ## 计划
 

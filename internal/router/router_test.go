@@ -315,7 +315,7 @@ func TestVideoFieldMetaAndDetailAPI(t *testing.T) {
 		t.Fatal("vod_play_url 元数据缺失或前端键不正确")
 	}
 
-	// 2. 采集一条数据，确认 API 返回完整字段、原始 JSON 与详情接口
+	// 2. 采集一条数据，确认 API 返回完整结构化字段（不再有 raw）与详情接口
 	site := newMockVideoSite(t)
 	w = doJSON(r, http.MethodPost, "/api/sources/v1", map[string]interface{}{
 		"name": "字段测试站", "apiBase": site.URL + "/api.php/provide/vod/",
@@ -343,24 +343,25 @@ func TestVideoFieldMetaAndDetailAPI(t *testing.T) {
 	if v["vodName"] == nil || v["vodId"] == nil {
 		t.Errorf("响应缺少结构化字段: %+v", v)
 	}
-	raw, _ := v["raw"].(string)
-	if !strings.Contains(raw, "vod_name") || !strings.Contains(raw, "vod_id") {
-		t.Errorf("响应未返回原始 JSON: %q", raw)
+	if _, ok := v["raw"]; ok {
+		t.Errorf("响应不应再包含 raw 字段: %+v", v)
 	}
+	// 播放地址已结构化保存到 vodPlayUrl，不再依赖 raw 兜底
 	hasPlayURL := false
 	for _, item := range list.Items {
-		if r, _ := item["raw"].(string); strings.Contains(r, "vod_play_url") {
+		if u, _ := item["vodPlayUrl"].(string); strings.Contains(u, "a.m3u8") {
 			hasPlayURL = true
 		}
 	}
 	if !hasPlayURL {
-		t.Error("原始 JSON 未保留播放地址字段")
+		t.Error("播放地址字段未结构化保存")
 	}
 
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1/1", nil))
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"raw"`) {
-		t.Fatalf("详情接口异常: %d %s", w.Code, w.Body.String())
+	body := w.Body.String()
+	if w.Code != http.StatusOK || strings.Contains(body, `"raw"`) || !strings.Contains(body, `"vodName"`) {
+		t.Fatalf("详情接口异常（不应含 raw）: %d %s", w.Code, body)
 	}
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1/9999", nil))

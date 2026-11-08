@@ -140,10 +140,6 @@ const playGroups = computed(() => {
 const playEpisodeCount = computed(() =>
   playGroups.value.reduce((sum, g) => sum + (g.episodes?.length || 0), 0))
 
-function prettyRaw(raw) {
-  try { return JSON.stringify(JSON.parse(raw), null, 2) } catch (e) { return raw || '' }
-}
-
 async function openDetail(v) {
   detail.value = v
   detailTab.value = 'fields'
@@ -332,7 +328,7 @@ onMounted(() => { refresh(); loadFieldMeta() })
           <button type="submit">{{ editing ? '保存修改' : '添加站点' }}</button>
           <button v-if="editing" type="button" class="ghost" @click="resetForm">取消</button>
         </form>
-        <p class="hint">采集协议：海洋CMS / 苹果CMS 系 <code>api.php/provide/vod/?ac=list</code>，返回 JSON 的 <code>page / pagecount / total / list[]</code>。增量采集附加 <code>h=&lt;小时数&gt;</code> 并按 <code>vod_time</code> 游标去重。接口返回的<strong>全部标准字段</strong>结构化入库，站点自定义字段存入 <code>extra</code>，原始记录全文存入 <code>raw</code>，不丢字段。</p>
+        <p class="hint">采集协议：海洋CMS / 苹果CMS 系 <code>api.php/provide/vod/?ac=list</code>，返回 JSON 的 <code>page / pagecount / total / list[]</code>。增量采集附加 <code>h=&lt;小时数&gt;</code> 并按 <code>vod_time</code> 游标去重。接口返回的<strong>全部标准字段</strong>结构化入库，站点自定义字段存入 <code>extra</code>，不丢字段。</p>
       </section>
 
       <section class="card">
@@ -496,7 +492,6 @@ onMounted(() => { refresh(); loadFieldMeta() })
           <button :class="{ active: detailTab === 'fields' }" @click="detailTab = 'fields'">标准字段</button>
           <button :class="{ active: detailTab === 'extra' }" @click="detailTab = 'extra'">扩展字段 ({{ extraPairs.length }})</button>
           <button :class="{ active: detailTab === 'play' }" @click="detailTab = 'play'">播放组 ({{ playEpisodeCount }})</button>
-          <button :class="{ active: detailTab === 'raw' }" @click="detailTab = 'raw'">原始 JSON</button>
           <label v-if="detailTab === 'fields'" class="check"><input v-model="onlyNonEmpty" type="checkbox" /> 只看非空</label>
         </div>
         <div class="modal-body">
@@ -534,10 +529,6 @@ onMounted(() => { refresh(); loadFieldMeta() })
                 </li>
               </ol>
             </section>
-          </template>
-          <template v-else>
-            <p class="hint">接口返回的该条记录原始 JSON 全文，未经裁剪，可用于还原任意字段。</p>
-            <pre class="raw-json">{{ prettyRaw(detail.raw) }}</pre>
           </template>
         </div>
       </div>
@@ -636,5 +627,4 @@ th { color: #86909c; font-weight: 500; }
 .cat-row.child { background: #fafbfc; border-top: 1px solid #f0f1f3; padding-left: 34px; }
 .cat-row b { font-size: 14px; }
 .cat-children { }
-.raw-json { background: #1f2329; color: #e8eaed; padding: 14px; border-radius: 8px; font-size: 12px; line-height: 1.6; overflow: auto; max-height: 58vh; white-space: pre-wrap; word-break: break-all; }
 </style>

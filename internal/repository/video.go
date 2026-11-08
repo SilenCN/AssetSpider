@@ -72,21 +72,21 @@ func (r *videoRepository) UpsertVideos(items []model.Video) (UpsertStats, error)
 					return fmt.Errorf("新增影片 %d/%s: %w", v.SourceID, v.VodID, err)
 				}
 				stats.New++
-		case existing.Hash == v.Hash:
-			stats.Unchanged++
-			updates := map[string]interface{}{"last_seen_at": time.Now()}
-			// 全字段未变时也要补齐分类关联，让改造前入库的历史数据在全量采集后自动归类。
-			if existing.CategoryID != v.CategoryID {
-				updates["category_id"] = v.CategoryID
-			}
-			// 解析后的播放组（vod_play_list）同理：对历史数据或上次未解析成功的记录，
-			// 即使内容指纹未变，也要把本次解析得到的播放组回写，避免"解析了却没入库"。
-			if existing.VodPlayList == "" && v.VodPlayList != "" {
-				updates["vod_play_list"] = v.VodPlayList
-			}
-			if err := tx.Model(&existing).Updates(updates).Error; err != nil {
-				return err
-			}
+			case existing.Hash == v.Hash:
+				stats.Unchanged++
+				updates := map[string]interface{}{"last_seen_at": time.Now()}
+				// 全字段未变时也要补齐分类关联，让改造前入库的历史数据在全量采集后自动归类。
+				if existing.CategoryID != v.CategoryID {
+					updates["category_id"] = v.CategoryID
+				}
+				// 解析后的播放组（vod_play_list）同理：对历史数据或上次未解析成功的记录，
+				// 即使内容指纹未变，也要把本次解析得到的播放组回写，避免"解析了却没入库"。
+				if existing.VodPlayList == "" && v.VodPlayList != "" {
+					updates["vod_play_list"] = v.VodPlayList
+				}
+				if err := tx.Model(&existing).Updates(updates).Error; err != nil {
+					return err
+				}
 			default:
 				if err := tx.Model(&existing).Updates(videoUpdateMap(*v)).Error; err != nil {
 					return err
@@ -104,7 +104,7 @@ func (r *videoRepository) UpsertVideos(items []model.Video) (UpsertStats, error)
 // 列名与取值都由 model.VodFields 驱动，避免手写几十列造成遗漏。
 func videoUpdateMap(v model.Video) map[string]interface{} {
 	rv := reflect.ValueOf(v)
-	m := make(map[string]interface{}, len(model.VodFields)+5)
+	m := make(map[string]interface{}, len(model.VodFields)+4)
 	for _, f := range model.VodFields {
 		fv := rv.FieldByName(f.Go)
 		if fv.IsValid() && fv.Kind() == reflect.String {
@@ -112,14 +112,13 @@ func videoUpdateMap(v model.Video) map[string]interface{} {
 		}
 	}
 	m["hash"] = v.Hash
-	m["raw"] = v.Raw
 	m["extra"] = v.Extra
 	m["category_id"] = v.CategoryID
 	m["last_seen_at"] = time.Now()
 	return m
 }
 
-// GetVideo 按主键读取单条影片的完整记录（含 Raw 原始 JSON 与 Extra 扩展字段）。
+// GetVideo 按主键读取单条影片的完整记录（含 Extra 扩展字段）。
 func (r *videoRepository) GetVideo(id uint) (*model.Video, error) {
 	var v model.Video
 	if err := r.db.First(&v, id).Error; err != nil {

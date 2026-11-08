@@ -4,7 +4,6 @@
 package collector
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -77,24 +76,16 @@ func (i flexInt) Int() int { return int(i) }
 //
 // 这里不使用固定结构体的 json.Unmarshal：那会静默丢弃接口返回的未定义字段，
 // 而资源站字段因版本、二次开发、自定义模板差异极大，必须做到零丢失。
-// 因此一次解析同时保留三份数据：
-//   - RawJSON：该条记录原始 JSON 全文（紧凑化），可还原任意字段；
+// 因此一次解析保留两份数据：
 //   - RawFields：每个键的原始 JSON 值（数字/对象/数组保持原样），用于 Extra 兜底；
 //   - Fields：每个键统一字符串化后的值，用于映射到实体列与计算内容指纹。
 type VideoItem struct {
-	RawJSON   string
 	RawFields map[string]json.RawMessage
 	Fields    map[string]string
 }
 
-// UnmarshalJSON 在解析单条记录时保留全部原始信息。
+// UnmarshalJSON 在解析单条记录时保留全部原始键值。
 func (it *VideoItem) UnmarshalJSON(b []byte) error {
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, b); err != nil {
-		return fmt.Errorf("紧凑化影片记录: %w", err)
-	}
-	it.RawJSON = buf.String()
-
 	it.RawFields = map[string]json.RawMessage{}
 	// list 中偶尔会混入 null 或非对象项，此时视为空记录而不是让整页解析失败。
 	if err := json.Unmarshal(b, &it.RawFields); err != nil {

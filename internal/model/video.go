@@ -5,10 +5,12 @@ import "time"
 // Video 是一条从站点采集并入库的影片记录。
 //
 // 字段与 VodFields 清单一一对应，覆盖苹果CMS / 海洋CMS V10 资源站接口的全部标准字段。
-// 为防止任何数据丢失，另有三层兜底：
-//   - Raw：接口返回的该条记录原始 JSON 全文（未经裁剪，可还原任意字段）；
-//   - Extra：接口返回但不在标准字段清单内的字段（自定义字段、嵌套对象、数组等），按原始 JSON 值保存；
-//   - 结构化的标准字段列：便于 SQL 查询、筛选与展示。
+// 数据完整性由两层保证：
+//   - 结构化的标准字段列：便于 SQL 查询、筛选与展示；
+//   - Extra：接口返回但不在标准字段清单内的字段（自定义字段、嵌套对象、数组等），按原始 JSON 值保存。
+//
+// 不再保存整条记录的原始 JSON 全文（原 raw 列）：标准列 + Extra 已覆盖全部字段，
+// 再存一份全文只会重复占用存储。
 //
 // (SourceID, VodID) 为复合唯一索引：全量/增量重复采集同一影片时执行 upsert，
 // 不会产生重复行。Hash 由该条记录的全部键值计算，任何字段变化都会触发更新。
@@ -140,7 +142,6 @@ type Video struct {
 
 	// ---- 采集元数据 ----
 	Hash  string `gorm:"column:hash;size:64;index" json:"-"`            // 全字段内容指纹
-	Raw   string `gorm:"column:raw;type:text" json:"raw,omitempty"`     // 接口原始单条 JSON 全文
 	Extra string `gorm:"column:extra;type:text" json:"extra,omitempty"` // 未映射字段（原始 JSON 值）
 
 	FirstSeenAt time.Time `json:"firstSeenAt"`

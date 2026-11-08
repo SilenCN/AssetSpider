@@ -172,9 +172,6 @@ func TestParseListCompat(t *testing.T) {
 	if it.Get("vod_content") != "" {
 		t.Errorf("null 字段应解析为空，实际 %q", it.Get("vod_content"))
 	}
-	if !strings.Contains(it.RawJSON, `"vod_id":21`) {
-		t.Errorf("RawJSON 未保留原始 JSON: %s", it.RawJSON)
-	}
 	if _, err := ParseList([]byte(`not-json`)); err == nil {
 		t.Fatal("非法 JSON 应返回错误")
 	}
@@ -274,9 +271,6 @@ func TestAllFieldsPreserved(t *testing.T) {
 	if !strings.Contains(it.Get("vod_play_list"), `"ep":"1"`) {
 		t.Errorf("数组字段未完整保留: %q", it.Get("vod_play_list"))
 	}
-	if !strings.Contains(it.RawJSON, "vod_custom_flag") {
-		t.Errorf("RawJSON 未保留原始内容: %s", it.RawJSON)
-	}
 
 	v := toVideo(1, it)
 	rv := reflect.ValueOf(v)
@@ -311,15 +305,6 @@ func TestAllFieldsPreserved(t *testing.T) {
 	}
 	if _, exists := extra["vod_name"]; exists {
 		t.Error("标准字段不应重复写入 Extra")
-	}
-
-	// Raw 是接口返回的原始单条 JSON 全文，字段数与原始一致
-	var rawObj map[string]interface{}
-	if err := json.Unmarshal([]byte(v.Raw), &rawObj); err != nil {
-		t.Fatalf("Raw 不是合法 JSON: %v", err)
-	}
-	if len(rawObj) != len(obj) || rawObj["vod_custom_flag"] != "自定义值" {
-		t.Fatalf("Raw 未完整保留原始记录: %d/%d", len(rawObj), len(obj))
 	}
 
 	// 指纹覆盖全部字段：改冷门标准字段或自定义字段都应触发更新

@@ -192,12 +192,12 @@ func TestCrawlServiceFullIncrementalAndDedup(t *testing.T) {
 	if len(vids) != 1 || vids[0].VodID != "1" || !strings.Contains(vids[0].VodPlayURL, "a.m3u8") {
 		t.Fatalf("数字型 vod_id 或播放地址解析异常: %+v", vids)
 	}
-	// 全字段入库：抽查冷门字段、扩展字段与原始 JSON
+	// 全字段入库：抽查冷门字段与扩展字段（不再冗余保存整条 raw）
 	if vids[0].VodLevel == "" || vids[0].VodDoubanID == "" || vids[0].VodPwdDownURL == "" {
 		t.Errorf("冷门标准字段未入库: %+v", vids[0])
 	}
-	if !strings.Contains(vids[0].Extra, "vod_custom_flag") || !strings.Contains(vids[0].Raw, "vod_custom_flag") {
-		t.Errorf("扩展字段或原始 JSON 未入库: extra=%s raw=%s", vids[0].Extra, vids[0].Raw)
+	if !strings.Contains(vids[0].Extra, "vod_custom_flag") {
+		t.Errorf("扩展字段未入库: extra=%s", vids[0].Extra)
 	}
 	src, _ := st.Sources.GetSource(id)
 	if src.LastStatus != model.JobSuccess || src.LastCursor != "2026-11-07 10:00:00" || src.LastSyncAt == nil {

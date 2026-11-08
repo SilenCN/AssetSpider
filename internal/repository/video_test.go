@@ -53,7 +53,6 @@ func mkFullVideo(mark, hash string) model.Video {
 	v := model.Video{
 		SourceID: 1, VodID: "21", Hash: hash,
 		VodTime: "2026-11-07 10:00:00",
-		Raw:     `{"mark":"` + mark + `"}`,
 		Extra:   `{"custom":"` + mark + `"}`,
 	}
 	rv := reflect.ValueOf(&v).Elem()
@@ -79,13 +78,16 @@ func TestVideoUpdateMapCoversAllFields(t *testing.T) {
 			t.Errorf("列 %s 取值异常: %v", f.Column, got)
 		}
 	}
-	for _, key := range []string{"hash", "raw", "extra", "category_id", "last_seen_at"} {
+	for _, key := range []string{"hash", "extra", "category_id", "last_seen_at"} {
 		if _, ok := m[key]; !ok {
 			t.Errorf("更新 map 缺少 %s", key)
 		}
 	}
-	if len(m) != len(model.VodFields)+5 {
-		t.Errorf("更新列数 %d != %d", len(m), len(model.VodFields)+5)
+	if _, ok := m["raw"]; ok {
+		t.Error("更新 map 不应再包含 raw 列")
+	}
+	if len(m) != len(model.VodFields)+4 {
+		t.Errorf("更新列数 %d != %d", len(m), len(model.VodFields)+4)
 	}
 }
 
@@ -141,8 +143,8 @@ func TestUpsertVideosUpdatesAllFields(t *testing.T) {
 			t.Errorf("更新后字段 %s = %q，期望 second_%s", f.Column, got, f.Key)
 		}
 	}
-	if v.Hash != "h2" || v.Raw != `{"mark":"second"}` || v.Extra != `{"custom":"second"}` {
-		t.Errorf("元数据字段未随更新写回: hash=%s raw=%s extra=%s", v.Hash, v.Raw, v.Extra)
+	if v.Hash != "h2" || v.Extra != `{"custom":"second"}` {
+		t.Errorf("元数据字段未随更新写回: hash=%s extra=%s", v.Hash, v.Extra)
 	}
 	got, err := r.Videos.GetVideo(v.ID)
 	if err != nil || got.VodName != "second_vod_name" {

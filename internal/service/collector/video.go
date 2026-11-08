@@ -13,7 +13,7 @@ import (
 //
 // 映射完全由 model.VodFields 驱动，新增字段只需改清单与实体，无需改动这里；
 // 清单之外的字段（站点自定义字段、嵌套对象等）按原始 JSON 值写入 Extra，
-// 原始单条 JSON 全文写入 Raw，因此接口返回的任何字段都不会丢失。
+// 因此接口返回的任何字段都不会丢失（标准字段进列、其余进 Extra，不再冗余存整条 raw）。
 //
 // 纯数据转换，不访问数据库；编排与入库由上层 service 负责。
 // 时间与指纹计算复用横切工具层 utils。
@@ -61,7 +61,6 @@ func toVideo(sourceID uint, item VideoItem) model.Video {
 	}
 
 	v.VodTime = utils.NormalizeTime(v.VodTime) // 游标需要可字典序比较的时间
-	v.Raw = item.RawJSON
 	v.Hash = utils.Fingerprint(item.Fields)
 	return v
 }
