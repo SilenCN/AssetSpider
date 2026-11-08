@@ -18,7 +18,7 @@ import (
 	"path/filepath"
 
 	"github.com/SilenCN/AssetSpider/internal/model"
-	"gorm.io/driver/sqlite"
+	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )

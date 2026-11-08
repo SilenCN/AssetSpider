@@ -9,7 +9,7 @@
 | 层 | 选型 |
 | --- | --- |
 | Web 框架 | Gin |
-| ORM / 数据库 | GORM + SQLite（官方 CGO 驱动） |
+| ORM / 数据库 | GORM + SQLite（纯 Go 驱动 modernc.org/sqlite，无 CGO） |
 | 前端 | Vue 3 + Vite |
 | 配置 | `conf/config.yaml`（YAML） |
 | 采集协议 | 苹果CMS V10 Provide 接口 `api.php/provide/vod/?ac=videolist` JSON |
@@ -51,7 +51,7 @@ router  →  controller  →  service  →  repository
 
 ## 环境要求
 
-- Go 1.21+、gcc（SQLite 驱动依赖 CGO）
+- Go 1.21+（SQLite 为纯 Go 驱动，无需 gcc / CGO）
 - Node.js 18+（仅重新构建前端时需要）
 
 ## 快速开始
@@ -308,7 +308,7 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 
 `go test ./...` 覆盖**四层依赖方向守卫**、**utils 横切纯洁性守卫**、**仓储层一实体一对象守卫**、**`/api/{模块}/{版本}` 路由规范守卫**、配置加载、工具函数、站点/影片/任务/**分类** CRUD、分类自动创建与按站点隔离、分类幂等与改名、分类影片数与按分类筛选、**二级分类（苹果CMS type_pid / type_id_1 父子关联、父级缺失暂存孤儿、父级出现后自动挂接）**、去重 upsert、**字段清单与实体一致性**、**全字段零丢失解析（数字/字符串/null/对象/数组/自定义字段）**、**播放组解析（多线路 `$$$`/`#`/`$` 分隔符、默认/线路N 命名、无 `$` 回退）**、**全字段指纹与全字段写回**、URL 拼装、**`code != 1` 拒绝解析**、全量/增量/游标/去重/失败回写，以及通过 HTTP 接口触发采集与字段元数据/详情/分类（含二级树）/播放组接口的完整链路。采集测试用本地 HTTP 模拟站点，不依赖外网。
 
-HTTP 链路测试位于 `internal/router`（装配后打真实请求，同时校验新路由结构与旧路由已下线），采集编排测试位于 `internal/service`，协议解析测试位于 `internal/service/collector`，纯工具测试位于 `internal/utils`；`internal/repository` 下按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go`，另有 `store_test.go` 校验连接与四个对象装配。SQLite 使用 CGO 驱动，运行测试需要本机安装 gcc（Windows 可用 MinGW-w64 / w64devkit）。
+HTTP 链路测试位于 `internal/router`（装配后打真实请求，同时校验新路由结构与旧路由已下线），采集编排测试位于 `internal/service`，协议解析测试位于 `internal/service/collector`，纯工具测试位于 `internal/utils`；`internal/repository` 下按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go`，另有 `store_test.go` 校验连接与四个对象装配。SQLite 使用纯 Go 的 modernc.org/sqlite 驱动（经 github.com/glebarez/sqlite 接入 GORM），无需本机 gcc，测试直接运行即可（`CGO_ENABLED=0`）。
 
 端到端可用模拟站点验证：91 个标准字段全部落库、`raw` 保留原始 JSON 全文、`extra` 保留自定义字段与嵌套对象、只改一个冷门字段也能触发更新、全量/增量/去重/幂等/批量采集、按站点自动分类归档与 Vue 页面托管均正常。
 
