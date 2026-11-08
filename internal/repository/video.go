@@ -72,16 +72,21 @@ func (r *videoRepository) UpsertVideos(items []model.Video) (UpsertStats, error)
 					return fmt.Errorf("新增影片 %d/%s: %w", v.SourceID, v.VodID, err)
 				}
 				stats.New++
-			case existing.Hash == v.Hash:
-				stats.Unchanged++
-				updates := map[string]interface{}{"last_seen_at": time.Now()}
-				// 全字段未变时也要补齐分类关联，让改造前入库的历史数据在全量采集后自动归类。
-				if existing.CategoryID != v.CategoryID {
-					updates["category_id"] = v.CategoryID
-				}
-				if err := tx.Model(&existing).Updates(updates).Error; err != nil {
-					return err
-				}
+		case existing.Hash == v.Hash:
+			stats.Unchanged++
+			updates := map[string]interface{}{"last_seen_at": time.Now()}
+			// 全字段未变时也要补齐分类关联，让改造前入库的历史数据在全量采集后自动归类。
+			if existing.CategoryID != v.CategoryID {
+				updates["category_id"] = v.CategoryID
+			}
+			// 解析后的播放组（vod_play_list）同理：对历史数据或上次未解析成功的记录，
+			// 即使内容指纹未变，也要把本次解析得到的播放组回写，避免"解析了却没入库"。
+			if existing.VodPlayList == "" && v.VodPlayList != "" {
+				updates["vod_play_list"] = v.VodPlayList
+			}
+			if err := tx.Model(&existing).Updates(updates).Error; err != nil {
+				return err
+			}
 			default:
 				if err := tx.Model(&existing).Updates(videoUpdateMap(*v)).Error; err != nil {
 					return err

@@ -89,6 +89,33 @@ func TestVideoUpdateMapCoversAllFields(t *testing.T) {
 	}
 }
 
+func TestUpsertVideosBackfillsPlayListWhenUnchanged(t *testing.T) {
+	r := newTestRepos(t)
+	first := model.Video{
+		SourceID: 1, VodID: "21", VodName: "测试片", TypeName: "动作片",
+		Hash: "h1", VodTime: "2026-11-07 10:00:00", VodPlayURL: "https://x/1.m3u8",
+		// 首采时尚未解析出播放组（上游未返回 / 解析失败），库中 vod_play_list 为空。
+		VodPlayList: "",
+	}
+	if _, err := r.Videos.UpsertVideos([]model.Video{first}); err != nil {
+		t.Fatal(err)
+	}
+	// 内容指纹与上次一致 → 命中 Unchanged 分支，但本次解析出了播放组，应回写。
+	second := first
+	second.VodPlayList = `[{"from":"youku","episodes":[{"name":"第1集","url":"https://x/1.m3u8"}]}]`
+	stats, err := r.Videos.UpsertVideos([]model.Video{second})
+	if err != nil || stats.Unchanged != 1 {
+		t.Fatalf("指纹未变应判定未变化: %+v %v", stats, err)
+	}
+	items, _, err := r.Videos.ListVideos(NewVideoQuery(0, "", 1, 20))
+	if err != nil || len(items) != 1 {
+		t.Fatalf("查询异常: %v n=%d", err, len(items))
+	}
+	if items[0].VodPlayList == "" {
+		t.Fatalf("播放组未在 Unchanged 分支回写，沿用旧空值: %+v", items[0])
+	}
+}
+
 func TestUpsertVideosUpdatesAllFields(t *testing.T) {
 	r := newTestRepos(t)
 	if _, err := r.Videos.UpsertVideos([]model.Video{mkFullVideo("first", "h1")}); err != nil {
