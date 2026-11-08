@@ -947,6 +947,35 @@ func lastJob(t *testing.T, r *gin.Engine) model.CrawlJob {
 	return jobs[0]
 }
 
+// liveOf 读取采集记录接口里某条记录的实时进度（任务不在运行时为 nil）。
+func liveOf(t *testing.T, r *gin.Engine, id uint) *service.TaskView {
+	t.Helper()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/jobs/v1?limit=50", nil))
+	var jobs []service.JobView
+	if err := json.Unmarshal(w.Body.Bytes(), &jobs); err != nil {
+		t.Fatalf("采集记录解析失败: %v", err)
+	}
+	for _, j := range jobs {
+		if j.ID == id {
+			return j.Live
+		}
+	}
+	return nil
+}
+
+// listJobs 读取全部采集记录（测试里用来断言任务条数）。
+func listJobs(t *testing.T, r *gin.Engine) []model.CrawlJob {
+	t.Helper()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/jobs/v1?limit=50", nil))
+	var jobs []model.CrawlJob
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &jobs) != nil {
+		t.Fatalf("采集记录异常: %d %s", w.Code, w.Body.String())
+	}
+	return jobs
+}
+
 // jobByID 读取指定的采集记录（任务结束前后都可读，运行中会带上 live 字段）。
 func jobByID(t *testing.T, r *gin.Engine, id uint) model.CrawlJob {
 	t.Helper()
@@ -1145,16 +1174,39 @@ func TestTaskManualRetryAndRerun(t *testing.T) {
 	var retried struct {
 		JobID   uint `json:"jobId"`
 		Attempt int  `json:"attempt"`
+		Pages   int  `json:"pages"`
+		Fetched int  `json:"fetched"`
 	}
 	if w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &retried) != nil || retried.JobID == 0 {
 		t.Fatalf("重试任务失败: %d %s", w.Code, w.Body.String())
 	}
-	if retried.JobID == first.JobID {
-		t.Fatalf("重试应产生新的采集记录")
+	if retried.JobID != first.JobID {
+		t.Fatalf("重试应复用原任务记录 %d，实际新开了 %d", first.JobID, retried.JobID)
 	}
-	retryJob := waitJobStatus(t, r, retried.JobID, model.JobSuccess)
-	if retryJob.RetryOf != first.JobID {
-		t.Fatalf("重试记录应指出来源任务 %d，实际 %d", first.JobID, retryJob.RetryOf)
+	if retried.Attempt != 2 {
+		t.Fatalf("重试后应接着原任务的尝试次数（2），实际 %d", retried.Attempt)
+	}
+	// 重试入队时就要带上原任务已累计的统计，页面不会闪回 0。
+	if retried.Pages != 1 || retried.Fetched != 1 {
+		t.Fatalf("重试视图应带原任务累计统计（1 页/1 条），实际 %d 页/%d 条", retried.Pages, retried.Fetched)
+	}
+	retryJob := waitJobStatus(t, r, first.JobID, model.JobSuccess)
+	if retryJob.RetryOf != 0 {
+		t.Fatalf("重试复用原记录，不应再标记来源任务，实际 %d", retryJob.RetryOf)
+	}
+	// 统计与页数在原任务基础上累加：失败前已采 1 页 1 条，重试再采 2 页 2 条。
+	if retryJob.Pages != 3 {
+		t.Fatalf("重试后页数应累计为 3，实际 %d", retryJob.Pages)
+	}
+	if retryJob.Fetched != 3 || retryJob.New != 3 {
+		t.Fatalf("重试后拉取/新增应累计为 3/3，实际 %d/%d", retryJob.Fetched, retryJob.New)
+	}
+	if retryJob.Attempt != 2 {
+		t.Fatalf("重试后尝试次数应累计为 2，实际 %d", retryJob.Attempt)
+	}
+	// 最终只有一条任务记录
+	if jobs := listJobs(t, r); len(jobs) != 1 {
+		t.Fatalf("手动重试不应新开任务，期望 1 条记录，实际 %d 条", len(jobs))
 	}
 	mu.Lock()
 	firstPage := -1
@@ -1255,6 +1307,17 @@ func TestTaskLiveProgress(t *testing.T) {
 				}
 				if v.ItemsPerSecond <= 0 {
 					t.Fatalf("运行中应能算出采集速率: %+v", v)
+				}
+				// 拉取 / 新增 / 更新 / 未变也要随任务实时累计，且四者自洽。
+				if v.Fetched < v.Pages {
+					t.Fatalf("运行中拉取条数应随分页推进: %+v", v)
+				}
+				if v.Fetched != v.New+v.Updated+v.Unchanged {
+					t.Fatalf("运行中拉取应等于新增+更新+未变: %+v", v)
+				}
+				// 采集记录的 live 也必须是同一份实时统计
+				if lv := liveOf(t, r, created.JobID); lv == nil || lv.Fetched < v.Fetched {
+					t.Fatalf("采集记录实时统计落后: live=%+v task=%+v", lv, v)
 				}
 				sawProgress = true
 			}

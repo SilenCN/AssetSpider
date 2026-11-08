@@ -10,6 +10,7 @@ import (
 // JobRepository 是 CrawlJob 实体的数据访问契约。
 type JobRepository interface {
 	CreateJob(job *model.CrawlJob) error
+	ReopenJob(job *model.CrawlJob) error
 	StartJob(job *model.CrawlJob) error
 	FinishJob(job *model.CrawlJob, status, message string) error
 	GetJob(id uint) (*model.CrawlJob, error)
@@ -32,6 +33,33 @@ var _ JobRepository = (*jobRepository)(nil)
 // CreateJob 创建一条 running 状态的任务记录。
 func (r *jobRepository) CreateJob(job *model.CrawlJob) error {
 	return r.db.Create(job).Error
+}
+
+// ReopenJob 把一条已结束的记录重新放回队列（手动重试复用原记录，不新开任务）。
+//
+// 统计值（拉取/新增/更新/未变/页数/总量）与 attempt 都按传入的 job 原样写回，
+// 调用方先把它们置为「历史累计值」再调用，重试后继续累加。
+// 这里必须用 map 更新：finished_at 要写回 NULL、message 要清空，
+// 用结构体 Updates 会被 GORM 当成零值跳过。
+func (r *jobRepository) ReopenJob(job *model.CrawlJob) error {
+	job.Status = model.JobQueued
+	job.StartedAt = time.Now()
+	job.FinishedAt = nil
+	job.Message = ""
+	return r.db.Model(job).Updates(map[string]interface{}{
+		"status":      job.Status,
+		"started_at":  job.StartedAt,
+		"finished_at": nil,
+		"message":     "",
+		"resume_page": job.ResumePage,
+		"pages":       job.Pages,
+		"fetched":     job.Fetched,
+		"new":         job.New,
+		"updated":     job.Updated,
+		"unchanged":   job.Unchanged,
+		"total":       job.Total,
+		"attempt":     job.Attempt,
+	}).Error
 }
 
 // StartJob 把已排队的任务标记为运行中，并记录真正的开始时间。

@@ -394,11 +394,11 @@ async function resumeTask(jobId) {
   } catch (e) { notify(e.message, 'err') }
 }
 
-// 失败任务：从失败页续采（不重复已完成的页面）
+// 失败任务：在原任务记录上从失败页续采（不新开任务，统计继续累加）
 async function retryTask(jobId) {
   try {
     const t = await request(`/api/tasks/v1/${jobId}/retry`, { method: 'POST' })
-    notify(`已重试任务 #${jobId}（新任务 #${t.jobId}），从失败页继续`, 'ok')
+    notify(`任务 #${t.jobId} 已重新入队，将从上次失败的页面继续（统计累加）`, 'ok')
     await Promise.all([loadTasks(), loadJobs()])
   } catch (e) { notify(e.message, 'err') }
 }
@@ -464,6 +464,16 @@ function statusLabel(s) {
 function short(text, n = 46) {
   const s = String(text || '')
   return s.length > n ? s.slice(0, n) + '…' : s
+}
+
+// 采集记录：任务运行中以内存里的实时视图为准（拉取/新增/更新/未变随分页累加），
+// 结束后回落到落库的终态统计。
+function stat(j, key) {
+  if (j.live && typeof j.live[key] === 'number') return j.live[key]
+  return j[key] ?? 0
+}
+function jobMessage(j) {
+  return (j.live && j.live.message) || j.message || '-'
 }
 
 // 任务进度轮询：页面不可见时暂停，避免无谓请求
@@ -532,7 +542,7 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
         <div v-else class="table-wrap">
           <table>
             <thead>
-              <tr><th>任务</th><th>站点</th><th>模式</th><th>状态</th><th class="prog-col">实时进度</th><th>新增 / 更新</th><th>速率</th><th>已运行</th><th>操作</th></tr>
+              <tr><th>任务</th><th>站点</th><th>模式</th><th>状态</th><th class="prog-col">实时进度</th><th>拉取 / 新增 / 更新 / 未变</th><th>速率</th><th>已运行</th><th>操作</th></tr>
             </thead>
             <tbody>
               <tr v-for="t in tasks" :key="t.jobId">
@@ -558,7 +568,9 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
                   </div>
                   <div v-if="t.message" class="tiny msg" :title="t.message">{{ short(t.message, 60) }}</div>
                 </td>
-                <td class="mono"><span class="up">{{ t.new }}</span> / {{ t.updated }}</td>
+                <td class="mono stats" :title="`拉取 ${t.fetched} 条，新增 ${t.new}，更新 ${t.updated}，未变 ${t.unchanged}`">
+                  {{ t.fetched }} / <span class="up">{{ t.new }}</span> / {{ t.updated }} / <span class="muted">{{ t.unchanged }}</span>
+                </td>
                 <td class="mono muted">{{ t.itemsPerSecond > 0 ? t.itemsPerSecond.toFixed(1) + ' 条/秒' : '-' }}</td>
                 <td class="muted">{{ t.elapsedSeconds }}s</td>
                 <td class="ops">
@@ -738,8 +750,8 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
                 <td class="host">{{ j.sourceName }}</td>
                 <td>{{ modeLabel(j.mode) }}</td>
                 <td>
-                  <span class="badge" :class="j.status">{{ j.live && j.live.retryInSeconds > 0 ? taskStatusText(j.live) : statusLabel(j.status) }}</span>
-                  <div v-if="j.attempt > 1" class="tiny">尝试 {{ j.attempt }} 次</div>
+                  <span class="badge" :class="j.status">{{ j.live ? taskStatusText(j.live) : statusLabel(j.status) }}</span>
+                  <div v-if="stat(j, 'attempt') > 1" class="tiny">尝试 {{ stat(j, 'attempt') }} 次</div>
                 </td>
                 <td class="mono">
                   <template v-if="j.live">
@@ -753,12 +765,12 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
                   </template>
                   <template v-else>{{ j.pages }}</template>
                 </td>
-                <td class="mono">{{ j.fetched }}</td>
-                <td class="mono up">{{ j.new }}</td>
-                <td class="mono">{{ j.updated }}</td>
-                <td class="mono muted">{{ j.unchanged }}</td>
+                <td class="mono">{{ stat(j, 'fetched') }}</td>
+                <td class="mono up">{{ stat(j, 'new') }}</td>
+                <td class="mono">{{ stat(j, 'updated') }}</td>
+                <td class="mono muted">{{ stat(j, 'unchanged') }}</td>
                 <td class="muted">{{ formatTime(j.startedAt) }}</td>
-                <td class="muted msg" :title="j.message">{{ short(j.message || '-', 30) }}</td>
+                <td class="muted msg" :title="jobMessage(j)">{{ short(jobMessage(j), 30) }}</td>
                 <td class="ops">
                   <template v-if="j.status === 'running' || j.status === 'queued'">
                     <button class="mini danger" @click="pauseTask(j.id)">暂停</button>

@@ -76,6 +76,7 @@ type crawlTask struct {
 	startedAt  time.Time
 
 	maxAttempts int
+	baseAttempt int // 本轮运行之前已累计的尝试次数（手动重试复用原记录时 >0）
 
 	mu      sync.Mutex
 	status  string
@@ -99,6 +100,10 @@ func newCrawlTask(job *model.CrawlJob, maxAttempts int) *crawlTask {
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}
+	base := job.Attempt
+	if base < 0 {
+		base = 0
+	}
 	return &crawlTask{
 		job:         job,
 		sourceID:    job.SourceID,
@@ -106,8 +111,14 @@ func newCrawlTask(job *model.CrawlJob, maxAttempts int) *crawlTask {
 		mode:        job.Mode,
 		startedAt:   time.Now(),
 		maxAttempts: maxAttempts,
+		baseAttempt: base,
 		status:      model.JobQueued,
-		attempt:     1,
+		attempt:     base + 1,
+		pages:       job.Pages,
+		fetched:     job.Fetched,
+		added:       job.New,
+		updated:     job.Updated,
+		changed:     job.Unchanged,
 		pauseCh:     make(chan struct{}),
 	}
 }
@@ -160,10 +171,11 @@ func (t *crawlTask) setMessage(msg string) {
 	t.mu.Unlock()
 }
 
-// beginAttempt 在每次尝试开始时重置页码显示并记录尝试序号。
+// beginAttempt 在每次尝试开始时重置页码显示并记录累计尝试序号。
+// 手动重试复用原记录时 baseAttempt 为之前已尝试的次数，序号接着往下数。
 func (t *crawlTask) beginAttempt(attempt, page int) {
 	t.mu.Lock()
-	t.attempt, t.page, t.retryAt = attempt, page, time.Time{}
+	t.attempt, t.page, t.retryAt = t.baseAttempt+attempt, page, time.Time{}
 	t.mu.Unlock()
 }
 
@@ -209,7 +221,7 @@ func (t *crawlTask) snapshot() TaskView {
 		Mode:           t.mode,
 		Status:         t.status,
 		Attempt:        t.attempt,
-		MaxAttempts:    t.maxAttempts,
+		MaxAttempts:    t.baseAttempt + t.maxAttempts,
 		Page:           t.page,
 		PageCount:      t.pageCnt,
 		Pages:          t.pages,
@@ -259,6 +271,10 @@ type startOptions struct {
 	resumePage int  // >1 时显式从该页续采（暂停/失败的任务重试时用）
 	fromStart  bool // 强制从第 1 页开始（重新运行）
 	retryOf    uint // 手动重试 / 重新运行的来源任务 ID
+
+	// reopen 非空时复用这条采集记录：手动重试不新开任务，而是在原记录上
+	// 从失败页继续，拉取/新增/更新/未变等统计与尝试次数继续累加。
+	reopen *model.CrawlJob
 }
 
 // begin 校验参数、占用站点、落一条 queued 任务记录并登记到运行时任务表。
@@ -291,7 +307,13 @@ func (s *CrawlService) begin(sourceID uint, mode string, opt startOptions) (*cra
 	job := &model.CrawlJob{
 		SourceID: src.ID, SourceName: src.Name, Mode: mode,
 		Status: model.JobQueued, StartedAt: time.Now(),
-		ResumePage: startPage, Attempt: 1, RetryOf: opt.retryOf,
+		ResumePage: startPage, Attempt: 0, RetryOf: opt.retryOf,
+	}
+	reopening := opt.reopen != nil
+	if reopening {
+		// 复用原记录（手动重试）：统计值、尝试次数与续采页都沿用记录本身。
+		job = opt.reopen
+		job.ResumePage = startPage
 	}
 
 	s.mu.Lock()
@@ -299,7 +321,11 @@ func (s *CrawlService) begin(sourceID uint, mode string, opt startOptions) (*cra
 	if _, running := s.bySource[src.ID]; running {
 		return nil, nil, conflict("站点「%s」已有采集任务在进行中，可先暂停或等待其结束", src.Name)
 	}
-	if err := s.jobs.CreateJob(job); err != nil {
+	if reopening {
+		if err := s.jobs.ReopenJob(job); err != nil {
+			return nil, nil, fmt.Errorf("重置采集记录失败: %w", err)
+		}
+	} else if err := s.jobs.CreateJob(job); err != nil {
 		return nil, nil, fmt.Errorf("创建采集记录失败: %w", err)
 	}
 	task := newCrawlTask(job, 1+s.cfg.RetryTimes)
@@ -349,6 +375,9 @@ func (s *CrawlService) runTask(ctx context.Context, task *crawlTask, src *model.
 	res := &RunResult{
 		JobID: task.job.ID, SourceID: task.sourceID, SourceName: task.sourceName,
 		Mode: task.mode, StartedAt: task.job.StartedAt, ResumePage: task.job.ResumePage,
+		// 复用原记录重试时，统计从已累计值接着加，不把之前的成果清零。
+		Fetched: task.job.Fetched, New: task.job.New, Updated: task.job.Updated,
+		Unchanged: task.job.Unchanged, Pages: task.job.Pages, Total: task.job.Total,
 	}
 
 	startPage := task.job.ResumePage
@@ -448,6 +477,8 @@ func (s *CrawlService) settle(task *crawlTask, res *RunResult, status, msg strin
 		res = &RunResult{
 			JobID: task.job.ID, SourceID: task.sourceID, SourceName: task.sourceName,
 			Mode: task.mode, StartedAt: task.job.StartedAt, ResumePage: task.job.ResumePage,
+			Fetched: task.job.Fetched, New: task.job.New, Updated: task.job.Updated,
+			Unchanged: task.job.Unchanged, Pages: task.job.Pages, Total: task.job.Total,
 		}
 	}
 	res.FinishedAt = now
@@ -547,7 +578,8 @@ func (s *CrawlService) ResumeTask(jobID uint) (*TaskView, error) {
 	return s.startTask(job.SourceID, job.Mode, startOptions{resumePage: job.ResumePage})
 }
 
-// RetryTask 手动重试一个失败的任务：从失败页续采，不重复已完成的页面。
+// RetryTask 手动重试一个失败的任务：**复用原记录**，从失败页续采，
+// 不新开任务，已完成的页面不会重采，拉取/新增/更新/未变等统计继续累加。
 func (s *CrawlService) RetryTask(jobID uint) (*TaskView, error) {
 	job, err := s.jobs.GetJob(jobID)
 	if err != nil {
@@ -556,8 +588,12 @@ func (s *CrawlService) RetryTask(jobID uint) (*TaskView, error) {
 	if job.Status != model.JobFailed {
 		return nil, conflict("任务 %d 当前状态为「%s」，只有失败的任务可以重试", jobID, job.Status)
 	}
+	startPage := job.ResumePage
+	if startPage < 1 {
+		startPage = 1
+	}
 	return s.startTask(job.SourceID, job.Mode,
-		startOptions{resumePage: job.ResumePage, retryOf: job.ID})
+		startOptions{resumePage: startPage, reopen: job})
 }
 
 // RerunTask 重新运行一条已结束的任务：忽略断点，从第 1 页重新采集。
