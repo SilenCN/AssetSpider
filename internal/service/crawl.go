@@ -90,7 +90,11 @@ func NewCrawlService(
 }
 
 // RunOne 同步执行一次采集，调用方阻塞直到任务结束（成功/暂停/失败）。
-func (s *CrawlService) RunOne(ctx context.Context, id uint, mode string) (*RunResult, error) {
+// 非管理员只能采集自己可见的站点，越权时按「站点不存在」返回，避免泄露站点信息。
+func (s *CrawlService) RunOne(ctx context.Context, id uint, mode string, p ...Principal) (*RunResult, error) {
+	if !principalOf(p...).CanSee(id) {
+		return nil, notFound("站点 %d 不存在或无权访问", id)
+	}
 	task, src, err := s.begin(id, mode, startOptions{})
 	if err != nil {
 		return nil, err
@@ -100,11 +104,12 @@ func (s *CrawlService) RunOne(ctx context.Context, id uint, mode string) (*RunRe
 
 // RunAll 对所有启用站点发起同模式采集，并发量由全局并发上限决定，
 // 超出的站点任务进入排队。返回值顺序与站点列表一致。
-func (s *CrawlService) RunAll(ctx context.Context, mode string) ([]RunResult, error) {
+func (s *CrawlService) RunAll(ctx context.Context, mode string, p ...Principal) ([]RunResult, error) {
 	if mode != model.ModeFull && mode != model.ModeIncremental {
 		return nil, invalid("不支持的采集模式 %q（可选 full / incremental）", mode)
 	}
-	srcs, err := s.sources.ListEnabledSources()
+	// 批量采集只覆盖当前主体可见的启用站点，避免越权触发别人的采集任务。
+	srcs, err := s.sources.ListEnabledSources(principalOf(p...).Visible())
 	if err != nil {
 		return nil, err
 	}

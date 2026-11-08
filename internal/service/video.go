@@ -101,7 +101,7 @@ func (s *VideoService) rewriteVideos(items []model.Video) error {
 	return nil
 }
 
-func (s *VideoService) List(query VideoListQuery) (VideoList, error) {
+func (s *VideoService) List(query VideoListQuery, p ...Principal) (VideoList, error) {
 	page, size := query.Page, query.Size
 	if page < 1 {
 		page = 1
@@ -110,13 +110,14 @@ func (s *VideoService) List(query VideoListQuery) (VideoList, error) {
 		size = 20
 	}
 	items, total, err := s.videos.ListVideos(repository.VideoQuery{
-		SourceID:   query.SourceID,
-		CategoryID: query.CategoryID,
-		Keyword:    strings.TrimSpace(query.Keyword),
-		Area:       strings.TrimSpace(query.Area),
-		Sort:       strings.TrimSpace(query.Sort),
-		Page:       page,
-		Size:       size,
+		SourceID:         query.SourceID,
+		CategoryID:       query.CategoryID,
+		Keyword:          strings.TrimSpace(query.Keyword),
+		Area:             strings.TrimSpace(query.Area),
+		Sort:             strings.TrimSpace(query.Sort),
+		Page:             page,
+		Size:             size,
+		VisibleSourceIDs: principalOf(p...).Visible(),
 	})
 	if err != nil {
 		return VideoList{}, err
@@ -129,8 +130,8 @@ func (s *VideoService) List(query VideoListQuery) (VideoList, error) {
 }
 
 // Areas 返回库中出现过的地域列表，供前端筛选下拉使用。
-func (s *VideoService) Areas() ([]string, error) {
-	areas, err := s.videos.ListVideoAreas()
+func (s *VideoService) Areas(p ...Principal) ([]string, error) {
+	areas, err := s.videos.ListVideoAreas(principalOf(p...).Visible())
 	if err != nil {
 		return nil, err
 	}
@@ -140,9 +141,9 @@ func (s *VideoService) Areas() ([]string, error) {
 	return areas, nil
 }
 
-// Get 返回单条影片完整记录（含原始 JSON 与扩展字段）。
-func (s *VideoService) Get(id uint) (*model.Video, error) {
-	v, err := s.videos.GetVideo(id)
+// Get 返回单条影片完整记录（含原始 JSON 与扩展字段）；不可见站点按不存在处理。
+func (s *VideoService) Get(id uint, p ...Principal) (*model.Video, error) {
+	v, err := s.videos.GetVideo(id, principalOf(p...).Visible())
 	if err != nil {
 		return nil, wrapRepo(err)
 	}
@@ -159,8 +160,8 @@ func (s *VideoService) Get(id uint) (*model.Video, error) {
 // GetPlayGroups 返回单条影片按苹果CMS 字段解析出的结构化播放组。
 // 若影片无播放地址（vod_play_list 为空），返回空切片而非错误。
 // 播放地址会按所属站点配置替换域名 / 拼接解析地址。
-func (s *VideoService) GetPlayGroups(id uint) ([]model.PlayGroup, error) {
-	v, err := s.videos.GetVideo(id)
+func (s *VideoService) GetPlayGroups(id uint, p ...Principal) ([]model.PlayGroup, error) {
+	v, err := s.videos.GetVideo(id, principalOf(p...).Visible())
 	if err != nil {
 		return nil, wrapRepo(err)
 	}

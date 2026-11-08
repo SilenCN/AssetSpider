@@ -625,17 +625,20 @@ func (s *CrawlService) startTask(sourceID uint, mode string, opt startOptions) (
 	return &view, nil
 }
 
-// StartTask 异步发起一个采集任务。
-func (s *CrawlService) StartTask(sourceID uint, mode string) (*TaskView, error) {
+// StartTask 异步发起一个采集任务；非管理员只能采集自己可见的站点。
+func (s *CrawlService) StartTask(sourceID uint, mode string, p ...Principal) (*TaskView, error) {
+	if !principalOf(p...).CanSee(sourceID) {
+		return nil, notFound("站点 %d 不存在或无权访问", sourceID)
+	}
 	return s.startTask(sourceID, mode, startOptions{})
 }
 
 // PauseTask 手动暂停一个排队中或运行中的任务。
-func (s *CrawlService) PauseTask(jobID uint) (*TaskView, error) {
+func (s *CrawlService) PauseTask(jobID uint, p ...Principal) (*TaskView, error) {
 	s.mu.Lock()
 	task, ok := s.tasks[jobID]
 	s.mu.Unlock()
-	if !ok {
+	if !ok || !principalOf(p...).CanSee(task.sourceID) {
 		return nil, notFound("任务 %d 不存在或已结束", jobID)
 	}
 	task.requestPause()
@@ -645,10 +648,14 @@ func (s *CrawlService) PauseTask(jobID uint) (*TaskView, error) {
 
 // ResumeTask 继续一个已暂停的任务：按原站点与原模式重新入队。
 // 全量模式从暂停时的页码续采，增量模式从已保存的游标继续。
-func (s *CrawlService) ResumeTask(jobID uint) (*TaskView, error) {
+func (s *CrawlService) ResumeTask(jobID uint, p ...Principal) (*TaskView, error) {
+	actor := principalOf(p...)
 	s.mu.Lock()
 	if task, ok := s.tasks[jobID]; ok {
 		s.mu.Unlock()
+		if !actor.CanSee(task.sourceID) {
+			return nil, notFound("任务 %d 不存在或已结束", jobID)
+		}
 		view := task.snapshot()
 		return &view, nil // 还在跑，视为已恢复
 	}
@@ -658,6 +665,9 @@ func (s *CrawlService) ResumeTask(jobID uint) (*TaskView, error) {
 	if err != nil {
 		return nil, wrapRepo(err)
 	}
+	if !actor.CanSee(job.SourceID) {
+		return nil, notFound("任务 %d 不存在或已结束", jobID)
+	}
 	if job.Status != model.JobPaused {
 		return nil, conflict("任务 %d 当前状态为「%s」，只有已暂停的任务可以继续", jobID, job.Status)
 	}
@@ -666,10 +676,13 @@ func (s *CrawlService) ResumeTask(jobID uint) (*TaskView, error) {
 
 // RetryTask 手动重试一个失败的任务：**复用原记录**，从失败页续采，
 // 不新开任务，已完成的页面不会重采，拉取/新增/更新/未变等统计继续累加。
-func (s *CrawlService) RetryTask(jobID uint) (*TaskView, error) {
+func (s *CrawlService) RetryTask(jobID uint, p ...Principal) (*TaskView, error) {
 	job, err := s.jobs.GetJob(jobID)
 	if err != nil {
 		return nil, wrapRepo(err)
+	}
+	if !principalOf(p...).CanSee(job.SourceID) {
+		return nil, notFound("任务 %d 不存在或已结束", jobID)
 	}
 	if job.Status != model.JobFailed {
 		return nil, conflict("任务 %d 当前状态为「%s」，只有失败的任务可以重试", jobID, job.Status)
@@ -683,10 +696,13 @@ func (s *CrawlService) RetryTask(jobID uint) (*TaskView, error) {
 }
 
 // RerunTask 重新运行一条已结束的任务：忽略断点，从第 1 页重新采集。
-func (s *CrawlService) RerunTask(jobID uint) (*TaskView, error) {
+func (s *CrawlService) RerunTask(jobID uint, p ...Principal) (*TaskView, error) {
 	job, err := s.jobs.GetJob(jobID)
 	if err != nil {
 		return nil, wrapRepo(err)
+	}
+	if !principalOf(p...).CanSee(job.SourceID) {
+		return nil, notFound("任务 %d 不存在或已结束", jobID)
 	}
 	if job.Status == model.JobRunning || job.Status == model.JobQueued {
 		return nil, conflict("任务 %d 仍在进行中，请先暂停后再重新运行", jobID)
@@ -706,14 +722,25 @@ func (s *CrawlService) LiveTask(jobID uint) *TaskView {
 	return &view
 }
 
-// ListTasks 返回当前排队中/运行中/暂停中的任务及并发容量。
-func (s *CrawlService) ListTasks() TaskList {
+// ListTasks 返回当前排队中/运行中/暂停中的任务及并发容量；
+// 非管理员只能看到自己可见站点的任务。
+func (s *CrawlService) ListTasks(p ...Principal) TaskList {
 	s.mu.Lock()
 	views := make([]TaskView, 0, len(s.tasks))
 	for _, task := range s.tasks {
 		views = append(views, task.snapshot())
 	}
 	s.mu.Unlock()
+	actor := principalOf(p...)
+	if !actor.IsAdmin {
+		filtered := make([]TaskView, 0, len(views))
+		for _, v := range views {
+			if actor.CanSee(v.SourceID) {
+				filtered = append(filtered, v)
+			}
+		}
+		views = filtered
+	}
 	sort.Slice(views, func(i, j int) bool { return views[i].JobID < views[j].JobID })
 
 	active, max, queued := s.limiter.state()

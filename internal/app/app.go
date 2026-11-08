@@ -47,6 +47,8 @@ func New(cfg *config.Config) (*App, error) {
 	jobSvc := service.NewJobService(repos.Jobs)
 	// 采集记录页要显示运行中任务的实时进度，这里把调度层注入为进度来源。
 	jobSvc.SetLiveSource(crawlSvc)
+	// 认证与站点授权：同一个服务同时支撑登录控制器与用户管理控制器。
+	authSvc := service.NewAuthService(repos.Users, cfg.Auth)
 
 	// 第 2 层：HTTP 控制器（注入对应服务）
 	set := controller.Set{
@@ -59,6 +61,8 @@ func New(cfg *config.Config) (*App, error) {
 		Category: controller.NewCategoryController(categorySvc),
 		Meta:     controller.NewMetaController(metaSvc),
 		Job:      controller.NewJobController(jobSvc),
+		Auth:     controller.NewAuthController(authSvc),
+		Users:    controller.NewUserController(authSvc),
 		Page:     controller.NewPageController(cfg.Web.Dir),
 	}
 

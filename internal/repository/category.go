@@ -14,8 +14,9 @@ type CategoryRepository interface {
 	// EnsureForVideos 按视频自带的分类信息幂等创建本站分类，
 	// 返回 utils.CategoryKey → 分类主键 的映射，供 service 回填 Video.CategoryID。
 	EnsureForVideos(sourceID uint, videos []model.Video) (map[string]uint, error)
-	List(sourceID uint) ([]model.Category, error)
-	Get(id uint) (*model.Category, error)
+	// visible 为可选站点白名单，语义见 visibility.go。
+	List(sourceID uint, visible ...[]uint) ([]model.Category, error)
+	Get(id uint, visible ...[]uint) (*model.Category, error)
 }
 
 // categoryRepository 是 Category 实体专属的仓储对象。
@@ -156,8 +157,8 @@ func (r *categoryRepository) EnsureForVideos(sourceID uint, videos []model.Video
 }
 
 // List 返回分类，按站点与 ID 正序；sourceID 为 0 时返回全部站点的分类。
-func (r *categoryRepository) List(sourceID uint) ([]model.Category, error) {
-	q := r.db.Model(&model.Category{})
+func (r *categoryRepository) List(sourceID uint, visible ...[]uint) ([]model.Category, error) {
+	q := applyVisibility(r.db.Model(&model.Category{}), "source_id", firstVisible(visible...))
 	if sourceID > 0 {
 		q = q.Where("source_id = ?", sourceID)
 	}
@@ -168,10 +169,11 @@ func (r *categoryRepository) List(sourceID uint) ([]model.Category, error) {
 	return items, nil
 }
 
-// Get 按主键读取分类。
-func (r *categoryRepository) Get(id uint) (*model.Category, error) {
+// Get 按主键读取分类；分类所属站点不可见时按「不存在」处理。
+func (r *categoryRepository) Get(id uint, visible ...[]uint) (*model.Category, error) {
 	var cat model.Category
-	if err := r.db.First(&cat, id).Error; err != nil {
+	q := applyVisibility(r.db.Model(&model.Category{}), "source_id", firstVisible(visible...))
+	if err := q.First(&cat, id).Error; err != nil {
 		return nil, notFound(err)
 	}
 	return &cat, nil

@@ -17,7 +17,8 @@ type JobRepository interface {
 	GetJob(id uint) (*model.CrawlJob, error)
 	LastJob(sourceID uint, mode string) (*model.CrawlJob, error)
 	ResetInterrupted(message string) (int64, error)
-	ListJobs(sourceID uint, limit int) ([]model.CrawlJob, error)
+	// visible 为可选站点白名单，语义见 visibility.go。
+	ListJobs(sourceID uint, limit int, visible ...[]uint) ([]model.CrawlJob, error)
 }
 
 // jobRepository 是 CrawlJob 实体专属的仓储对象。
@@ -154,11 +155,11 @@ func (r *jobRepository) ResetInterrupted(message string) (int64, error) {
 }
 
 // ListJobs 返回最近的采集记录。
-func (r *jobRepository) ListJobs(sourceID uint, limit int) ([]model.CrawlJob, error) {
+func (r *jobRepository) ListJobs(sourceID uint, limit int, visible ...[]uint) ([]model.CrawlJob, error) {
 	if limit < 1 || limit > 200 {
 		limit = 50
 	}
-	q := r.db.Model(&model.CrawlJob{})
+	q := applyVisibility(r.db.Model(&model.CrawlJob{}), "source_id", firstVisible(visible...))
 	if sourceID > 0 {
 		q = q.Where("source_id = ?", sourceID)
 	}

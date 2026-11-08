@@ -7,8 +7,9 @@
 //	video.go    → VideoRepository     （model.Video）
 //	category.go → CategoryRepository  （model.Category）
 //	job.go      → JobRepository       （model.CrawlJob）
+//	user.go     → UserRepository      （model.User / model.Session / model.UserSource）
 //
-// 本文件只负责共享数据库连接、自动迁移、装配四个仓储对象与连接生命周期，
+// 本文件只负责共享数据库连接、自动迁移、装配各实体仓储对象与连接生命周期，
 // 不承载任何实体的读写方法。
 package repository
 
@@ -23,7 +24,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// Repositories 是四个实体仓储的容器。
+// Repositories 是各实体仓储的容器。
 // 它只是装配结果，不是「大杂烩仓储」：任何实体读写都必须走对应的那个对象。
 type Repositories struct {
 	Assets     AssetRepository
@@ -31,6 +32,7 @@ type Repositories struct {
 	Videos     VideoRepository
 	Categories CategoryRepository
 	Jobs       JobRepository
+	Users      UserRepository
 
 	db   *gorm.DB
 	path string
@@ -60,6 +62,9 @@ func Open(path string) (*Repositories, error) {
 		&model.Video{},
 		&model.Category{},
 		&model.CrawlJob{},
+		&model.User{},
+		&model.Session{},
+		&model.UserSource{},
 	); err != nil {
 		return nil, fmt.Errorf("迁移表结构: %w", err)
 	}
@@ -69,6 +74,7 @@ func Open(path string) (*Repositories, error) {
 		Videos:     NewVideoRepository(db),
 		Categories: NewCategoryRepository(db),
 		Jobs:       NewJobRepository(db),
+		Users:      NewUserRepository(db),
 		db:         db,
 		path:       path,
 	}, nil

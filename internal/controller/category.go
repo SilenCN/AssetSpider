@@ -18,7 +18,7 @@ func NewCategoryController(svc *service.CategoryService) *CategoryController {
 
 // List 返回分类，可用 source_id 只看某个资源站的一套分类。
 func (c *CategoryController) List(ctx *gin.Context) {
-	out, err := c.svc.List(utils.ParseUintQuery(ctx.Query("source_id")))
+	out, err := c.svc.List(utils.ParseUintQuery(ctx.Query("source_id")), principalOf(ctx))
 	if err != nil {
 		writeError(ctx, err)
 		return
@@ -32,7 +32,7 @@ func (c *CategoryController) Get(ctx *gin.Context) {
 		badRequest(ctx, err.Error())
 		return
 	}
-	item, err := c.svc.Get(id)
+	item, err := c.svc.Get(id, principalOf(ctx))
 	if err != nil {
 		writeError(ctx, err)
 		return
@@ -42,7 +42,7 @@ func (c *CategoryController) Get(ctx *gin.Context) {
 
 // Tree 返回分类的二级树（父分类在前、子分类嵌套）。
 func (c *CategoryController) Tree(ctx *gin.Context) {
-	out, err := c.svc.Tree(utils.ParseUintQuery(ctx.Query("source_id")))
+	out, err := c.svc.Tree(utils.ParseUintQuery(ctx.Query("source_id")), principalOf(ctx))
 	if err != nil {
 		writeError(ctx, err)
 		return

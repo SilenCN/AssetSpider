@@ -12,6 +12,7 @@
 | ORM / 数据库 | GORM + SQLite（纯 Go 驱动 modernc.org/sqlite，无 CGO） |
 | 前端 | Vue 3 + Vite + hls.js（m3u8 播放，按需动态加载） |
 | 配置 | `conf/config.yaml`（YAML） |
+| 认证 | bcrypt 密码哈希 + 随机令牌（仅存 SHA-256 摘要）+ Gin 中间件 |
 | 采集协议 | 苹果CMS V10 Provide 接口 `api.php/provide/vod/?ac=videolist` JSON |
 
 ## 四层架构
@@ -38,12 +39,13 @@ router  →  controller  →  service  →  repository
 | `Video` | `repository/video.go` | `VideoRepository` | `UpsertVideos`、`GetVideo`、`ListVideos`、`CountVideosBySource` / `ByCategory` |
 | `Category` | `repository/category.go` | `CategoryRepository` | `EnsureForVideos`、`List`、`Get` |
 | `CrawlJob` | `repository/job.go` | `JobRepository` | `CreateJob` / `FinishJob` / `ListJobs` |
+| `User` / `Session` / `UserSource` | `repository/user.go` | `UserRepository` | 账号 CRUD、会话签发/校验/吊销、站点授权读写 |
 
-`repository/store.go` 只是容器：`Repositories` 共享一条 `*gorm.DB`，负责连接、自动迁移、装配四个对象与 `Path` / `Close`，**不承载任何实体读写方法**；`errors.go` 放各对象共用的 `ErrNotFound`。测试同样按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go`，`store_test.go` 只测连接与装配。
+`repository/store.go` 只是容器：`Repositories` 共享一条 `*gorm.DB`，负责连接、自动迁移、装配各实体对象与 `Path` / `Close`，**不承载任何实体读写方法**；`errors.go` 放各对象共用的 `ErrNotFound`，`visibility.go` 放各实体共用的「可见站点白名单」过滤规则。测试同样按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go` / `user_test.go`，`store_test.go` 只测连接与装配。
 
 约束的具体落地：
 
-- 每个 service 只注入自己需要的实体仓储**接口**（如 `AssetService` 拿 `AssetRepository`，`CrawlService` 拿 `SourceRepository` + `VideoRepository` + `JobRepository`），看不到 `*gorm.DB`；GORM 的 `ErrRecordNotFound` 在仓储层翻译为 `repository.ErrNotFound`，服务层再翻译为 `ErrInvalid / ErrNotFound / ErrConflict` 三个哨兵错误，控制器据此决定 400 / 404 / 409 / 500（采集接口默认 502）。
+- 每个 service 只注入自己需要的实体仓储**接口**（如 `AssetService` 拿 `AssetRepository`，`CrawlService` 拿 `SourceRepository` + `VideoRepository` + `JobRepository`），看不到 `*gorm.DB`；GORM 的 `ErrRecordNotFound` 在仓储层翻译为 `repository.ErrNotFound`，服务层再翻译为 `ErrInvalid / ErrUnauthorized / ErrForbidden / ErrNotFound / ErrConflict` 五个哨兵错误，控制器据此决定 400 / 401 / 403 / 404 / 409 / 500（采集接口默认 502）。
 - 采集协议客户端放在 `internal/service/collector`（service 层内部子包），只做 HTTP 抓取、JSON 零丢失解析与实体转换；原 `collector.Runner` 的编排逻辑（分页、去重入库、任务与游标回写）已上移到 `CrawlService`，不再直接访问数据库。
 - `internal/model`（实体）、`internal/config`（配置）、`internal/utils`（工具）是横切包，不属于四层，也不参与调用链；`internal/app` 是依赖装配层（composition root），只负责自底向上 `new` 出各层对象并注入，不发起任何业务调用；`main.go` 只做配置加载、装配与启动。
 - `internal/utils` 是新增的 utils 层，统一存放与业务无关的纯工具：`request.go`（路径/query 参数解析）、`json.go`（JSON 值字符串化）、`time.go`（时间归一化）、`hash.go`（内容指纹）、`env.go`（整数环境变量）。它可被任意一层引用，但自身**不允许依赖任何 `internal/*` 业务包**（由架构测试强制）。
@@ -65,7 +67,7 @@ go test ./...
 go build -o bin/assetspider .
 ```
 
-浏览器打开 http://localhost:8080 ，在「站点配置」里添加一个 JSON 接口，点「全量」即可采集入库。数据库默认创建在 `data/assetspider.db`（父目录自动创建）。
+浏览器打开 http://localhost:8080 ：**第一个登录的账号会自动注册为管理员**（用户名密码自行设定，无需预先建号），之后可在「用户管理」里创建普通用户并勾选其可见站点。管理员在「站点配置」里添加 JSON 接口，点「全量」即可采集入库。数据库默认创建在 `data/assetspider.db`（父目录自动创建）。
 
 ## 采集能力
 
@@ -221,9 +223,13 @@ collector:
   retry_times: 2                 # 失败后自动重试次数（0 = 不重试），从失败页续采
   retry_backoff_seconds: 3       # 首次重试等待秒数，之后翻倍，上限 30 秒
   progress_save_seconds: 60      # 运行中任务把进度写库的间隔（秒），避免重启丢进度
+auth:
+  token_ttl_hours: 168           # 登录令牌有效期（小时），默认 7 天
+  bcrypt_cost: 10                # 密码哈希强度，4..31，越大越慢
 ```
 
-环境变量覆盖：`ASSETSPIDER_SERVER_ADDR`、`ASSETSPIDER_DB_PATH`、`ASSETSPIDER_WEB_DIR`，以及
+环境变量覆盖：`ASSETSPIDER_SERVER_ADDR`、`ASSETSPIDER_DB_PATH`、`ASSETSPIDER_WEB_DIR`，
+`ASSETSPIDER_AUTH_TOKEN_TTL_HOURS` / `ASSETSPIDER_AUTH_BCRYPT_COST`，以及
 `ASSETSPIDER_COLLECTOR_TIMEOUT` / `_MAX_PAGES` / `_PAGE_SIZE` / `_DEFAULT_HOURS` / `_MAX_CONCURRENT` / `_RETRY_TIMES` / `_RETRY_BACKOFF` / `_PROGRESS_SAVE` / `_USER_AGENT`
 （旧变量名 `_PARALLEL` 仍兼容，等价于 `_MAX_CONCURRENT`）。
 `-config` 指定其他配置文件，未填写的字段沿用默认值。
@@ -248,9 +254,24 @@ collector:
 
 接口统一按 **`/api/{模块名}/{版本号}`** 组织，当前版本 `v1`（`internal/router.APIVersion`）。模块名一律是复数资源名词，操作由 HTTP 动词表达，路径中不含动词；升级时新增 `registerV2` 分组即可，旧版本保持可用。
 
+### 登录与权限
+
+- 除 `/api/system/v1/health`、`/api/auth/v1/status`、`/api/auth/v1/sessions`（登录）外，**所有接口都要带 `Authorization: Bearer <token>`**；未登录返回 `401`，权限不足返回 `403`。
+- **第一个登录者自动注册为管理员**，拥有全部权限；此后账号只能由管理员通过 `/api/users/v1` 创建。密码用 bcrypt 存储，数据库只保存令牌的 SHA-256 摘要。
+- 管理员可创建/启停/删除用户、修改角色与密码，并用 `sourceIds` 分配**可见站点**。非管理员只能看见被授权站点的**站点配置、影片、分类、采集记录与任务**，且只能采集这些站点；越权访问按 `404` 处理，避免泄露站点存在性。授权变更在下一个请求即刻生效，无需重新登录。
+- 站点配置的增删改、并发上限调整、用户管理为**管理员专属**；资产台账写入同样仅管理员。
+- 停用、删除、改密或变更角色会立即吊销该账号的既有会话；系统会保证始终保留至少一名启用状态的管理员，且禁止管理员停用/降级/删除自己。
+
 | 模块 | 方法 | 路径 | 说明 |
 | --- | --- | --- | --- |
-| system | GET | `/api/system/v1/health` | 状态、数据库路径、站点数与影片数 |
+| auth | GET | `/api/auth/v1/status` | 公开：系统是否已初始化、账号数 |
+| auth | POST | `/api/auth/v1/sessions` | 公开：登录并创建会话，返回 `token` / `expiresAt` / `firstUser` / `isAdmin` / `user` |
+| auth | DELETE | `/api/auth/v1/sessions` | 登出，吊销当前令牌 |
+| auth | GET | `/api/auth/v1/me` | 当前账号、角色与可见站点 ID |
+| auth | PUT | `/api/auth/v1/password` | 修改自己的密码，返回新令牌并作废旧会话 |
+| users | GET / POST | `/api/users/v1` | 管理员：账号列表（含 `sourceIds`）/ 创建用户 |
+| users | PUT / DELETE | `/api/users/v1/:id` | 管理员：更新（角色、启停、密码、站点授权）/ 删除用户 |
+| system | GET | `/api/system/v1/health` | 公开：状态、数据库路径、站点数与影片数 |
 | assets | GET / POST | `/api/assets/v1` | 通用资产台账（保留能力） |
 | assets | DELETE | `/api/assets/v1/:id` | 删除资产 |
 | sources | GET | `/api/sources/v1` | 站点列表，附带每个站点已入库影片数 |
@@ -279,38 +300,52 @@ collector:
 采集任务用 `POST` 创建，参数 `mode`（`full` / `incremental`，缺省 `incremental`）放在 **JSON body**，同时也兼容 query：
 
 ```bash
-curl -X POST http://localhost:8080/api/sources/v1 \
+# 1) 登录：第一个登录者自动成为管理员。之后所有请求都带这个令牌。
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/v1/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"your-password"}' \
+  | sed -E 's/.*"token":"([^"]+)".*/\1/')
+api() { curl -H "Authorization: Bearer $TOKEN" "$@"; }
+
+# 2) 管理员创建普通用户，只授权站点 1、2（sourceIds 为空数组表示不授权任何站点）
+api -X POST http://localhost:8080/api/users/v1 \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"viewer","password":"pass123456","role":"user","enabled":true,"sourceIds":[1,2]}'
+api http://localhost:8080/api/users/v1
+
+# 3) 站点配置（管理员）
+api -X POST http://localhost:8080/api/sources/v1 \
   -H 'Content-Type: application/json' \
   -d '{"name":"测试资源站","apiBase":"https://site.com/api.php/provide/vod/","enabled":true,"incrementalHours":24}'
 
 # 带播放增强：解析地址拼接 + 播放域名替换（都可省略）
-curl -X PUT http://localhost:8080/api/sources/v1/1 \
+api -X PUT http://localhost:8080/api/sources/v1/1 \
   -H 'Content-Type: application/json' \
   -d '{"name":"测试资源站","apiBase":"https://site.com/api.php/provide/vod/","enabled":true,"incrementalHours":24,"parseApi":"https://jx.example.com/?url=","playDomain":"https://cdn.example.com"}'
 
 # 异步发起（推荐，前端即走这条）：立即返回任务号
-curl -X POST http://localhost:8080/api/tasks/v1 \
+api -X POST http://localhost:8080/api/tasks/v1 \
   -H 'Content-Type: application/json' -d '{"sourceId":1,"mode":"full"}'
 # 查看进度 / 并发容量
-curl http://localhost:8080/api/tasks/v1
+api http://localhost:8080/api/tasks/v1
 # 暂停（进度会保存）与继续（从断点续采）
-curl -X PUT http://localhost:8080/api/tasks/v1/1 -H 'Content-Type: application/json' -d '{"status":"paused"}'
-curl -X PUT http://localhost:8080/api/tasks/v1/1 -H 'Content-Type: application/json' -d '{"status":"running"}'
-# 最多同时运行 2 个任务
-curl -X PUT http://localhost:8080/api/tasks/v1/capacity -H 'Content-Type: application/json' -d '{"maxConcurrent":2}'
+api -X PUT http://localhost:8080/api/tasks/v1/1 -H 'Content-Type: application/json' -d '{"status":"paused"}'
+api -X PUT http://localhost:8080/api/tasks/v1/1 -H 'Content-Type: application/json' -d '{"status":"running"}'
+# 最多同时运行 2 个任务（管理员）
+api -X PUT http://localhost:8080/api/tasks/v1/capacity -H 'Content-Type: application/json' -d '{"maxConcurrent":2}'
 # 失败任务手动重试（在原任务记录上从失败页续采，不新开任务）/ 已结束任务重新运行（从第 1 页）
-curl -X POST http://localhost:8080/api/tasks/v1/3/retry
-curl -X POST http://localhost:8080/api/tasks/v1/3/rerun
+api -X POST http://localhost:8080/api/tasks/v1/3/retry
+api -X POST http://localhost:8080/api/tasks/v1/3/rerun
 
 # 同步采集（脚本用，阻塞到任务结束）
-curl -X POST http://localhost:8080/api/sources/v1/1/crawls \
+api -X POST http://localhost:8080/api/sources/v1/1/crawls \
   -H 'Content-Type: application/json' -d '{"mode":"full"}'
-curl -X POST http://localhost:8080/api/crawls/v1 \
+api -X POST http://localhost:8080/api/crawls/v1 \
   -H 'Content-Type: application/json' -d '{"mode":"incremental"}'
-curl 'http://localhost:8080/api/videos/v1?page=1&size=20'
-curl 'http://localhost:8080/api/categories/v1'
-curl 'http://localhost:8080/api/videos/v1?category_id=1'
-curl 'http://localhost:8080/api/meta/v1/fields'
+api 'http://localhost:8080/api/videos/v1?page=1&size=20'
+api 'http://localhost:8080/api/categories/v1'
+api 'http://localhost:8080/api/videos/v1?category_id=1'
+api 'http://localhost:8080/api/meta/v1/fields'
 ```
 
 ## 前端开发
@@ -322,7 +357,9 @@ npm run dev      # Vite 开发服务器，/api 代理到 :8080
 npm run build    # 产物输出到 web/dist，由 Gin 托管
 ```
 
-页面分四块：**站点配置**（增删改、启用开关；顶部「采集任务」卡片显示并发上限、运行/排队数，以及每个任务的**实时进度条**——百分比、当前页/总页数、已采条数、**拉取 / 新增 / 更新 / 未变**统计、速率、预估剩余时间、第几次尝试、等待重试倒计时；运行中可**暂停**、已暂停可**继续**，一键批量采集全部站点；站点行内也可直接发起全量/增量或暂停）、**资源库**（采集到的影片以海报卡片展示，每张卡片显示**资源名 + 海报图 + 更新集数**，图片加载失败自动退化占位；顶部可按**视频名称**检索、按**分类 / 地域 / 站点**筛选、按**更新时间**或**评分**升降序排序，分页浏览）、**视频分类**（按资源站列出自动生成的分类、站点分类 ID、影片数，点「查看影片」直接跳到该分类的影片列表）、**采集记录**（每次采集的统计与状态，运行中的记录用同一份实时数据展示进度条与**拉取 / 新增 / 更新 / 未变**；`已暂停` 可「继续」，`失败` 可「重试」（**在原任务上**从失败页续采、统计累加、不新开记录）或「重新运行」（新开记录、从第 1 页重来），并标注来源任务 `源自 #N` 与尝试次数）。
+页面在登录后才展示：**第一个登录的账号自动注册为管理员**，之后管理员可在「用户管理」新增用户、设置角色/启停、勾选该用户可见的站点；普通用户登录后只能看到被授权的站点与数据，站点增删改、并发上限与用户管理入口自动隐藏。顶部显示当前账号与角色，可修改密码或退出登录；令牌失效（401）时自动回到登录页。
+
+页面分五块：**站点配置**（增删改、启用开关；顶部「采集任务」卡片显示并发上限、运行/排队数，以及每个任务的**实时进度条**——百分比、当前页/总页数、已采条数、**拉取 / 新增 / 更新 / 未变**统计、速率、预估剩余时间、第几次尝试、等待重试倒计时；运行中可**暂停**、已暂停可**继续**，一键批量采集全部站点；站点行内也可直接发起全量/增量或暂停）、**资源库**（采集到的影片以海报卡片展示，每张卡片显示**资源名 + 海报图 + 更新集数**，图片加载失败自动退化占位；顶部可按**视频名称**检索、按**分类 / 地域 / 站点**筛选、按**更新时间**或**评分**升降序排序，分页浏览）、**视频分类**（按资源站列出自动生成的分类、站点分类 ID、影片数，点「查看影片」直接跳到该分类的影片列表）、**采集记录**（每次采集的统计与状态，运行中的记录用同一份实时数据展示进度条与**拉取 / 新增 / 更新 / 未变**；`已暂停` 可「继续」，`失败` 可「重试」（**在原任务上**从失败页续采、统计累加、不新开记录）或「重新运行」（新开记录、从第 1 页重来），并标注来源任务 `源自 #N` 与尝试次数）、**用户管理**（管理员专属：账号表单、角色/启停、可见站点勾选列表与账号列表）。
 
 资源库点开卡片进入资源详情：顶部是播放器，下方是**播放组（线路）**与**剧集**选择，切换即换源；m3u8 走 hls.js（Safari 原生播放），mp4/webm 直链直接播放，非直链地址给出「在新窗口打开」入口。站点配置了**视频解析地址**时，播放地址已拼成解析页地址，改用 `iframe` 承载解析页面播放，地址行会标注「已拼接解析地址 / 播放域名已替换」。另有「标准字段」「扩展字段」两个页签，可按 14 个分组查看全部 91 个标准字段（支持「只看非空」）与站点自定义字段。`web/dist` 已随仓库提供，clone 后无需构建前端即可运行；未知前端路由由 Gin 回退到 `index.html`。
 
@@ -338,12 +375,15 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 │   ├── controller/               # 第 2 层：HTTP 适配（只依赖 service / utils）
 │   ├── service/                  # 第 3 层：业务逻辑（只依赖 repository）
 │   │   ├── asset.go / source.go / video.go / category.go / job.go / health.go / meta.go
+│   │   ├── auth.go               # Principal（登录主体/可见站点）、认证与用户管理业务规则
 │   │   ├── crawl.go              # 全量 / 增量采集编排、分类归档、游标与去重
 │   │   ├── errors.go             # 业务错误语义
 │   │   └── collector/            # 采集协议客户端（零丢失 JSON 解析、URL 拼装、实体转换）
 │   ├── repository/               # 第 4 层：每个实体一个文件 / 对象 / 接口
 │   │   ├── store.go              # 连接、迁移、装配 Repositories、Path / Close
 │   │   ├── errors.go             # 共用的 ErrNotFound（包装 GORM 错误）
+│   │   ├── visibility.go         # 各实体共用的可见站点白名单过滤
+│   │   ├── user.go               # UserRepository → User / Session / UserSource
 │   │   ├── asset.go              # AssetRepository      → model.Asset
 │   │   ├── source.go             # SourceRepository     → model.Source
 │   │   ├── video.go              # VideoRepository      → model.Video（全字段 upsert）
@@ -352,6 +392,7 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 │   │   └── *_test.go             # 每个实体各一份测试 + store_test.go
 │   ├── model/                    # 横切：GORM 模型
 │   │   ├── video.go              # 全字段 Video 实体（含 CategoryID）
+│   │   ├── user.go               # User / Session / UserSource（认证与站点授权）
 │   │   ├── category.go           # Category 实体（按站点隔离）
 │   │   └── video_fields.go       # VodFields 字段清单（唯一数据源）
 │   ├── config/                   # 横切：配置加载与校验
@@ -374,9 +415,9 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 
 ## 测试
 
-`go test ./...` 覆盖**四层依赖方向守卫**、**utils 横切纯洁性守卫**、**仓储层一实体一对象守卫**、**`/api/{模块}/{版本}` 路由规范守卫**、配置加载、工具函数、站点/影片/任务/**分类** CRUD、分类自动创建与按站点隔离、分类幂等与改名、分类影片数与按分类筛选、**二级分类（苹果CMS type_pid / type_id_1 父子关联、父级缺失暂存孤儿、父级出现后自动挂接）**、去重 upsert、**字段清单与实体一致性**、**全字段零丢失解析（数字/字符串/null/对象/数组/自定义字段）**、**播放组解析（多线路 `$$$`/`#`/`$` 分隔符、默认/线路N 命名、无 `$` 回退）**、**全字段指纹与全字段写回**、URL 拼装、**`code != 1` 拒绝解析**、全量/增量/游标/去重/失败回写，**资源检索（名称 / 地域筛选、按更新时间与评分升降序排列、地域枚举去重）**、**采集任务调度（异步入队、并发上限运行时调整、运行中暂停、按续采页码继续、同站点互斥）**、**失败自动重试（退避等待、失败页续采、等待期间可暂停）**、**手动重试与重新运行（重试复用原记录、统计与尝试次数累加、断点续采；重新运行从第 1 页重来、来源任务落库）**、**实时进度与统计（当前页/总页数、百分比、速率、剩余时间、重试倒计时、拉取/新增/更新/未变逐页刷新、运行中记录带 live 进度）**、**运行中定期落库（进度与续采页滚动写库、只写进度不动终态、结束后续采页归 1）**、**播放增强（解析地址前缀拼接与 `{url}` 占位符、播放域名替换保留路径与查询串、先换域名再拼解析、列表与播放组一致改写、原始地址不被污染、配置校验）**，以及通过 HTTP 接口触发采集与字段元数据/详情/分类（含二级树）/播放组/地域与排序检索/任务管理接口的完整链路。采集测试用本地 HTTP 模拟站点，不依赖外网。
+`go test ./...` 覆盖**登录认证与站点权限端到端**（首用户自动管理员、401/403、A/B 站隔离、授权即时生效、停用/删除/改密后会话失效、越权采集 404、bcrypt 与令牌摘要落库、三张认证表自动迁移）、**四层依赖方向守卫**、**utils 横切纯洁性守卫**、**仓储层一实体一对象守卫**、**`/api/{模块}/{版本}` 路由规范守卫**、配置加载、工具函数、站点/影片/任务/**分类** CRUD、分类自动创建与按站点隔离、分类幂等与改名、分类影片数与按分类筛选、**二级分类（苹果CMS type_pid / type_id_1 父子关联、父级缺失暂存孤儿、父级出现后自动挂接）**、去重 upsert、**字段清单与实体一致性**、**全字段零丢失解析（数字/字符串/null/对象/数组/自定义字段）**、**播放组解析（多线路 `$$$`/`#`/`$` 分隔符、默认/线路N 命名、无 `$` 回退）**、**全字段指纹与全字段写回**、URL 拼装、**`code != 1` 拒绝解析**、全量/增量/游标/去重/失败回写，**资源检索（名称 / 地域筛选、按更新时间与评分升降序排列、地域枚举去重）**、**采集任务调度（异步入队、并发上限运行时调整、运行中暂停、按续采页码继续、同站点互斥）**、**失败自动重试（退避等待、失败页续采、等待期间可暂停）**、**手动重试与重新运行（重试复用原记录、统计与尝试次数累加、断点续采；重新运行从第 1 页重来、来源任务落库）**、**实时进度与统计（当前页/总页数、百分比、速率、剩余时间、重试倒计时、拉取/新增/更新/未变逐页刷新、运行中记录带 live 进度）**、**运行中定期落库（进度与续采页滚动写库、只写进度不动终态、结束后续采页归 1）**、**播放增强（解析地址前缀拼接与 `{url}` 占位符、播放域名替换保留路径与查询串、先换域名再拼解析、列表与播放组一致改写、原始地址不被污染、配置校验）**，以及通过 HTTP 接口触发采集与字段元数据/详情/分类（含二级树）/播放组/地域与排序检索/任务管理接口的完整链路。采集测试用本地 HTTP 模拟站点，不依赖外网。
 
-HTTP 链路测试位于 `internal/router`（装配后打真实请求，同时校验新路由结构与旧路由已下线），采集编排测试位于 `internal/service`，协议解析测试位于 `internal/service/collector`，纯工具测试位于 `internal/utils`；`internal/repository` 下按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go`，另有 `store_test.go` 校验连接与四个对象装配。SQLite 使用纯 Go 的 modernc.org/sqlite 驱动（经 github.com/glebarez/sqlite 接入 GORM），无需本机 gcc，测试直接运行即可（`CGO_ENABLED=0`）。
+HTTP 链路测试位于 `internal/router`（装配后打真实请求，同时校验新路由结构与旧路由已下线），采集编排测试位于 `internal/service`，协议解析测试位于 `internal/service/collector`，纯工具测试位于 `internal/utils`；`internal/repository` 下按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go` / `user_test.go`，另有 `store_test.go` 校验连接与各对象装配。HTTP 链路测试会自动注册首个管理员并让所有请求携带令牌，真实模拟登录后访问。SQLite 使用纯 Go 的 modernc.org/sqlite 驱动（经 github.com/glebarez/sqlite 接入 GORM），无需本机 gcc，测试直接运行即可（`CGO_ENABLED=0`）。
 
 端到端可用模拟站点验证：91 个标准字段全部落库、`extra` 保留自定义字段与嵌套对象（不再存整条 `raw`）、只改一个冷门字段也能触发更新、全量/增量/去重/幂等/批量采集、按站点自动分类归档与 Vue 页面托管均正常。
 

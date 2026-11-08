@@ -15,6 +15,13 @@ type Config struct {
 	Database  DatabaseConfig  `yaml:"database"`
 	Web       WebConfig       `yaml:"web"`
 	Collector CollectorConfig `yaml:"collector"`
+	Auth      AuthConfig      `yaml:"auth"`
+}
+
+// AuthConfig 描述登录认证与会话策略。
+type AuthConfig struct {
+	TokenTTLHours int `yaml:"token_ttl_hours"` // 会话令牌有效期（小时）
+	BCryptCost    int `yaml:"bcrypt_cost"`     // bcrypt 哈希强度，范围 4..31
 }
 
 // ServerConfig 描述 HTTP 服务。
@@ -62,6 +69,7 @@ func Default() *Config {
 			RetryBackoffSeconds: 3,
 			ProgressSaveSeconds: 60,
 		},
+		Auth: AuthConfig{TokenTTLHours: 168, BCryptCost: 10},
 	}
 }
 
@@ -112,6 +120,17 @@ func Load(path string) (*Config, error) {
 	if err := utils.EnvInt("ASSETSPIDER_COLLECTOR_PARALLEL", &cfg.Collector.MaxConcurrent); err != nil {
 		return nil, err
 	}
+	for _, item := range []struct {
+		name string
+		dst  *int
+	}{
+		{"ASSETSPIDER_AUTH_TOKEN_TTL_HOURS", &cfg.Auth.TokenTTLHours},
+		{"ASSETSPIDER_AUTH_BCRYPT_COST", &cfg.Auth.BCryptCost},
+	} {
+		if err := utils.EnvInt(item.name, item.dst); err != nil {
+			return nil, err
+		}
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -154,6 +173,13 @@ func (c *Config) Validate() error {
 	}
 	if cc.ProgressSaveSeconds <= 0 {
 		return fmt.Errorf("collector.progress_save_seconds 必须大于 0")
+	}
+	if c.Auth.TokenTTLHours <= 0 {
+		return fmt.Errorf("auth.token_ttl_hours 必须大于 0")
+	}
+	// bcrypt 的合法强度区间为 4..31（bcrypt.MinCost / bcrypt.MaxCost）。
+	if c.Auth.BCryptCost < 4 || c.Auth.BCryptCost > 31 {
+		return fmt.Errorf("auth.bcrypt_cost 需在 4..31 之间")
 	}
 	return nil
 }

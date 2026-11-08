@@ -24,6 +24,8 @@ type Set struct {
 	Category *CategoryController
 	Meta     *MetaController
 	Job      *JobController
+	Auth     *AuthController
+	Users    *UserController
 	Page     *PageController
 }
 
@@ -33,6 +35,10 @@ func writeError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, service.ErrInvalid):
 		code = http.StatusBadRequest
+	case errors.Is(err, service.ErrUnauthorized):
+		code = http.StatusUnauthorized
+	case errors.Is(err, service.ErrForbidden):
+		code = http.StatusForbidden
 	case errors.Is(err, service.ErrNotFound):
 		code = http.StatusNotFound
 	case errors.Is(err, service.ErrConflict):

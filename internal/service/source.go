@@ -86,12 +86,14 @@ func NewSourceService(sources repository.SourceRepository, videos repository.Vid
 	return &SourceService{sources: sources, videos: videos}
 }
 
-func (s *SourceService) List() ([]SourceView, error) {
-	srcs, err := s.sources.ListSources()
+// List 返回当前登录主体可见的站点配置；管理员不传主体时可见全部。
+func (s *SourceService) List(p ...Principal) ([]SourceView, error) {
+	visible := principalOf(p...).Visible()
+	srcs, err := s.sources.ListSources(visible)
 	if err != nil {
 		return nil, err
 	}
-	counts, err := s.videos.CountVideosBySource()
+	counts, err := s.videos.CountVideosBySource(visible)
 	if err != nil {
 		return nil, err
 	}

@@ -20,6 +20,7 @@ func (j *JobController) List(c *gin.Context) {
 	items, err := j.svc.List(
 		utils.ParseUintQuery(c.Query("source_id")),
 		utils.ParseIntQuery(c.Query("limit")),
+		principalOf(c),
 	)
 	if err != nil {
 		writeError(c, err)

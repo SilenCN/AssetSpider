@@ -1,6 +1,25 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 
+// ---------- 登录态 ----------
+const TOKEN_KEY = 'assetspider_token'
+const token = ref(localStorage.getItem(TOKEN_KEY) || '')
+const me = ref(null)
+const authReady = ref(false)
+const initialized = ref(false)
+const isAdmin = computed(() => !!me.value?.isAdmin)
+const currentUsername = computed(() => me.value?.user?.username || '')
+
+function clearAuth() {
+  localStorage.removeItem(TOKEN_KEY)
+  token.value = ''
+  me.value = null
+}
+function setAuth(tk) {
+  token.value = tk
+  localStorage.setItem(TOKEN_KEY, tk)
+}
+
 // hls.js 体积较大，只在真正播放 m3u8 时按需加载，避免拖慢首屏。
 let HlsLib = null
 async function loadHls() {
@@ -41,8 +60,15 @@ function notify(text, type = 'ok') {
 }
 
 async function request(path, options = {}) {
-  const res = await fetch(path, options)
+  const headers = { ...(options.headers || {}) }
+  if (token.value) headers['Authorization'] = 'Bearer ' + token.value
+  const res = await fetch(path, { ...options, headers })
   const body = await res.json().catch(() => ({}))
+  // 令牌失效时立即清除本地登录态，回到登录页。
+  if (res.status === 401 && token.value) {
+    clearAuth()
+    throw new Error('登录已失效，请重新登录')
+  }
   if (!res.ok) throw new Error(body.error || `请求失败 (${res.status})`)
   return body
 }
@@ -95,13 +121,20 @@ async function loadCategoryTree() {
   categoryTree.value = (await request('/api/categories/v1/tree')) || []
 }
 
+async function loadUsers() {
+  if (!isAdmin.value) { users.value = []; return }
+  users.value = (await request('/api/users/v1')) || []
+}
+
 async function refresh() {
   error.value = ''
   try {
-    await Promise.all([
+    const pending = [
       loadHealth(), loadSources(), loadVideos(), loadJobs(),
       loadCategories(), loadCategoryTree(), loadAreas(), loadTasks(),
-    ])
+    ]
+    if (isAdmin.value) pending.push(loadUsers())
+    await Promise.all(pending)
   } catch (e) {
     error.value = e.message
   }
@@ -487,13 +520,143 @@ function jobMessage(j) {
   return (j.live && j.live.message) || j.message || '-'
 }
 
-// 任务进度轮询：页面不可见时暂停，避免无谓请求
+// ---------- 登录 / 会话 ----------
+const loginForm = reactive({ username: '', password: '' })
+const loginBusy = ref(false)
+const loginError = ref('')
+
+async function doLogin() {
+  loginError.value = ''
+  loginBusy.value = true
+  try {
+    const d = await request('/api/auth/v1/sessions', jsonOptions('POST', {
+      username: loginForm.username.trim(), password: loginForm.password,
+    }))
+    setAuth(d.token)
+    me.value = { user: d.user, isAdmin: d.isAdmin, visibleSourceIds: [] }
+    initialized.value = true
+    loginForm.password = ''
+    notify(d.firstUser ? '系统已初始化，你的账号自动注册为管理员' : `欢迎回来，${d.user.username}`)
+    loadFieldMeta().catch(() => {})
+    await refresh()
+  } catch (e) {
+    loginError.value = e.message
+  } finally {
+    loginBusy.value = false
+  }
+}
+
+async function doLogout() {
+  try { await request('/api/auth/v1/sessions', { method: 'DELETE' }) } catch (e) { /* 忽略 */ }
+  clearAuth()
+  tab.value = 'sources'
+  notify('已退出登录', 'info')
+}
+
+const pwdModal = ref(false)
+const pwdForm = reactive({ oldPassword: '', newPassword: '' })
+async function doChangePassword() {
+  try {
+    const d = await request('/api/auth/v1/password', jsonOptions('PUT', { ...pwdForm }))
+    setAuth(d.token)
+    pwdForm.oldPassword = ''
+    pwdForm.newPassword = ''
+    pwdModal.value = false
+    notify(d.message || '密码已修改')
+  } catch (e) { notify(e.message, 'err') }
+}
+
+async function bootstrap() {
+  authReady.value = false
+  try {
+    const st = await request('/api/auth/v1/status')
+    initialized.value = st.initialized
+    if (token.value) {
+      try { me.value = await request('/api/auth/v1/me') } catch (e) { clearAuth() }
+    }
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    authReady.value = true
+  }
+  if (me.value) {
+    loadFieldMeta().catch(() => {})
+    await refresh()
+  }
+}
+
+// ---------- 用户管理（管理员） ----------
+const emptyUserForm = () => ({
+  id: null, username: '', password: '', role: 'user', enabled: true, sourceIds: [],
+})
+const userForm = reactive(emptyUserForm())
+const userEditing = computed(() => !!userForm.id)
+
+function resetUserForm() { Object.assign(userForm, emptyUserForm()) }
+
+function editUser(u) {
+  Object.assign(userForm, {
+    id: u.id, username: u.username, password: '', role: u.role,
+    enabled: u.enabled, sourceIds: [...(u.sourceIds || [])],
+  })
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+async function saveUser() {
+  error.value = ''
+  try {
+    const payload = {
+      role: userForm.role, enabled: userForm.enabled,
+      sourceIds: [...userForm.sourceIds],
+    }
+    if (userForm.id) {
+      if (userForm.password) payload.password = userForm.password
+      await request(`/api/users/v1/${userForm.id}`, jsonOptions('PUT', payload))
+    } else {
+      payload.username = userForm.username.trim()
+      payload.password = userForm.password
+      await request('/api/users/v1', jsonOptions('POST', payload))
+    }
+    resetUserForm()
+    notify('用户信息已保存')
+    await refresh()
+  } catch (e) {
+    error.value = e.message
+    notify(e.message, 'err')
+  }
+}
+
+async function toggleUser(u) {
+  try {
+    await request(`/api/users/v1/${u.id}`, jsonOptions('PUT', { enabled: !u.enabled }))
+    notify(u.enabled ? '账号已停用' : '账号已启用')
+    await refresh()
+  } catch (e) { notify(e.message, 'err') }
+}
+
+async function removeUser(u) {
+  if (!confirm(`确认删除用户「${u.username}」？该用户的登录会话与站点授权会一并清除。`)) return
+  try {
+    await request(`/api/users/v1/${u.id}`, { method: 'DELETE' })
+    notify('用户已删除')
+    if (userForm.id === u.id) resetUserForm()
+    await refresh()
+  } catch (e) { notify(e.message, 'err') }
+}
+
+function visibleLabel(u) {
+  if (u.role === 'admin') return '全部站点（管理员）'
+  const ids = u.sourceIds || []
+  if (!ids.length) return '未授权任何站点'
+  return ids.map(id => sources.value.find(s => s.id === id)?.name || `#${id}`).join('、')
+}
+
+// 任务进度轮询：页面不可见或尚未登录时暂停，避免无谓请求
 let taskTimer = null
-onMounted(() => {
-  refresh()
-  loadFieldMeta()
+onMounted(async () => {
+  await bootstrap()
   taskTimer = setInterval(() => {
-    if (document.hidden) return
+    if (!me.value || document.hidden) return
     loadTasks().catch(() => {})
     if (tasks.value.length) loadJobs().catch(() => {})
   }, 1500)
@@ -502,15 +665,42 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
 </script>
 
 <template>
+  <div v-if="!authReady" class="boot">正在检查登录状态…</div>
+
+  <div v-else-if="!me" class="login-wrap">
+    <div class="login-card">
+      <h1>AssetSpider</h1>
+      <p class="muted">视频站点采集 · JSON 接口 · 全量 / 增量 · 全字段入库</p>
+      <form @submit.prevent="doLogin">
+        <input v-model="loginForm.username" placeholder="用户名" autocomplete="username" required />
+        <input v-model="loginForm.password" type="password" placeholder="密码" autocomplete="current-password" required />
+        <button type="submit" :disabled="loginBusy">
+          {{ loginBusy ? '登录中…' : (initialized ? '登录' : '注册并登录') }}
+        </button>
+      </form>
+      <p v-if="!initialized" class="hint">
+        第一个登录的账号将<strong>自动注册为管理员</strong>，拥有全部权限；之后可创建用户并分配可见站点。
+      </p>
+      <p v-if="loginError" class="error">{{ loginError }}</p>
+    </div>
+  </div>
+
+  <template v-else>
   <main class="page">
     <header>
       <h1>AssetSpider</h1>
       <p>视频站点采集 · JSON 接口 · 全量 / 增量 · 全字段入库 · Vue 3 + Gin + GORM/SQLite</p>
       <div class="stats">
         <span class="db">DB: {{ health.database || '加载中…' }}</span>
-        <span class="stat">站点 <b>{{ health.sources ?? '-' }}</b></span>
-        <span class="stat">影片 <b>{{ health.videos ?? '-' }}</b></span>
+        <span class="stat">可见站点 <b>{{ sources.length }}</b></span>
+        <span class="stat">可见影片 <b>{{ videoTotal }}</b></span>
         <span class="stat">字段 <b>{{ fieldMeta.total || '-' }}</b></span>
+      </div>
+      <div class="userbar">
+        <span class="host">{{ currentUsername }}</span>
+        <span class="badge" :class="isAdmin ? 'on' : 'off'">{{ isAdmin ? '管理员' : '普通用户' }}</span>
+        <button class="mini ghost" @click="pwdModal = true">修改密码</button>
+        <button class="mini ghost" @click="doLogout">退出登录</button>
       </div>
     </header>
 
@@ -522,6 +712,7 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
       <button :class="{ active: tab === 'videos' }" @click="tab = 'videos'; loadVideos()">资源库</button>
       <button :class="{ active: tab === 'categories' }" @click="tab = 'categories'; loadCategories()">视频分类</button>
       <button :class="{ active: tab === 'jobs' }" @click="tab = 'jobs'; loadJobs()">采集记录</button>
+      <button v-if="isAdmin" :class="{ active: tab === 'users' }" @click="tab = 'users'; loadUsers()">用户管理</button>
       <button class="ghost refresh" @click="refresh">刷新</button>
     </nav>
 
@@ -535,13 +726,15 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
           </span>
         </div>
         <div class="actions">
-          <button @click="crawlAll('full')">全量采集全部站点</button>
-          <button class="ghost" @click="crawlAll('incremental')">增量采集全部站点</button>
-          <label class="field inline">最多同时运行
-            <input v-model.number="maxConcurrent" type="number" min="1" max="64"
-                   @input="capacityDirty = true" />
-          </label>
-          <button class="ghost" :disabled="!capacityDirty" @click="saveCapacity">保存上限</button>
+          <button @click="crawlAll('full')">全量采集可见站点</button>
+          <button class="ghost" @click="crawlAll('incremental')">增量采集可见站点</button>
+          <template v-if="isAdmin">
+            <label class="field inline">最多同时运行
+              <input v-model.number="maxConcurrent" type="number" min="1" max="64"
+                     @input="capacityDirty = true" />
+            </label>
+            <button class="ghost" :disabled="!capacityDirty" @click="saveCapacity">保存上限</button>
+          </template>
         </div>
         <p class="hint">
           采集为异步任务：发起后立即入队，同时运行的任务数不超过上面的上限，其余排队等待。
@@ -596,7 +789,7 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
         </div>
       </section>
 
-      <section class="card">
+      <section v-if="isAdmin" class="card">
         <h2>{{ editing ? '编辑站点' : '新增采集站点' }}</h2>
         <form class="source-form" @submit.prevent="saveSource">
           <input v-model="form.name" placeholder="站点名称 *" required />
@@ -620,7 +813,7 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
 
       <section class="card">
         <div class="list-head"><h2>站点列表</h2><span class="muted">共 {{ sources.length }} 个</span></div>
-        <p v-if="!sources.length" class="empty">还没有站点，先在上方添加一个 JSON 采集接口。</p>
+        <p v-if="!sources.length" class="empty">{{ isAdmin ? '还没有站点，先在上方添加一个 JSON 采集接口。' : '管理员尚未给你分配任何可见站点。' }}</p>
         <div v-else class="table-wrap">
           <table>
             <thead>
@@ -659,9 +852,11 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
                     <button class="mini" @click="startTask(s, 'full')">全量</button>
                     <button class="mini ghost" @click="startTask(s, 'incremental')">增量</button>
                   </template>
-                  <button class="mini ghost" @click="editSource(s)">编辑</button>
-                  <button class="mini ghost" @click="toggleSource(s)">{{ s.enabled ? '停用' : '启用' }}</button>
-                  <button class="mini danger" @click="removeSource(s)">删除</button>
+                  <template v-if="isAdmin">
+                    <button class="mini ghost" @click="editSource(s)">编辑</button>
+                    <button class="mini ghost" @click="toggleSource(s)">{{ s.enabled ? '停用' : '启用' }}</button>
+                    <button class="mini danger" @click="removeSource(s)">删除</button>
+                  </template>
                 </td>
               </tr>
             </tbody>
@@ -728,7 +923,7 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
           <button @click="searchVideos">搜索</button>
           <span class="muted">共 {{ videoTotal }} 条</span>
         </div>
-        <p v-if="!videos.length" class="empty">暂无采集数据，可到「站点配置」执行一次全量采集。</p>
+        <p v-if="!videos.length" class="empty">{{ isAdmin ? '暂无采集数据，可到「站点配置」执行一次全量采集。' : '暂无可见的采集数据。' }}</p>
         <div v-else class="res-grid">
           <article v-for="v in videos" :key="v.id" class="res-card" @click="openDetail(v)">
             <div class="res-poster">
@@ -801,6 +996,65 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
                     <button v-if="j.status === 'failed'" class="mini" @click="retryTask(j.id)">重试</button>
                     <button class="mini ghost" @click="rerunTask(j.id)">重新运行</button>
                   </template>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </template>
+
+    <!-- 用户管理（管理员） -->
+    <template v-if="tab === 'users' && isAdmin">
+      <section class="card">
+        <h2>{{ userEditing ? `编辑用户「${userForm.username}」` : '新增用户' }}</h2>
+        <form class="user-form" @submit.prevent="saveUser">
+          <input v-model="userForm.username" placeholder="用户名 *" :disabled="userEditing" :required="!userEditing" />
+          <input v-model="userForm.password" type="password"
+                 :placeholder="userEditing ? '新密码（留空不改）' : '密码 *（至少 6 位）'" :required="!userEditing" />
+          <label class="field">角色
+            <select v-model="userForm.role">
+              <option value="user">普通用户</option>
+              <option value="admin">管理员</option>
+            </select>
+          </label>
+          <label class="check"><input v-model="userForm.enabled" type="checkbox" /> 启用</label>
+          <button type="submit">{{ userEditing ? '保存修改' : '创建用户' }}</button>
+          <button v-if="userEditing" type="button" class="ghost" @click="resetUserForm">取消</button>
+          <div class="source-grants">
+            <span class="muted">可见站点授权</span>
+            <span class="hint">普通用户只能看见被勾选的站点；管理员默认可见全部，无需授权。</span>
+            <div class="grant-list">
+              <label v-for="s in sources" :key="s.id" class="check">
+                <input type="checkbox" :value="s.id" v-model="userForm.sourceIds" /> {{ s.name }}
+              </label>
+              <span v-if="!sources.length" class="muted">还没有站点可分配</span>
+            </div>
+          </div>
+        </form>
+        <p class="hint">创建/修改后立即生效，无需用户重新登录。停用、改密或变更角色会使该用户的现有会话失效。</p>
+      </section>
+
+      <section class="card">
+        <div class="list-head"><h2>用户列表</h2><span class="muted">共 {{ users.length }} 个账号</span></div>
+        <p v-if="!users.length" class="empty">还没有其他账号。</p>
+        <div v-else class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>ID</th><th>用户名</th><th>角色</th><th>状态</th><th>可见站点</th><th class="hide-sm">最后登录</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="u in users" :key="u.id">
+                <td class="mono">{{ u.id }}</td>
+                <td class="host">{{ u.username }}<span v-if="u.id === me.user?.id" class="tiny muted">（我）</span></td>
+                <td><span class="badge" :class="u.role === 'admin' ? 'on' : 'off'">{{ u.role === 'admin' ? '管理员' : '普通用户' }}</span></td>
+                <td><span class="badge" :class="u.enabled ? 'on' : 'off'">{{ u.enabled ? '启用' : '停用' }}</span></td>
+                <td class="muted">{{ visibleLabel(u) }}</td>
+                <td class="muted hide-sm">{{ formatTime(u.lastLoginAt) }}</td>
+                <td class="ops">
+                  <button class="mini ghost" @click="editUser(u)">编辑</button>
+                  <button class="mini ghost" @click="toggleUser(u)">{{ u.enabled ? '停用' : '启用' }}</button>
+                  <button class="mini danger" @click="removeUser(u)">删除</button>
                 </td>
               </tr>
             </tbody>
@@ -895,7 +1149,25 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
         </div>
       </div>
     </div>
+    <!-- 修改密码 -->
+    <div v-if="pwdModal" class="modal-mask" @click.self="pwdModal = false">
+      <div class="modal sm">
+        <div class="modal-head">
+          <h3>修改密码</h3>
+          <button class="ghost" @click="pwdModal = false">关闭</button>
+        </div>
+        <div class="modal-body">
+          <form class="user-form" @submit.prevent="doChangePassword">
+            <input v-model="pwdForm.oldPassword" type="password" placeholder="原密码" required />
+            <input v-model="pwdForm.newPassword" type="password" placeholder="新密码（至少 6 位）" required />
+            <button type="submit">确认修改</button>
+          </form>
+          <p class="hint">修改后该账号的其他登录会话会立即失效，当前会话会自动换发新令牌。</p>
+        </div>
+      </div>
+    </div>
   </main>
+  </template>
 </template>
 
 <style>
@@ -1108,4 +1380,20 @@ th { color: #86909c; font-weight: 500; }
   .pager { gap: 10px; font-size: 12px; }
   .notice, .error { font-size: 12px; padding: 8px 10px; }
 }
+
+/* ---------- 登录与账号 ---------- */
+.boot { min-height: 100vh; display: flex; align-items: center; justify-content: center; color: #86909c; font-size: 14px; }
+.login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; background: linear-gradient(160deg, #eef2ff 0%, #f5f6f8 60%); }
+.login-card { width: min(420px, 100%); background: #fff; border: 1px solid #e5e6eb; border-radius: 14px; padding: 32px; box-shadow: 0 12px 40px rgba(31,35,41,.08); }
+.login-card h1 { margin: 0; font-size: 26px; }
+.login-card > p.muted { margin: 6px 0 20px; font-size: 13px; }
+.login-card form { display: flex; flex-direction: column; gap: 12px; }
+.login-card form input { width: 100%; flex: none; padding: 10px 12px; }
+.login-card form button { width: 100%; padding: 10px; margin-top: 4px; }
+.login-card .hint { margin: 16px 0 0; }
+.userbar { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.user-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.source-grants { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; }
+.grant-list { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 4px; }
+.modal.sm { width: min(460px, 100%); }
 </style>

@@ -2,6 +2,7 @@
 # 可用 -config 指定其他配置文件；以下环境变量可覆盖同名配置项：
 #   ASSETSPIDER_SERVER_ADDR / ASSETSPIDER_DB_PATH / ASSETSPIDER_WEB_DIR
 #   ASSETSPIDER_COLLECTOR_TIMEOUT / _MAX_PAGES / _PAGE_SIZE / _DEFAULT_HOURS / _PARALLEL / _USER_AGENT
+#   ASSETSPIDER_AUTH_TOKEN_TTL_HOURS / ASSETSPIDER_AUTH_BCRYPT_COST
 
 server:
   # HTTP 监听地址
@@ -23,3 +24,9 @@ collector:
   user_agent: "AssetSpider/1.0 (+maccms-json-collector)"
   default_incremental_hours: 24 # 站点未单独配置时的增量时间窗（对应接口 h 参数）
   max_concurrent: 3            # 同时运行的采集任务上限，超出的任务排队；也可在页面/接口运行时调整
+
+auth:
+  # 登录会话有效期（小时）；令牌只以 SHA-256 摘要存库
+  token_ttl_hours: 168         # 默认 7 天
+  bcrypt_cost: 10              # 密码哈希强度，范围 4..31，越大越慢
+

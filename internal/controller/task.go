@@ -20,7 +20,7 @@ func NewTaskController(svc *service.CrawlService) *TaskController {
 
 // List 返回当前任务与并发容量。
 func (t *TaskController) List(c *gin.Context) {
-	c.JSON(http.StatusOK, t.svc.ListTasks())
+	c.JSON(http.StatusOK, t.svc.ListTasks(principalOf(c)))
 }
 
 // Create 异步发起采集任务：body {sourceId, mode}，mode 缺省为增量。
@@ -42,7 +42,7 @@ func (t *TaskController) Create(c *gin.Context) {
 		writeError(c, err)
 		return
 	}
-	view, err := t.svc.StartTask(in.SourceID, mode)
+	view, err := t.svc.StartTask(in.SourceID, mode, principalOf(c))
 	if err != nil {
 		writeError(c, err)
 		return
@@ -66,14 +66,14 @@ func (t *TaskController) Update(c *gin.Context) {
 	}
 	switch in.Status {
 	case "paused":
-		view, err := t.svc.PauseTask(id)
+		view, err := t.svc.PauseTask(id, principalOf(c))
 		if err != nil {
 			writeError(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, view)
 	case "running":
-		view, err := t.svc.ResumeTask(id)
+		view, err := t.svc.ResumeTask(id, principalOf(c))
 		if err != nil {
 			writeError(c, err)
 			return
@@ -91,7 +91,7 @@ func (t *TaskController) Retry(c *gin.Context) {
 		badRequest(c, err.Error())
 		return
 	}
-	view, err := t.svc.RetryTask(id)
+	view, err := t.svc.RetryTask(id, principalOf(c))
 	if err != nil {
 		writeError(c, err)
 		return
@@ -106,7 +106,7 @@ func (t *TaskController) Rerun(c *gin.Context) {
 		badRequest(c, err.Error())
 		return
 	}
-	view, err := t.svc.RerunTask(id)
+	view, err := t.svc.RerunTask(id, principalOf(c))
 	if err != nil {
 		writeError(c, err)
 		return

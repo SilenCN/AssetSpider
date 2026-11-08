@@ -26,6 +26,9 @@ type VideoQuery struct {
 	Sort       string // 排序标识，见 videoOrder；空则按 id 倒序
 	Page       int
 	Size       int
+	// VisibleSourceIDs 是可选的站点白名单：nil 表示不过滤（管理员），
+	// 长度为 0 的非 nil 切片表示不返回任何影片。
+	VisibleSourceIDs []uint
 }
 
 // NewVideoQuery 构造不带分类条件的查询，供不需要分类过滤的调用方使用。
@@ -36,11 +39,12 @@ func NewVideoQuery(sourceID uint, keyword string, page, size int) VideoQuery {
 // VideoRepository 是 Video 实体的数据访问契约。
 type VideoRepository interface {
 	UpsertVideos(items []model.Video) (UpsertStats, error)
-	GetVideo(id uint) (*model.Video, error)
+	// 读取类方法都接受可选的站点白名单，语义见 visibility.go。
+	GetVideo(id uint, visible ...[]uint) (*model.Video, error)
 	ListVideos(query VideoQuery) ([]model.Video, int64, error)
-	ListVideoAreas() ([]string, error)
-	CountVideosBySource() (map[uint]int64, error)
-	CountVideosByCategory() (map[uint]int64, error)
+	ListVideoAreas(visible ...[]uint) ([]string, error)
+	CountVideosBySource(visible ...[]uint) (map[uint]int64, error)
+	CountVideosByCategory(visible ...[]uint) (map[uint]int64, error)
 }
 
 // videoRepository 是 Video 实体专属的仓储对象。
@@ -123,9 +127,11 @@ func videoUpdateMap(v model.Video) map[string]interface{} {
 }
 
 // GetVideo 按主键读取单条影片的完整记录（含 Extra 扩展字段）。
-func (r *videoRepository) GetVideo(id uint) (*model.Video, error) {
+// 影片所属站点不在可见集合内时按「不存在」处理，避免越权读取。
+func (r *videoRepository) GetVideo(id uint, visible ...[]uint) (*model.Video, error) {
 	var v model.Video
-	if err := r.db.First(&v, id).Error; err != nil {
+	q := applyVisibility(r.db.Model(&model.Video{}), "source_id", firstVisible(visible...))
+	if err := q.First(&v, id).Error; err != nil {
 		return nil, notFound(err)
 	}
 	return &v, nil
@@ -157,7 +163,7 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, int64, er
 	if query.Size < 1 || query.Size > 200 {
 		query.Size = 20
 	}
-	q := r.db.Model(&model.Video{})
+	q := applyVisibility(r.db.Model(&model.Video{}), "source_id", query.VisibleSourceIDs)
 	if query.SourceID > 0 {
 		q = q.Where("source_id = ?", query.SourceID)
 	}
@@ -198,10 +204,10 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, int64, er
 }
 
 // ListVideoAreas 返回库中已出现过的地域，供前端筛选下拉使用。
-func (r *videoRepository) ListVideoAreas() ([]string, error) {
+func (r *videoRepository) ListVideoAreas(visible ...[]uint) ([]string, error) {
 	var areas []string
-	if err := r.db.Model(&model.Video{}).
-		Where("vod_area IS NOT NULL AND vod_area <> ''").
+	q := applyVisibility(r.db.Model(&model.Video{}), "source_id", firstVisible(visible...))
+	if err := q.Where("vod_area IS NOT NULL AND vod_area <> ''").
 		Distinct().Order("vod_area ASC").Pluck("vod_area", &areas).Error; err != nil {
 		return nil, err
 	}
@@ -209,14 +215,14 @@ func (r *videoRepository) ListVideoAreas() ([]string, error) {
 }
 
 // CountVideosBySource 返回每个站点的影片数量。
-func (r *videoRepository) CountVideosBySource() (map[uint]int64, error) {
+func (r *videoRepository) CountVideosBySource(visible ...[]uint) (map[uint]int64, error) {
 	type row struct {
 		SourceID uint
 		Cnt      int64
 	}
 	var rows []row
-	if err := r.db.Model(&model.Video{}).
-		Select("source_id, count(*) as cnt").Group("source_id").Scan(&rows).Error; err != nil {
+	q := applyVisibility(r.db.Model(&model.Video{}), "source_id", firstVisible(visible...))
+	if err := q.Select("source_id, count(*) as cnt").Group("source_id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make(map[uint]int64, len(rows))
@@ -227,14 +233,14 @@ func (r *videoRepository) CountVideosBySource() (map[uint]int64, error) {
 }
 
 // CountVideosByCategory 返回每个分类下的影片数量（未归类的不计入）。
-func (r *videoRepository) CountVideosByCategory() (map[uint]int64, error) {
+func (r *videoRepository) CountVideosByCategory(visible ...[]uint) (map[uint]int64, error) {
 	type row struct {
 		CategoryID uint
 		Cnt        int64
 	}
 	var rows []row
-	if err := r.db.Model(&model.Video{}).
-		Select("category_id, count(*) as cnt").
+	q := applyVisibility(r.db.Model(&model.Video{}), "source_id", firstVisible(visible...))
+	if err := q.Select("category_id, count(*) as cnt").
 		Where("category_id > 0").Group("category_id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
