@@ -62,6 +62,7 @@ func registerV1(api *gin.RouterGroup, set controller.Set) {
 	// 视频分类（由采集自动维护，每个资源站一套）
 	categories := api.Group("/categories/" + APIVersion)
 	categories.GET("", set.Category.List)
+	categories.GET("/tree", set.Category.Tree)
 	categories.GET("/:id", set.Category.Get)
 
 	// 字段元数据

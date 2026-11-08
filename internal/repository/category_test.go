@@ -75,6 +75,64 @@ func TestCategoryRepositoryEnsurePerSource(t *testing.T) {
 	}
 }
 
+func TestCategoryRepositoryTwoLevel(t *testing.T) {
+	r := newTestRepos(t)
+	// 一级分类 1（电影）与两个二级分类 6/7，均挂在 1 之下（type_id_1 = 1）。
+	ids, err := r.Categories.EnsureForVideos(1, []model.Video{
+		{TypeID: "1", TypeName: "电影", TypeID1: ""},
+		{TypeID: "6", TypeName: "动作片", TypeID1: "1"},
+		{TypeID: "7", TypeName: "喜剧片", TypeID1: "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 3 {
+		t.Fatalf("应创建 3 个分类: %+v", ids)
+	}
+
+	parent, err := r.Categories.Get(ids["id:1"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent.Level != 1 || parent.ParentID != 0 || parent.TypePID != "" {
+		t.Fatalf("一级分类属性异常: %+v", parent)
+	}
+	child, err := r.Categories.Get(ids["id:6"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.Level != 2 || child.ParentID != parent.ID || child.TypePID != "1" {
+		t.Fatalf("二级分类未挂到父级: %+v (parent=%d)", child, parent.ID)
+	}
+
+	// 父级未在本批出现时：二级分类先记为 level=2、parent_id=0，父级 ID 暂存于 type_pid。
+	ids2, err := r.Categories.EnsureForVideos(1, []model.Video{
+		{TypeID: "8", TypeName: "悬疑", TypeID1: "2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphanID := ids2["id:8"]
+	orphan, err := r.Categories.Get(orphanID)
+	if err != nil || orphan.Level != 2 || orphan.ParentID != 0 || orphan.TypePID != "2" {
+		t.Fatalf("父级缺失时应暂存为二级孤儿: %+v", orphan)
+	}
+	// 父级 2 出现后，孤儿应被自动挂接。
+	if _, err := r.Categories.EnsureForVideos(1, []model.Video{
+		{TypeID: "2", TypeName: "电视剧", TypeID1: ""},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	orphan, err = r.Categories.Get(orphanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentOfOrphan, err := r.Categories.Get(orphan.ParentID)
+	if err != nil || parentOfOrphan.TypeID != "2" {
+		t.Fatalf("父级出现后孤儿未挂接: orphan=%+v parent=%+v", orphan, parentOfOrphan)
+	}
+}
+
 func TestCategoryVideoCountAndFilter(t *testing.T) {
 	r := newTestRepos(t)
 	ids, err := r.Categories.EnsureForVideos(1, []model.Video{

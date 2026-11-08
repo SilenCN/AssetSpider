@@ -134,6 +134,15 @@ go build -o bin/assetspider .
 - 每页入库前先在一个事务里做「有则复用、无则创建」，同一 `type_id` 改名时只更新名称；再把分类主键回填到 `Video.CategoryID` 一起写库。内容指纹未变的历史影片也会补齐分类关联，因此**对老库执行一次全量采集即可完成历史数据归档**。
 - 删除站点时，其分类随影片和采集记录一起级联清理。
 
+### 二级分类（按苹果CMS type_pid 模型）
+
+苹果CMS 的分类支持两级（一级 / 二级），用 `type_pid`（父级分类 ID）表达层级。采集时：
+
+- 视频的 `type_id_1` 即其所属**一级分类 ID**（苹果CMS 的 level-1 字段），`type_id` 是（通常是二级的）具体分类 ID；`type_id_1` 为空或与 `type_id` 相同则视为一级分类。
+- 每批入库会先把一级分类、`type_pid` 解析出来：二级分类通过 `type_pid` 挂到对应一级分类之下，并标记 `level`（1=一级 / 2=二级）。
+- **父级暂未采集到也安全**：若某批只采到二级（其 `type_pid` 指向的一级分类尚未出现），该分类先记为二级、父级留空；待该一级分类随后续采集出现后，会自动回挂到正确父级，不会丢层级。
+- `categories` 表新增 `type_pid` / `parent_id` / `level` 三列（由 GORM 自动迁移），现有单级分类升级后默认 `level=1`、无父级，向后兼容。
+
 ### 播放组解析（苹果CMS 字段）
 
 苹果CMS 用「播放组」表达同一影片在多个线路上的播放地址，靠三个字段按固定分隔符拼接：
@@ -218,6 +227,7 @@ collector:
 | videos | GET | `/api/videos/v1/:id` | 单条影片完整记录 |
 | videos | GET | `/api/videos/v1/:id/play-groups` | 该影片的播放组数组（来自苹果CMS 播放组字段，已解析为结构化 JSON） |
 | categories | GET | `/api/categories/v1?source_id=` | 视频分类列表，含 `videoCount`；`source_id` 只看该资源站的一套分类 |
+| categories | GET | `/api/categories/v1/tree?source_id=` | 视频分类二级树（父分类在前、子分类嵌套），按苹果CMS type_pid 模型 |
 | categories | GET | `/api/categories/v1/:id` | 单个分类详情 |
 | meta | GET | `/api/meta/v1/fields` | 全字段元数据：`total`、`groups`、`fields[]`（`key` 原始键、`json` 前端键、`desc` 中文含义、`group`、`label`、`long`） |
 | jobs | GET | `/api/jobs/v1?source_id=&limit=` | 采集记录 |
@@ -296,7 +306,7 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 
 ## 测试
 
-`go test ./...` 覆盖**四层依赖方向守卫**、**utils 横切纯洁性守卫**、**仓储层一实体一对象守卫**、**`/api/{模块}/{版本}` 路由规范守卫**、配置加载、工具函数、站点/影片/任务/**分类** CRUD、分类自动创建与按站点隔离、分类幂等与改名、分类影片数与按分类筛选、去重 upsert、**字段清单与实体一致性**、**全字段零丢失解析（数字/字符串/null/对象/数组/自定义字段）**、**播放组解析（多线路 `$$$`/`#`/`$` 分隔符、默认/线路N 命名、无 `$` 回退）**、**全字段指纹与全字段写回**、URL 拼装、**`code != 1` 拒绝解析**、全量/增量/游标/去重/失败回写，以及通过 HTTP 接口触发采集与字段元数据/详情/分类/播放组接口的完整链路。采集测试用本地 HTTP 模拟站点，不依赖外网。
+`go test ./...` 覆盖**四层依赖方向守卫**、**utils 横切纯洁性守卫**、**仓储层一实体一对象守卫**、**`/api/{模块}/{版本}` 路由规范守卫**、配置加载、工具函数、站点/影片/任务/**分类** CRUD、分类自动创建与按站点隔离、分类幂等与改名、分类影片数与按分类筛选、**二级分类（苹果CMS type_pid / type_id_1 父子关联、父级缺失暂存孤儿、父级出现后自动挂接）**、去重 upsert、**字段清单与实体一致性**、**全字段零丢失解析（数字/字符串/null/对象/数组/自定义字段）**、**播放组解析（多线路 `$$$`/`#`/`$` 分隔符、默认/线路N 命名、无 `$` 回退）**、**全字段指纹与全字段写回**、URL 拼装、**`code != 1` 拒绝解析**、全量/增量/游标/去重/失败回写，以及通过 HTTP 接口触发采集与字段元数据/详情/分类（含二级树）/播放组接口的完整链路。采集测试用本地 HTTP 模拟站点，不依赖外网。
 
 HTTP 链路测试位于 `internal/router`（装配后打真实请求，同时校验新路由结构与旧路由已下线），采集编排测试位于 `internal/service`，协议解析测试位于 `internal/service/collector`，纯工具测试位于 `internal/utils`；`internal/repository` 下按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go`，另有 `store_test.go` 校验连接与四个对象装配。SQLite 使用 CGO 驱动，运行测试需要本机安装 gcc（Windows 可用 MinGW-w64 / w64devkit）。
 

@@ -39,3 +39,13 @@ func (c *CategoryController) Get(ctx *gin.Context) {
 	}
 	ctx.JSON(http.StatusOK, item)
 }
+
+// Tree 返回分类的二级树（父分类在前、子分类嵌套）。
+func (c *CategoryController) Tree(ctx *gin.Context) {
+	out, err := c.svc.Tree(utils.ParseUintQuery(ctx.Query("source_id")))
+	if err != nil {
+		writeError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, out)
+}

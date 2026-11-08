@@ -6,6 +6,7 @@ const health = ref({})
 const sources = ref([])
 const videos = ref([])
 const categories = ref([])
+const categoryTree = ref([])
 const jobs = ref([])
 const busy = ref(false)
 const error = ref('')
@@ -64,11 +65,14 @@ async function loadJobs() {
 async function loadCategories() {
   categories.value = (await request('/api/categories/v1')) || []
 }
+async function loadCategoryTree() {
+  categoryTree.value = (await request('/api/categories/v1/tree')) || []
+}
 
 async function refresh() {
   error.value = ''
   try {
-    await Promise.all([loadHealth(), loadSources(), loadVideos(), loadJobs(), loadCategories()])
+    await Promise.all([loadHealth(), loadSources(), loadVideos(), loadJobs(), loadCategories(), loadCategoryTree()])
   } catch (e) {
     error.value = e.message
   }
@@ -375,26 +379,29 @@ onMounted(() => { refresh(); loadFieldMeta() })
       <section class="card">
         <div class="list-head">
           <h2>视频分类</h2>
-          <span class="muted">按资源站自动归档，共 {{ categories.length }} 个分类</span>
+          <span class="muted">按资源站自动归档，共 {{ categories.length }} 个分类（支持二级）</span>
         </div>
-        <p class="hint">采集时按接口返回的 type_id / type_name 自动创建分类并关联影片，每个资源站各自一套，同名的站点分类互不影响。查看分类下的影片可点「查看影片」。</p>
-        <p v-if="!categories.length" class="empty">还没有分类，执行一次采集后会自动生成。</p>
-        <div v-else class="table-wrap">
-          <table>
-            <thead>
-              <tr><th>ID</th><th>资源站</th><th>站点分类 ID</th><th>分类名称</th><th>影片数</th><th>操作</th></tr>
-            </thead>
-            <tbody>
-              <tr v-for="c in categories" :key="c.id">
-                <td class="mono">{{ c.id }}</td>
-                <td class="host">{{ sourceName(c.sourceId) }}</td>
-                <td class="mono">{{ c.typeId || '-' }}</td>
-                <td>{{ c.name }}</td>
-                <td class="mono">{{ c.videoCount }}</td>
-                <td><button class="mini ghost" @click="showCategoryVideos(c)">查看影片</button></td>
-              </tr>
-            </tbody>
-          </table>
+        <p class="hint">采集时按接口返回的 type_id / type_name 自动创建分类并关联影片，每个资源站各自一套；依据苹果CMS 的 type_pid 模型支持二级分类：视频的 <code>type_id_1</code> 即所属一级分类 ID，二级分类会挂到对应一级分类之下。点「查看影片」可按分类（含其子分类）筛选影片。</p>
+        <p v-if="!categoryTree.length" class="empty">还没有分类，执行一次采集后会自动生成。</p>
+        <div v-else class="cat-tree">
+          <div v-for="node in categoryTree" :key="node.id" class="cat-node">
+            <div class="cat-row">
+              <span class="badge" :class="node.level === 1 ? 'on' : 'off'">{{ node.level === 1 ? '一级' : '二级' }}</span>
+              <b>{{ node.name }}</b>
+              <span class="muted">站点ID {{ node.typeId || '-' }}</span>
+              <span class="muted">{{ node.videoCount }} 部</span>
+              <button class="mini ghost" @click="showCategoryVideos(node)">查看影片</button>
+            </div>
+            <div v-if="node.children && node.children.length" class="cat-children">
+              <div v-for="ch in node.children" :key="ch.id" class="cat-row child">
+                <span class="badge off">二级</span>
+                <b>{{ ch.name }}</b>
+                <span class="muted">站点ID {{ ch.typeId || '-' }}</span>
+                <span class="muted">{{ ch.videoCount }} 部</span>
+                <button class="mini ghost" @click="showCategoryVideos(ch)">查看影片</button>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
     </template>
@@ -623,5 +630,11 @@ th { color: #86909c; font-weight: 500; }
 .kv-table { width: 100%; }
 .kv-table th { width: 240px; text-align: left; }
 .kv-table td { white-space: pre-wrap; word-break: break-all; }
+.cat-tree { display: flex; flex-direction: column; gap: 10px; }
+.cat-node { border: 1px solid #e5e6eb; border-radius: 8px; overflow: hidden; }
+.cat-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; flex-wrap: wrap; }
+.cat-row.child { background: #fafbfc; border-top: 1px solid #f0f1f3; padding-left: 34px; }
+.cat-row b { font-size: 14px; }
+.cat-children { }
 .raw-json { background: #1f2329; color: #e8eaed; padding: 14px; border-radius: 8px; font-size: 12px; line-height: 1.6; overflow: auto; max-height: 58vh; white-space: pre-wrap; word-break: break-all; }
 </style>

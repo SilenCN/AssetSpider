@@ -136,7 +136,17 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, int64, er
 		q = q.Where("source_id = ?", query.SourceID)
 	}
 	if query.CategoryID > 0 {
-		q = q.Where("category_id = ?", query.CategoryID)
+		// 二级分类支持：按分类筛选时，父分类一并命中其下所有子分类的影片。
+		var ids []uint
+		if err := r.db.Model(&model.Category{}).
+			Where("id = ? OR parent_id = ?", query.CategoryID, query.CategoryID).
+			Pluck("id", &ids).Error; err != nil {
+			return nil, 0, err
+		}
+		if len(ids) == 0 {
+			ids = []uint{query.CategoryID}
+		}
+		q = q.Where("category_id IN ?", ids)
 	}
 	if query.Keyword != "" {
 		kw := "%" + query.Keyword + "%"
