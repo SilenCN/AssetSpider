@@ -502,9 +502,10 @@ async function openDetail(v) {
 
 onBeforeUnmount(destroyPlayer)
 
-// Esc 关闭当前弹窗（站点配置优先，其次资源详情）
+// Esc 关闭当前弹窗（导入确认 → 站点配置 → 资源详情）
 function onEsc(e) {
   if (e.key !== 'Escape') return
+  if (importOpen.value) { closeImport(); return }
   if (sourceOpen.value) { closeSourceForm(); return }
   if (detail.value) closeDetail()
 }
@@ -557,6 +558,93 @@ function closeSourceForm() {
 }
 
 function editSource(s) { openSourceForm(s) }
+
+// ---------- 站点配置 JSON 导入 / 导出 ----------
+const importOpen = ref(false)
+const importBusy = ref(false)
+const importFileName = ref('')
+const importRaw = ref('')
+const importPreview = ref([])
+const importFileEl = ref(null)
+const importPreviewShown = computed(() => importPreview.value.slice(0, 30))
+
+async function exportSources() {
+  try {
+    const data = await request('/api/sources/v1/export')
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const d = new Date()
+    const pad = n => String(n).padStart(2, '0')
+    const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `assetspider-sources-${stamp}.json`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    notify(`已导出 ${data.sources?.length || 0} 个站点配置`)
+  } catch (e) { notify(e.message, 'err') }
+}
+
+function pickImportFile() {
+  if (!importFileEl.value) return
+  importFileEl.value.value = '' // 允许连续选同一个文件
+  importFileEl.value.click()
+}
+
+async function onImportFile(e) {
+  const file = e.target.files?.[0]
+  if (!file) return
+  try {
+    const text = await file.text()
+    const data = JSON.parse(text)
+    let items
+    if (Array.isArray(data)) items = data
+    else if (data && Array.isArray(data.sources)) items = data.sources
+    else if (data && typeof data === 'object') items = [data]
+    else throw new Error('内容不是站点配置对象或数组')
+    if (!items.length) throw new Error('文件里没有站点配置')
+    importRaw.value = text
+    importFileName.value = file.name
+    importPreview.value = items.map(s => ({
+      name: typeof s?.name === 'string' ? s.name : '',
+      apiBase: typeof s?.apiBase === 'string' ? s.apiBase : '',
+    }))
+    importOpen.value = true
+  } catch (err) {
+    notify(`无法读取 JSON：${err.message}`, 'err')
+  }
+}
+
+function closeImport() {
+  importOpen.value = false
+  importRaw.value = ''
+  importFileName.value = ''
+  importPreview.value = []
+}
+
+async function confirmImport() {
+  if (importBusy.value) return
+  importBusy.value = true
+  try {
+    const res = await request('/api/sources/v1/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: importRaw.value,
+    })
+    const issues = (res.issues || []).slice(0, 3)
+      .map(i => `第 ${i.index + 1} 条「${i.name || '未命名'}」：${i.error}`).join('；')
+    const tail = res.failed ? `、失败 ${res.failed} 个${issues ? `（${issues}）` : ''}` : ''
+    notify(`导入完成：新增 ${res.created} 个、更新 ${res.updated} 个${tail}`, res.failed ? 'err' : 'ok')
+    closeImport()
+    await refresh()
+  } catch (e) {
+    notify(e.message, 'err')
+  } finally {
+    importBusy.value = false
+  }
+}
 
 async function saveSource() {
   error.value = ''
@@ -1014,7 +1102,12 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
           <div class="list-head-l">
             <h2>站点列表</h2><span class="muted">共 {{ sources.length }} 个</span>
           </div>
-          <button v-if="isAdmin" @click="openSourceForm()">+ 新增站点</button>
+          <div class="ops import-ops">
+            <button class="ghost" @click="exportSources">导出 JSON</button>
+            <button v-if="isAdmin" class="ghost" @click="pickImportFile">导入 JSON</button>
+            <button v-if="isAdmin" @click="openSourceForm()">+ 新增站点</button>
+            <input ref="importFileEl" class="hidden-file" type="file" accept=".json,application/json" @change="onImportFile" />
+          </div>
         </div>
         <p v-if="!sources.length" class="empty">{{ isAdmin ? '还没有站点，点右上角「新增站点」添加一个 JSON 采集接口。' : '管理员尚未给你分配任何可见站点。' }}</p>
         <div v-else class="table-wrap">
@@ -1285,6 +1378,34 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
       </section>
     </template>
 
+    <!-- 站点配置导入确认（仅管理员） -->
+    <div v-if="importOpen" class="modal-mask" @click.self="closeImport">
+      <div class="modal narrow">
+        <div class="modal-head">
+          <div>
+            <h3>导入站点配置</h3>
+            <p class="muted">{{ importFileName }} · 共 {{ importPreview.length }} 条配置</p>
+          </div>
+          <button class="ghost" @click="closeImport">关闭</button>
+        </div>
+        <div class="modal-body">
+          <p class="hint">按<strong>站点名称</strong>匹配：同名配置会被更新（保留站点 ID、采集状态与增量游标），不同名的新建，因此重复导入不会产生重复站点。单条配置校验失败不影响其它条目。支持导出文件、站点数组、单条站点对象三种 JSON。</p>
+          <div class="import-list">
+            <div v-for="(s, i) in importPreviewShown" :key="i" class="import-row">
+              <span class="mono muted">#{{ i + 1 }}</span>
+              <b>{{ s.name || '（未命名）' }}</b>
+              <span class="muted">{{ s.apiBase || '（缺少接口地址）' }}</span>
+            </div>
+            <div v-if="importPreview.length > importPreviewShown.length" class="import-row muted">…… 还有 {{ importPreview.length - importPreviewShown.length }} 条未列出</div>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button :disabled="importBusy" @click="confirmImport">{{ importBusy ? '导入中…' : '确认导入' }}</button>
+          <button class="ghost" @click="closeImport">取消</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 站点配置弹窗（新增 / 编辑共用，仅管理员） -->
     <div v-if="sourceOpen && isAdmin" class="modal-mask" @click.self="closeSourceForm">
       <div class="modal narrow">
@@ -1546,6 +1667,14 @@ th { color: #86909c; font-weight: 500; }
 .modal-tabs button.active { background: #165dff; color: #fff; }
 .modal-tabs .check { margin-left: auto; }
 .modal-body { overflow-y: auto; padding: 6px 22px 22px; }
+/* 站点配置导入 / 导出 */
+.hidden-file { display: none; }
+.import-ops { flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+.import-list { max-height: 300px; overflow-y: auto; border: 1px solid #e5e6eb; border-radius: 6px; }
+.import-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; font-size: 13px; border-bottom: 1px solid #f0f1f3; }
+.import-row:last-child { border-bottom: 0; }
+.import-row b { font-size: 13px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 22px 20px; border-top: 1px solid #e5e6eb; }
 .list-head-l { display: flex; align-items: baseline; gap: 10px; }
 .list-head-l h2 { margin: 0; }
 /* 站点配置弹窗表单 */
@@ -1687,6 +1816,10 @@ th { color: #86909c; font-weight: 500; }
   .sf-form { grid-template-columns: 1fr; padding: 12px 16px 18px; gap: 10px; }
   .sf-actions { flex-wrap: wrap; justify-content: stretch; }
   .sf-actions button { flex: 1 1 auto; }
+  .import-ops { justify-content: flex-start; }
+  .modal-actions { padding: 12px 16px 16px; }
+  .modal-actions button { flex: 1 1 auto; }
+  .import-row { gap: 6px; font-size: 12px; }
   .player { max-height: 56vh; }
   .player-frame { max-height: 56vh; }
   .field-grid { grid-template-columns: 1fr; }

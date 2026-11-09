@@ -58,11 +58,14 @@ func registerV1(api *gin.RouterGroup, set controller.Set) {
 	adminAssets.DELETE("/:id", set.Asset.Delete)
 
 	// 采集站点配置；采集动作是站点的子资源 crawls
+	// 静态路径 export / import 注册在 :id 通配路径之前。
 	sources := secured.Group("/sources/" + APIVersion)
 	sources.GET("", set.Source.List)
+	sources.GET("/export", set.Source.Export)
 	sources.POST("/:id/crawls", set.Crawl.RunOne)
 	adminSources := admin.Group("/sources/" + APIVersion)
 	adminSources.POST("", set.Source.Create)
+	adminSources.POST("/import", set.Source.Import)
 	adminSources.PUT("/:id", set.Source.Update)
 	adminSources.DELETE("/:id", set.Source.Delete)
 

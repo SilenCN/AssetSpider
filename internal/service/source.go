@@ -1,8 +1,10 @@
 package service
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/SilenCN/AssetSpider/internal/model"
 	"github.com/SilenCN/AssetSpider/internal/repository"
@@ -157,4 +159,118 @@ func (s *SourceService) Get(id uint) (*model.Source, error) {
 		return nil, wrapRepo(err)
 	}
 	return src, nil
+}
+
+// ---------- JSON 导入 / 导出 ----------
+
+const SourceBundleVersion = 1
+
+// SourceBundle 是站点配置的 JSON 交换格式，只含「可编辑字段」。
+// ID、影片数、上次采集状态、增量游标、时间戳等运行时数据都不导出：
+// 文件因此可以直接导入到另一个实例，也不会把旧实例的状态带过去。
+type SourceBundle struct {
+	Version    int           `json:"version"`
+	ExportedAt string        `json:"exportedAt,omitempty"`
+	Sources    []SourceInput `json:"sources"`
+}
+
+// ImportIssue 记录某一条配置导入失败的原因，不影响其它条目继续导入。
+type ImportIssue struct {
+	Index int    `json:"index"`
+	Name  string `json:"name"`
+	Error string `json:"error"`
+}
+
+type ImportResult struct {
+	Total   int           `json:"total"`
+	Created int           `json:"created"`
+	Updated int           `json:"updated"`
+	Failed  int           `json:"failed"`
+	Issues  []ImportIssue `json:"issues,omitempty"`
+}
+
+func (r *ImportResult) fail(index int, name string, err error) {
+	r.Failed++
+	r.Issues = append(r.Issues, ImportIssue{
+		Index: index, Name: strings.TrimSpace(name), Error: err.Error(),
+	})
+}
+
+func sourceInputOf(src model.Source) SourceInput {
+	enabled := src.Enabled
+	return SourceInput{
+		Name:             src.Name,
+		APIBase:          src.APIBase,
+		Format:           src.Format,
+		ExtraParams:      src.ExtraParams,
+		Enabled:          &enabled,
+		IncrementalHours: src.IncrementalHours,
+		MaxPages:         src.MaxPages,
+		ParseAPI:         src.ParseAPI,
+		PlayDomain:       src.PlayDomain,
+		PicAPI:           src.PicAPI,
+		PicDomain:        src.PicDomain,
+	}
+}
+
+// Export 导出当前登录主体可见的站点配置（管理员为全部）。
+func (s *SourceService) Export(p ...Principal) (SourceBundle, error) {
+	srcs, err := s.sources.ListSources(principalOf(p...).Visible())
+	if err != nil {
+		return SourceBundle{}, wrapRepo(err)
+	}
+	bundle := SourceBundle{
+		Version:    SourceBundleVersion,
+		ExportedAt: time.Now().UTC().Format(time.RFC3339),
+		Sources:    make([]SourceInput, 0, len(srcs)),
+	}
+	for _, src := range srcs {
+		bundle.Sources = append(bundle.Sources, sourceInputOf(src))
+	}
+	return bundle, nil
+}
+
+// Import 批量导入站点配置：按站点名称（忽略大小写与首尾空白）匹配已有配置，
+// 命中则更新（保留 ID、采集状态与游标），未命中则新建，因此重复导入不会堆叠重复站点。
+// 单条校验或写库失败只记入 Issues，其余条目照常处理。
+func (s *SourceService) Import(items []SourceInput, p ...Principal) (ImportResult, error) {
+	if !principalOf(p...).IsAdmin {
+		return ImportResult{}, fmt.Errorf("%w: 只有管理员可以导入站点配置", ErrForbidden)
+	}
+	if len(items) == 0 {
+		return ImportResult{}, invalid("导入内容里没有站点配置")
+	}
+	existing, err := s.sources.ListSources()
+	if err != nil {
+		return ImportResult{}, wrapRepo(err)
+	}
+	byName := make(map[string]uint, len(existing))
+	for _, src := range existing {
+		byName[strings.ToLower(strings.TrimSpace(src.Name))] = src.ID
+	}
+	result := ImportResult{Total: len(items)}
+	for i, in := range items {
+		if err := in.validate(); err != nil {
+			result.fail(i, in.Name, err)
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(in.Name))
+		if id, ok := byName[key]; ok {
+			if _, err := s.Update(id, in); err != nil {
+				result.fail(i, in.Name, err)
+			} else {
+				result.Updated++
+			}
+			continue
+		}
+		created, err := s.Create(in)
+		if err != nil {
+			result.fail(i, in.Name, err)
+			continue
+		}
+		result.Created++
+		// 同一个文件里出现同名配置时，后续条目更新刚创建的那条，而不是再建一条。
+		byName[key] = created.ID
+	}
+	return result, nil
 }
