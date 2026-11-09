@@ -533,7 +533,7 @@ sudo systemctl restart assetspider
 ```bash
 scp assetspider-release.tar.gz ubuntu@140.238.43.173:/tmp/
 ssh ubuntu@140.238.43.173
-mkdir -p /tmp/as && tar -xzf /tmp/assetspider-release.tar.gz -C /tmp/as deploy/deploy.sh
+mkdir -p /tmp/as && tar -xzf /tmp/assetspider-release.tar.gz -C /tmp/as
 bash /tmp/as/deploy/deploy.sh /tmp/assetspider-release.tar.gz
 ```
 
@@ -542,6 +542,7 @@ bash /tmp/as/deploy/deploy.sh /tmp/assetspider-release.tar.gz
 | 现象 | 排查方向 |
 | --- | --- |
 | 工作流跳过部署，日志有 warning | 未配置 Secret `DEPLOY_SSH_KEY`，或变量名写错 |
+| `tar: deploy/deploy.sh: Not found in archive` | 老版本工作流按成员名从发布包里挑单个文件，归档成员带 `./` 前缀导致匹配不到；已改为全量解包。若手动打包，请勿用 `tar -C <dir> .`，改用显式列出 `bin web conf deploy VERSION` |
 | `Permission denied (publickey)` | 公钥没进服务器 `~/.ssh/authorized_keys`；`DEPLOY_USER` 与公钥所属用户不一致；私钥粘贴时缺 BEGIN / END 行 |
 | `Host key verification failed` | 服务器重装或换 IP：更新 Secret `DEPLOY_KNOWN_HOSTS` 或仓库 `deploy/known_hosts` |
 | `Connection timed out` | 云安全组 / iptables 未对 GitHub runner 放行 22 端口 |

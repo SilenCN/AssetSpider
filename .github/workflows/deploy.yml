@@ -130,7 +130,10 @@ jobs:
           cp deploy/deploy.sh deploy/assetspider.service "$STAGE/deploy/"
           chmod 0755 "$STAGE/deploy/deploy.sh"
           printf '%s\n' "$GITHUB_SHA" > "$STAGE/VERSION"
-          tar -czf "$RUNNER_TEMP/assetspider-release.tar.gz" -C "$STAGE" .
+          # 显式列出顶层条目：若用 "-C $STAGE ." 归档成员会带 ./ 前缀，
+          # 远端按 "deploy/deploy.sh" 精确提取时会匹配不到（Not found in archive）。
+          tar -czf "$RUNNER_TEMP/assetspider-release.tar.gz" -C "$STAGE" \
+            bin web conf deploy VERSION
           echo "发布包大小: $(du -h "$RUNNER_TEMP/assetspider-release.tar.gz" | cut -f1)"
           echo "RELEASE_TAR=$RUNNER_TEMP/assetspider-release.tar.gz" >> "$GITHUB_ENV"
 
@@ -151,16 +154,18 @@ jobs:
           REMOTE_DIR="/tmp/assetspider-deploy-${GITHUB_RUN_ID}"
 
           scp "${SCP_OPTS[@]}" "$RELEASE_TAR" "$TARGET:$REMOTE_TAR"
+          # 无论部署成功还是失败，都清理服务器上的临时文件。
+          trap 'ssh "${SSH_OPTS[@]}" "$TARGET" "rm -f $REMOTE_TAR && rm -rf $REMOTE_DIR" >/dev/null 2>&1 || true' EXIT
+
+          # 全量解包，不按成员名挑文件：避免归档成员名前缀差异导致提取失败。
           ssh "${SSH_OPTS[@]}" "$TARGET" \
-            "mkdir -p $REMOTE_DIR && tar -xzf $REMOTE_TAR -C $REMOTE_DIR deploy/deploy.sh"
+            "mkdir -p $REMOTE_DIR && tar -xzf $REMOTE_TAR -C $REMOTE_DIR && test -f $REMOTE_DIR/deploy/deploy.sh"
 
           # printf %q 保证各变量在远端 shell 中被正确转义
           REMOTE_CMD="$(printf 'DEPLOY_PATH=%q DEPLOY_MODE=%q HEALTH_URL=%q SERVICE_NAME=%q bash %q %q' \
             "$DEPLOY_PATH" "$DEPLOY_MODE" "$HEALTH_URL" "assetspider" \
             "$REMOTE_DIR/deploy/deploy.sh" "$REMOTE_TAR")"
           ssh "${SSH_OPTS[@]}" "$TARGET" "$REMOTE_CMD"
-
-          ssh "${SSH_OPTS[@]}" "$TARGET" "rm -f $REMOTE_TAR && rm -rf $REMOTE_DIR" || true
           echo "::notice::部署完成，服务已启动。访问 http://$DEPLOY_HOST:8080"
 
       - name: 清理临时密钥
