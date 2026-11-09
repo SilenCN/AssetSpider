@@ -1,0 +1,32 @@
+[Unit]
+Description=AssetSpider 视频站点采集服务
+Documentation=https://github.com/SilenCN/AssetSpider
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__GROUP__
+WorkingDirectory=__DEPLOY_PATH__
+ExecStart=__DEPLOY_PATH__/bin/assetspider -config __DEPLOY_PATH__/conf/config.yaml
+
+# 默认值；如需改端口/采集参数，请编辑 /etc/assetspider.env（不会被部署覆盖）。
+Environment=ASSETSPIDER_SERVER_ADDR=:8080
+Environment=ASSETSPIDER_DB_PATH=__DEPLOY_PATH__/data/assetspider.db
+Environment=ASSETSPIDER_WEB_DIR=__DEPLOY_PATH__/web/dist
+# EnvironmentFile 放在 Environment 之后，后出现的同名变量优先，便于个性化覆盖。
+EnvironmentFile=-/etc/__SERVICE_NAME__.env
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:__DEPLOY_PATH__/logs/assetspider.log
+StandardError=append:__DEPLOY_PATH__/logs/assetspider.log
+
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=__DEPLOY_PATH__/data __DEPLOY_PATH__/logs
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
