@@ -13,10 +13,12 @@ import "time"
 // Level 标记 1=一级 / 2=二级。苹果CMS 视频用 type_id_1 携带所属一级分类 ID，
 // 采集时据此把二级分类挂到一级分类之下。
 type Category struct {
-	ID       uint   `gorm:"primaryKey" json:"id"`
-	SourceID uint   `gorm:"column:source_id;not null;uniqueIndex:idx_source_cat,priority:1;index" json:"sourceId"`
+	ID uint `gorm:"primaryKey" json:"id"`
+	// idx_categories_source_type (source_id, type_id)：采集时按 type_pid 归树需要
+	// 「同站内按 type_id 找父分类」，没有这个索引每找一个父级都要扫全部分类。
+	SourceID uint   `gorm:"column:source_id;not null;uniqueIndex:idx_source_cat,priority:1;index;index:idx_categories_source_type,priority:1" json:"sourceId"`
 	Key      string `gorm:"column:cat_key;size:160;not null;uniqueIndex:idx_source_cat,priority:2" json:"key"`
-	TypeID   string `gorm:"column:type_id;size:64" json:"typeId"`
+	TypeID   string `gorm:"column:type_id;size:64;index:idx_categories_source_type,priority:2" json:"typeId"`
 	Name     string `gorm:"column:name;size:128;not null" json:"name"`
 
 	// 二级分类支持（对齐苹果CMS type_pid 模型）

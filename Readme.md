@@ -339,6 +339,55 @@ auth:
 
 **站点名称全系统唯一**：手工「新增站点」（`POST /api/sources/v1`）与「编辑站点」（`PUT /api/sources/v1/:id`）都按名称（忽略大小写与首尾空白）查重。重名时新建返回 `409`、改名改成另一条已存在站点也返回 `409`；改名成「自身」（含仅大小写差异）则允许。导入的「重名即更新」是这条规定在批量场景下的互补——手工建站不允许重名，要改已有站点就走编辑或导入。
 
+### 检索与索引
+
+影片列表是读得最重的接口：一次请求要同时完成「关键词 + 站点 / 分类 / 地域 / 标签筛选 + 时间或评分排序 + 分页 + 总数」。索引与查询都按这条链路设计。
+
+**B-Tree 复合索引**（`model` 里的 GORM 标签，`AutoMigrate` 自动建）：
+
+| 索引 | 列 | 服务的查询 |
+| --- | --- | --- |
+| `idx_source_vod` | (source_id, vod_id) 唯一 | 采集 upsert、vod_id 反查主键 |
+| `idx_videos_source_time` | (source_id, vod_time) | 单站点按更新时间排序 / 翻页 |
+| `idx_videos_source_id` | (source_id, id) | 单站点 + 默认 id 倒序 |
+| `idx_videos_vod_area` | (vod_area) | 地域下拉的 `DISTINCT … ORDER BY` |
+| `idx_videos_category_id` | (category_id) | 分类筛选、按分类聚合影片数 |
+| `idx_video_tags_tag` | (tag_id, video_id) | 按标签筛选（主键反向查询会全表扫描） |
+| `idx_categories_source_type` | (source_id, type_id) | 采集时按 `type_pid` 归树找父分类 |
+| `idx_jobs_source_mode` | (source_id, mode, id) | 取「本站点本模式最近一条任务」判断续采 |
+
+SQLite 的索引末尾隐含 rowid（即 `id`），所以 `(source_id, vod_time)` 同时满足 `ORDER BY vod_time DESC, id DESC`，不必再补 id 列。
+
+**全文索引（FTS5）**：关键词检索原来是对 6 列做 `LIKE '%词%'`，前置通配符让索引彻底失效，每次搜索全表扫描。启动时 `ensureVideoSearch` 幂等创建 FTS5 虚拟表 `videos_fts`（`content='videos'` 外部内容模式，正文不复制第二份）+ 三条同步触发器；索引列与 LIKE 覆盖的列一致：`vod_name / vod_en / vod_actor / vod_director / vod_class / vod_area`。
+
+分词器选 `trigram`：默认的 unicode61 按词切分，中文整句会变成一个词，搜「流浪」永远命中不了「流浪地球」；trigram 把文本切成三字符片段，天然支持中文子串与英文子串。
+
+> **边界**：trigram 无法为少于 3 个字符的关键词建立片段，所以 **1~2 字的关键词仍走 LIKE 全表扫描**（代码里 `videoSearchMatch` 返回 false 即回退）。3 字及以上走索引。若底层 SQLite 未编译 FTS5，建表失败只打日志并整体退回 LIKE，不影响启动。
+>
+> **存储代价**：15 万条影片的库从 73 MB 涨到 105 MB（+43%），主要来自 6 列文本的 trigram 倒排表。若要压缩，可只把真正会被搜索的列（如 `vod_name` / `vod_actor`）放进索引，代价是这几列以外的字段不再参与关键词检索。
+
+**查询侧的两处配合**：
+
+- `PRAGMA user_version` 记录检索层版本（`schemaVersion`），升级时整库 `ANALYZE` 一次，之后每次启动 `PRAGMA optimize`。没有统计信息时计划器会误判——例如「多站点可见 + 时间倒序」会选「先按站点过滤再全量排序」，有了统计信息才改走「按时间索引倒序扫描 + 边扫边过滤 + 凑满 LIMIT 即停」。
+- 分页查询先执行、再决定是否 `COUNT`：第一页且没取满时，本页条数就是总数，省掉一次全量扫描（分页查询在独立 `Session` 上执行，避免分页条件污染后面的 `COUNT`）。
+
+**实测**（15 万条影片 / 6 站点 / 400 分类 / 30 万条标签关联，取 5 次最小值）：
+
+| 场景 | 优化前 | 优化后 |
+| --- | --- | --- |
+| 可见性（3 站点）+ 时间倒序 | 138 ms | **3.0 ms** |
+| 站点 + 时间倒序 | 46 ms | **1.0 ms** |
+| 地域 + 时间倒序 | 54 ms | **12 ms** |
+| 地域下拉（DISTINCT） | 99 ms | **<1 ms** |
+| 标签筛选 | 25 ms | **5.7 ms** |
+| 关键词 4 字「流浪地球」 | 87 ms | **2.0 ms** |
+| 关键词 2 字（回退 LIKE） | 83 ms | 80 ms |
+| 默认列表第一页 | 0.5 ms | 0.5 ms |
+
+写入侧没有额外代价：500 条影片 upsert 在新旧库上都是 ~566 ms（触发器维护索引的开销远小于逐行更新上百列本身）。
+
+
+
 ### 清空站点数据（保留站点配置）
 
 站点列表每行（管理员）都有**清空数据**按钮，对应 `DELETE /api/sources/v1/:id/data`。它只清空该站点名下的数据，**站点配置本身（名称、接口地址、格式、附加参数、解析/播放/图片地址、启用状态、增量小时数、最大页数）原样保留**。

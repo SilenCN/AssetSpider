@@ -21,7 +21,7 @@ type UpsertStats struct {
 type VideoQuery struct {
 	SourceID   uint
 	CategoryID uint
-	TagID      uint   // 按标签过滤（经 video_tags 关联表）
+	TagID      uint // 按标签过滤（经 video_tags 关联表）
 	Keyword    string
 	Area       string // 地域（vod_area 模糊匹配）
 	Sort       string // 排序标识，见 videoOrder；空则按 id 倒序
@@ -55,10 +55,12 @@ type VideoRepository interface {
 // videoRepository 是 Video 实体专属的仓储对象。
 type videoRepository struct {
 	db *gorm.DB
+	// search 表示全文索引（videos_fts）是否可用；不可用时关键词检索退回 LIKE。
+	search bool
 }
 
 func NewVideoRepository(db *gorm.DB) VideoRepository {
-	return &videoRepository{db: db}
+	return &videoRepository{db: db, search: videoSearchTableExists(db)}
 }
 
 var _ VideoRepository = (*videoRepository)(nil)
@@ -218,19 +220,24 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, int64, er
 		q = q.Where("vod_area LIKE ?", "%"+area+"%")
 	}
 	if query.Keyword != "" {
-		kw := "%" + query.Keyword + "%"
-		q = q.Where(
-			"vod_name LIKE ? OR vod_en LIKE ? OR vod_actor LIKE ? OR vod_director LIKE ? OR vod_class LIKE ? OR vod_area LIKE ?",
-			kw, kw, kw, kw, kw, kw,
-		)
+		q = applyVideoKeyword(q, query.Keyword, r.search)
+	}
+	// 先取本页数据，再决定要不要算总数：
+	// 第一页且没取满时，本页条数就是总数，可省掉一次全量扫描（关键词检索时尤其明显）。
+	//
+	// 分页查询必须在独立的 Session 上执行：GORM 的链式方法会复用同一个 Statement，
+	// 直接在 q 上 .Order().Offset().Limit() 会把分页条件带到后面的 Count 上。
+	var items []model.Video
+	page := q.Session(&gorm.Session{})
+	if err := page.Order(videoOrder(query.Sort)).
+		Offset((query.Page - 1) * query.Size).Limit(query.Size).Find(&items).Error; err != nil {
+		return nil, 0, err
+	}
+	if query.Page == 1 && len(items) < query.Size {
+		return items, int64(len(items)), nil
 	}
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-	var items []model.Video
-	if err := q.Order(videoOrder(query.Sort)).
-		Offset((query.Page - 1) * query.Size).Limit(query.Size).Find(&items).Error; err != nil {
 		return nil, 0, err
 	}
 	return items, total, nil

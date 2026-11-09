@@ -15,8 +15,16 @@ import "time"
 // (SourceID, VodID) 为复合唯一索引：全量/增量重复采集同一影片时执行 upsert，
 // 不会产生重复行。Hash 由该条记录的全部键值计算，任何字段变化都会触发更新。
 type Video struct {
-	ID       uint `gorm:"primaryKey" json:"id"`
-	SourceID uint `gorm:"column:source_id;not null;uniqueIndex:idx_source_vod,priority:1" json:"sourceId"`
+	// 索引说明（读路径的性能关键）：
+	//   idx_source_vod       唯一键，采集 upsert 与 vod_id 反查主键都走它；
+	//   idx_videos_source_time  (source_id, vod_time)：单站点按更新时间排序/翻页直接读索引，
+	//                          不再「先按站点过滤再全量排序」；SQLite 的索引末尾隐含 rowid
+	//                          （即 id），所以 vod_time 相同时的 id 次序也能一并满足；
+	//   idx_videos_source_id    (source_id, id)：单站点 + 默认 id 倒序；
+	//   idx_videos_area       vod_area：地域下拉的 DISTINCT + ORDER BY；
+	//   idx_videos_category_id 分类筛选与按分类聚合影片数。
+	ID       uint `gorm:"primaryKey;index:idx_videos_source_id,priority:2" json:"id"`
+	SourceID uint `gorm:"column:source_id;not null;uniqueIndex:idx_source_vod,priority:1;index:idx_videos_source_time,priority:1;index:idx_videos_source_id,priority:1" json:"sourceId"`
 
 	// CategoryID 由采集时按本站分类自动归档回填；0 表示接口未返回分类信息。
 	CategoryID uint `gorm:"column:category_id;index" json:"categoryId"`
@@ -65,7 +73,7 @@ type Video struct {
 	VodWeekday     string `gorm:"column:vod_weekday" json:"vodWeekday"`
 
 	// ---- 属性 ----
-	VodArea     string `gorm:"column:vod_area" json:"vodArea"`
+	VodArea     string `gorm:"column:vod_area;index" json:"vodArea"`
 	VodLang     string `gorm:"column:vod_lang" json:"vodLang"`
 	VodYear     string `gorm:"column:vod_year" json:"vodYear"`
 	VodVersion  string `gorm:"column:vod_version" json:"vodVersion"`
@@ -99,7 +107,7 @@ type Video struct {
 	VodShareCount string `gorm:"column:vod_share_count" json:"vodShareCount"`
 
 	// ---- 时间 ----
-	VodTime        string `gorm:"column:vod_time;size:32;index" json:"vodTime"` // 站点原始更新时间，归一化后可字典序比较
+	VodTime        string `gorm:"column:vod_time;size:32;index;index:idx_videos_source_time,priority:2" json:"vodTime"` // 站点原始更新时间，归一化后可字典序比较
 	VodTimeAdd     string `gorm:"column:vod_time_add" json:"vodTimeAdd"`
 	VodTimeHits    string `gorm:"column:vod_time_hits" json:"vodTimeHits"`
 	VodTimeMake    string `gorm:"column:vod_time_make" json:"vodTimeMake"`

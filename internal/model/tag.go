@@ -22,6 +22,9 @@ type Tag struct {
 // 一条影片可带多个标签，一个标签可出现在多部影片上，因此用独立连接表承载，
 // 主键为 (video_id, tag_id) 的复合键，避免重复关联。
 type VideoTag struct {
-	VideoID uint `gorm:"column:video_id;primaryKey" json:"videoId"`
-	TagID   uint `gorm:"column:tag_id;primaryKey" json:"tagId"`
+	VideoID uint `gorm:"column:video_id;primaryKey;index:idx_video_tags_tag,priority:2" json:"videoId"`
+	// idx_video_tags_tag (tag_id, video_id)：按标签筛选影片时先定位到该标签的全部
+	// video_id，且这些 id 在索引内天然有序，配合 ORDER BY videos.id DESC 可直接倒序读。
+	// 主键 (video_id, tag_id) 只对「按影片查标签」有用，反方向的查询会全表扫描。
+	TagID uint `gorm:"column:tag_id;primaryKey;index:idx_video_tags_tag,priority:1" json:"tagId"`
 }

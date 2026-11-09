@@ -16,6 +16,7 @@ package repository
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -24,6 +25,16 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+// schemaVersion 是库结构的「检索层」版本号，记在 SQLite 的 PRAGMA user_version 里。
+//
+// 版本号只用于判断「是否需要重算统计信息」：索引与全文索引都由 AutoMigrate /
+// ensureVideoSearch 幂等创建，但 SQLite 的查询计划器要靠 ANALYZE 得到的
+// sqlite_stat1 才能选对索引（例如「多站点 + 时间倒序」在没有统计信息时会退化成
+// 「先按站点过滤再全量排序」）。升级后统计信息必然过期，故版本号提升时重跑一次。
+//
+// 新增索引 / 改变索引列时把它 +1。
+const schemaVersion = 2
 
 // Repositories 是各实体仓储的容器。
 // 它只是装配结果，不是「大杂烩仓储」：任何实体读写都必须走对应的那个对象。
@@ -72,6 +83,12 @@ func Open(path string) (*Repositories, error) {
 	); err != nil {
 		return nil, fmt.Errorf("迁移表结构: %w", err)
 	}
+	// 全文检索索引是虚拟表 + 触发器，AutoMigrate 管不到，单独幂等创建。
+	// 建不出来（例如底层 SQLite 未编译 FTS5）只降级为 LIKE 检索，不阻断启动。
+	if err := ensureVideoSearch(db); err != nil {
+		log.Printf("建立影片全文索引失败，关键词检索将退回 LIKE 全表扫描: %v", err)
+	}
+	prepareDatabase(db)
 	return &Repositories{
 		Assets:     NewAssetRepository(db),
 		Sources:    NewSourceRepository(db),
@@ -87,6 +104,29 @@ func Open(path string) (*Repositories, error) {
 
 // Path 返回数据库文件路径。
 func (r *Repositories) Path() string { return r.path }
+
+// prepareDatabase 维护查询计划器依赖的统计信息。
+//
+//   - 首次升级到当前 schemaVersion：整库 ANALYZE 一次（大表约几百毫秒，仅发生一次）；
+//   - 之后每次启动：PRAGMA optimize，由 SQLite 自行判断哪些索引需要补统计信息，代价极低。
+//
+// 不做这一步的话，新建的复合索引在 sqlite_stat1 里没有记录，计划器仍会按旧索引
+// 估算行数，出现「有索引却仍全量排序」的情况。
+func prepareDatabase(db *gorm.DB) {
+	var version int
+	if err := db.Raw("PRAGMA user_version").Scan(&version).Error; err != nil {
+		return
+	}
+	if version < schemaVersion {
+		if err := db.Exec("ANALYZE").Error; err != nil {
+			log.Printf("重建统计信息失败（不影响数据，仅影响查询计划选择）: %v", err)
+			return
+		}
+		db.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion))
+		return
+	}
+	db.Exec("PRAGMA optimize")
+}
 
 // Close 关闭底层连接。
 func (r *Repositories) Close() error {
