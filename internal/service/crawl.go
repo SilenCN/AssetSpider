@@ -93,8 +93,9 @@ func NormalizeMode(raw string) (string, error) {
 // 持久化按实体分别注入 SourceRepository / VideoRepository / CategoryRepository /
 // JobRepository，绝不越级。
 //
-// 任务调度（并发上限、排队、暂停）见 task.go：同一站点同一时刻只允许一个任务，
-// 所有任务共享一个可运行时调整上限的并发限流器。
+// 任务调度（并发上限、按站点排队、暂停）见 task.go：同一站点同一时刻只允许
+// 一个任务**运行**，重复发起的任务排队等待，前一个结束后自动补位；
+// 不同站点可并行，总量受全局并发上限约束。
 type CrawlService struct {
 	sources    repository.SourceRepository
 	videos     repository.VideoRepository
@@ -105,10 +106,12 @@ type CrawlService struct {
 	cfg        config.CollectorConfig
 
 	mu       sync.Mutex
-	tasks    map[uint]*crawlTask // jobID → 运行时任务
-	bySource map[uint]uint       // sourceID → jobID（防止同站点并发采集）
+	tasks    map[uint]*crawlTask // jobID → 运行时任务（含排队中的）
 	limiter  *concurrencyLimiter
-	wg       sync.WaitGroup // 追踪异步采集 goroutine，供 Close 时优雅收尾
+	// sourceGates 是每个站点的串行闸门（上限恒为 1，懒创建）：
+	// 同一站点同一时刻只有一个任务能通过，其余在闸门上排队。
+	sourceGates map[uint]*concurrencyLimiter
+	wg          sync.WaitGroup // 追踪异步采集 goroutine，供 Close 时优雅收尾
 }
 
 func NewCrawlService(
@@ -120,16 +123,16 @@ func NewCrawlService(
 	cfg config.CollectorConfig,
 ) *CrawlService {
 	return &CrawlService{
-		sources:    sources,
-		videos:     videos,
-		categories: categories,
-		tags:       tags,
-		jobs:       jobs,
-		fetcher:    collector.NewFetcher(cfg),
-		cfg:        cfg,
-		tasks:      make(map[uint]*crawlTask),
-		bySource:   make(map[uint]uint),
-		limiter:    newConcurrencyLimiter(cfg.MaxConcurrent),
+		sources:     sources,
+		videos:      videos,
+		categories:  categories,
+		tags:        tags,
+		jobs:        jobs,
+		fetcher:     collector.NewFetcher(cfg),
+		cfg:         cfg,
+		tasks:       make(map[uint]*crawlTask),
+		limiter:     newConcurrencyLimiter(cfg.MaxConcurrent),
+		sourceGates: make(map[uint]*concurrencyLimiter),
 	}
 }
 

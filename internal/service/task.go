@@ -311,9 +311,11 @@ type startOptions struct {
 	reset bool
 }
 
-// begin 校验参数、占用站点、落一条 queued 任务记录并登记到运行时任务表。
+// begin 校验参数、落一条 queued 任务记录并登记到运行时任务表。
 //
-// 同一站点在同一时刻只允许一个任务（不同站点可并行，总量受并发上限约束）。
+// 同一站点在同一时刻只允许一个任务**运行**，但不再拒绝重复发起：后到的任务
+// 以 queued 状态进入该站点的串行闸门排队，前一个任务结束（成功/暂停/失败）后
+// 自动补位（见 runTask）。不同站点可并行，总量受全局并发上限约束。
 // 未显式指定起始页时，全量模式下若该站上一次同模式任务是「已暂停/已失败」，
 // 则从记录的续采页码继续。
 func (s *CrawlService) begin(sourceID uint, mode string, opt startOptions) (*crawlTask, *model.Source, error) {
@@ -358,9 +360,6 @@ func (s *CrawlService) begin(sourceID uint, mode string, opt startOptions) (*cra
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, running := s.bySource[src.ID]; running {
-		return nil, nil, conflict("站点「%s」已有采集任务在进行中，可先暂停或等待其结束", src.Name)
-	}
 	if reopening {
 		if err := s.jobs.ReopenJob(job); err != nil {
 			return nil, nil, fmt.Errorf("重置采集记录失败: %w", err)
@@ -370,32 +369,36 @@ func (s *CrawlService) begin(sourceID uint, mode string, opt startOptions) (*cra
 	}
 	task := newCrawlTask(job, 1+s.cfg.RetryTimes)
 	s.tasks[job.ID] = task
-	s.bySource[src.ID] = job.ID
 	return task, src, nil
 }
 
-// runTask 是任务的实际执行体：排队 → 运行（失败则退避重试）→ 收尾。
+// runTask 是任务的实际执行体：站点串行排队 → 全局并发排队 → 运行（失败则退避重试）→ 收尾。
 func (s *CrawlService) runTask(ctx context.Context, task *crawlTask, src *model.Source) (*RunResult, error) {
+	// 兜底清理：任何提前返回都不能把任务留在运行时任务表里（重复删除无害，
+	// 正常路径由 settle 与站点闸门的 defer 更早完成）。
 	defer s.releaseSite(task)
 
 	runCtx, cancel := context.WithCancel(ctx)
 	task.attachCancel(cancel)
 	defer cancel()
 
-	// 并发上限内的排队；排队期间可被暂停/取消打断。
+	// 第一道：站点串行闸门。同一资源站同一时刻只允许一个任务运行，其余在这里
+	// 排队（任务记录已是 queued），前一个任务收尾后把闸门移交给下一个。
+	// 先于全局并发槽位获取：否则同站点的后续任务会白占一个全局槽位空等本站点。
+	gate := s.sourceGate(task.sourceID)
+	if err := gate.acquire(runCtx); err != nil {
+		return s.abortQueued(task, err)
+	}
+	defer func() {
+		// 顺序很重要：先把本任务从任务表里摘掉，再放闸门。否则下一个任务开跑时
+		// 同站点会短暂出现两条「进行中」，前端可能把暂停按钮指到已结束的那条。
+		s.releaseSite(task)
+		gate.release()
+	}()
+
+	// 第二道：全局并发上限内的排队；排队期间同样可被暂停/取消打断。
 	if err := s.limiter.acquire(runCtx); err != nil {
-		status, msg := model.JobFailed, "任务被取消："+err.Error()
-		if task.paused() {
-			status, msg = model.JobPaused, "排队中被暂停，尚未开始采集"
-		}
-		res, finishErr := s.settle(task, nil, status, msg)
-		if finishErr != nil {
-			return res, finishErr
-		}
-		if status == model.JobPaused {
-			return res, ErrPaused
-		}
-		return res, err
+		return s.abortQueued(task, err)
 	}
 	defer s.limiter.release()
 
@@ -650,14 +653,47 @@ func (t *crawlTask) currentAttempt() int {
 	return t.attempt
 }
 
-// releaseSite 把任务从运行时任务表中移除，释放该站点。
+// releaseSite 把任务从运行时任务表中移除。
+//
+// 站点级别的「同时只跑一个」由 runTask 里的站点闸门负责释放，与这里无关：
+// 任务收尾（写终态）完成后，runTask 的 defer 才把闸门交给该站点的下一个任务。
 func (s *CrawlService) releaseSite(task *crawlTask) {
 	s.mu.Lock()
-	if cur, ok := s.bySource[task.sourceID]; ok && cur == task.job.ID {
-		delete(s.bySource, task.sourceID)
-	}
 	delete(s.tasks, task.job.ID)
 	s.mu.Unlock()
+}
+
+// sourceGate 返回某站点的串行闸门（容量恒为 1，按需创建）。
+//
+// 同一资源站同一时刻只允许一个采集任务：重复发起不再返回冲突，而是在闸门上
+// 排队，前一个任务结束时把闸门移交给下一个（concurrencyLimiter 的 hand-off）。
+// 闸门按站点常驻内存，数量与站点数相当，无需回收。
+func (s *CrawlService) sourceGate(sourceID uint) *concurrencyLimiter {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	gate, ok := s.sourceGates[sourceID]
+	if !ok {
+		gate = newConcurrencyLimiter(1)
+		s.sourceGates[sourceID] = gate
+	}
+	return gate
+}
+
+// abortQueued 收尾「还没真正开始采集就被取消/暂停」的任务。
+// 与 runTask 的返回约定一致：被暂停时返回 ErrPaused，否则返回原始错误。
+func (s *CrawlService) abortQueued(task *crawlTask, cause error) (*RunResult, error) {
+	status, msg := model.JobFailed, "任务被取消："+cause.Error()
+	if task.paused() {
+		status, msg = model.JobPaused, "排队中被暂停，尚未开始采集"
+	}
+	res, finishErr := s.settle(task, nil, status, msg)
+	if finishErr != nil {
+		return res, finishErr
+	}
+	if status == model.JobPaused {
+		return res, ErrPaused
+	}
+	return res, cause
 }
 
 // startTask 登记并异步执行一个任务：立即返回任务视图，实际抓取在后台排队执行。
@@ -819,17 +855,39 @@ func (s *CrawlService) ListTasks(p ...Principal) TaskList {
 	}
 	sort.Slice(views, func(i, j int) bool { return views[i].JobID < views[j].JobID })
 
-	active, max, queued := s.limiter.state()
+	active, max, _ := s.limiter.state()
 	return TaskList{
-		Capacity: Capacity{MaxConcurrent: max, Running: active, Queued: queued},
+		Capacity: Capacity{MaxConcurrent: max, Running: active, Queued: s.queuedTasks()},
 		Items:    views,
 	}
 }
 
+// queuedTasks 汇总当前排队中的任务数：既包括等全局并发槽位的，也包括
+// 同一站点等前一个任务结束的（站点串行闸门）。两者互斥——任务先过站点
+// 闸门才会去抢全局槽位，因此不会重复计数。
+func (s *CrawlService) queuedTasks() int {
+	_, _, queued := s.limiter.state()
+
+	s.mu.Lock()
+	gates := make([]*concurrencyLimiter, 0, len(s.sourceGates))
+	for _, gate := range s.sourceGates {
+		gates = append(gates, gate)
+	}
+	s.mu.Unlock()
+
+	// 在锁外读取各闸门的排队数，避免与任务表互斥量嵌套。
+	for _, gate := range gates {
+		if _, _, q := gate.state(); q > 0 {
+			queued += q
+		}
+	}
+	return queued
+}
+
 // Capacity 返回当前并发容量。
 func (s *CrawlService) Capacity() Capacity {
-	active, max, queued := s.limiter.state()
-	return Capacity{MaxConcurrent: max, Running: active, Queued: queued}
+	active, max, _ := s.limiter.state()
+	return Capacity{MaxConcurrent: max, Running: active, Queued: s.queuedTasks()}
 }
 
 // SetMaxConcurrent 运行时调整「同时运行的任务数」上限（重启后回到配置文件的值）。

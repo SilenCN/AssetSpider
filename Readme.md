@@ -135,7 +135,7 @@ go build -o bin/assetspider .
 采集以**异步任务**运行：发起接口立即返回任务号，抓取在后台排队执行，进度通过任务接口轮询。**前端只在「站点配置」与「采集记录」两个页签停留时轮询**（每 1.5 秒一次；前者刷任务视图与站点上次采集状态，后者刷采集记录）；停在资源库 / 视频分类 / 用户管理时不发采集类请求，页面不可见时同样暂停。切回这两个页签或浏览器标签重新可见时会立刻补刷一次，不用等下一个周期；顶部「刷新」按钮始终可以手动做一次全量刷新。
 
 - **并发上限**：`collector.max_concurrent`（默认 3，环境变量 `ASSETSPIDER_COLLECTOR_MAX_CONCURRENT`）限制「同时运行的任务数」，超出的任务进入队列（状态 `queued`），空出槽位后自动补位；运行期可用 `PUT /api/tasks/v1/capacity` 实时调整，重启后回到配置文件的值。
-- **同站点互斥**：一个站点同一时刻只允许一个任务（重复发起返回 409），不同站点可并行。
+- **同站点串行**：一个资源站同一时刻只允许一个任务**运行**，重复发起的任务不再报错，而是以 `queued` 状态进入该站点的队列，前一个任务结束（成功 / 暂停 / 失败）后自动补位；排队中的任务同样可以暂停。不同站点可并行。
 - **手动暂停**：`PUT /api/tasks/v1/{jobId}` + `{"status":"paused"}`。暂停是协作式的——在页边界生效并中断正在进行的 HTTP 请求，**已完成的整页数据不会回滚**，也不会写入半页数据；**「等待自动重试」期间同样可以暂停**，不必等退避结束。
 - **进度保存**：全量采集把「下一次从第几页开始」写入 `crawl_jobs.resume_page`；增量采集照常推进 `last_cursor`。因此暂停不是失败，站点与记录状态都是 `paused`。
 - **运行中定期落库**：任务运行时每 `collector.progress_save_seconds`（默认 60 秒，环境变量 `ASSETSPIDER_COLLECTOR_PROGRESS_SAVE`）把已完成页数、拉取/新增/更新/未变统计、`attempt` 与续采页 `resume_page` 写进采集记录。这样**进程被强杀或机器重启也不会丢进度**——重启后服务会自动复用原记录、从 `resume_page` 指向的下一页继续采集（而不是从头再来）。定期落库只写进度字段，`status` / `finished_at` / `message` 始终由任务收尾独占写入，不会把已结束的任务改回「进行中」。
@@ -372,7 +372,7 @@ auth:
 | sources | POST | `/api/sources/v1/import` | 导入配置 JSON（仅管理员）：按站点名称 upsert，返回新增 / 更新 / 失败统计与逐条错误 |
 | crawls | POST | `/api/crawls/v1` | 对全部启用站点批量发起**同步**采集（超上限的排队） |
 | tasks | GET | `/api/tasks/v1` | 采集任务列表：`capacity`（`maxConcurrent` / `running` / `queued`）+ `items[]`（排队中、运行中、暂停中，含实时进度） |
-| tasks | POST | `/api/tasks/v1` | **异步**发起采集任务，body `{sourceId, mode}`，返回 `202` 与任务视图（`jobId`） |
+| tasks | POST | `/api/tasks/v1` | **异步**发起采集任务，body `{sourceId, mode}`，返回 `202` 与任务视图（`jobId`）；同站点已有任务时新任务排队（`status=queued`），不返回冲突 |
 | tasks | PUT | `/api/tasks/v1/:id` | 更新任务状态：`{"status":"paused"}` 暂停 / `{"status":"running"}` 继续（`:id` 为 `jobId`） |
 | tasks | POST | `/api/tasks/v1/:id/retry` | 手动重试**失败**的任务：**复用原记录**从失败页续采（统计累加，不新开任务），返回 `202` 与任务视图（非 `failed` 返回 409） |
 | tasks | POST | `/api/tasks/v1/:id/rerun` | **重新运行**已结束的任务：**复用原记录**忽略断点从第 1 页重来，统计与尝试次数清零，返回 `202` 与任务视图（运行中返回 409） |

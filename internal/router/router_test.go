@@ -857,11 +857,9 @@ func TestTaskPauseResumeAndCapacity(t *testing.T) {
 		t.Fatalf("创建任务异常: %d %s", w.Code, w.Body.String())
 	}
 
-	// 同站点不允许并发采集
-	if w := doJSON(r, http.MethodPost, "/api/tasks/v1",
-		map[string]interface{}{"sourceId": 1, "mode": "incremental"}); w.Code != http.StatusConflict {
-		t.Fatalf("同站点重复发起应返回 409，实际 %d %s", w.Code, w.Body.String())
-	}
+	// 同站点的第二个任务不再冲突，而是排队等待（这里不发起第二条，
+	// 否则它会在这条用例后续「暂停 / 续采」的断言里抢占站点）。
+	// 排队行为见 service 层的 TestSameSourceTasksQueueInsteadOfReject。
 	// 不存在的任务
 	if w := doJSON(r, http.MethodPut, "/api/tasks/v1/999999",
 		map[string]string{"status": "paused"}); w.Code != http.StatusNotFound {

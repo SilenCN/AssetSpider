@@ -157,10 +157,17 @@ async function refresh() {
 function categoryName(id) {
   return categories.value.find(c => c.id === id)?.name || '-'
 }
-// 站点正在进行的采集任务（排队/运行），用于把「全量/增量」换成「暂停」
+// 站点正在进行的采集任务（排队/运行），用于把「全量/增量」换成「暂停」。
+// 同一站点现在可以「1 个运行 + N 个排队」，这里优先返回真正在跑的那个，
+// 让暂停操作作用在当前任务上。
 function activeTaskOf(sourceId) {
-  return tasks.value.find(t =>
-    t.sourceId === sourceId && (t.status === 'running' || t.status === 'queued')) || null
+  const active = tasks.value.filter(t =>
+    t.sourceId === sourceId && (t.status === 'running' || t.status === 'queued'))
+  return active.find(t => t.status === 'running') || active[0] || null
+}
+// 该站点排队中的任务数（同站点串行，多出来的都在等）
+function queuedCountOf(sourceId) {
+  return tasks.value.filter(t => t.sourceId === sourceId && t.status === 'queued').length
 }
 function showCategoryVideos(c) {
   videoCategory.value = String(c.id)
@@ -1179,7 +1186,12 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
                 </td>
                 <td class="ops">
                   <template v-if="activeTaskOf(s.id)">
-                    <span class="muted tiny">{{ statusLabel(activeTaskOf(s.id).status) }}…</span>
+                    <span class="muted tiny">
+                      {{ statusLabel(activeTaskOf(s.id).status) }}…
+                      <template v-if="activeTaskOf(s.id).status === 'running' && queuedCountOf(s.id)">
+                        （另有 {{ queuedCountOf(s.id) }} 个排队）
+                      </template>
+                    </span>
                     <button class="mini danger" @click="pauseTask(activeTaskOf(s.id).jobId)">暂停</button>
                   </template>
                   <template v-else>
