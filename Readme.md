@@ -12,6 +12,7 @@
 | ORM / 数据库 | GORM + SQLite（纯 Go 驱动 modernc.org/sqlite，无 CGO） |
 | 前端 | Vue 3 + Vite + hls.js（m3u8 播放，按需动态加载） |
 | 配置 | `conf/config.yaml`（YAML） |
+| 认证 | bcrypt 密码哈希 + 随机令牌（仅存 SHA-256 摘要）+ Gin 中间件 |
 | 采集协议 | 苹果CMS V10 Provide 接口 `api.php/provide/vod/?ac=videolist` JSON |
 
 ## 四层架构
@@ -38,12 +39,13 @@ router  →  controller  →  service  →  repository
 | `Video` | `repository/video.go` | `VideoRepository` | `UpsertVideos`、`GetVideo`、`ListVideos`、`CountVideosBySource` / `ByCategory` |
 | `Category` | `repository/category.go` | `CategoryRepository` | `EnsureForVideos`、`List`、`Get` |
 | `CrawlJob` | `repository/job.go` | `JobRepository` | `CreateJob` / `FinishJob` / `ListJobs` |
+| `User` / `Session` / `UserSource` | `repository/user.go` | `UserRepository` | 账号 CRUD、会话签发/校验/吊销、站点授权读写 |
 
-`repository/store.go` 只是容器：`Repositories` 共享一条 `*gorm.DB`，负责连接、自动迁移、装配四个对象与 `Path` / `Close`，**不承载任何实体读写方法**；`errors.go` 放各对象共用的 `ErrNotFound`。测试同样按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go`，`store_test.go` 只测连接与装配。
+`repository/store.go` 只是容器：`Repositories` 共享一条 `*gorm.DB`，负责连接、自动迁移、装配各实体对象与 `Path` / `Close`，**不承载任何实体读写方法**；`errors.go` 放各对象共用的 `ErrNotFound`，`visibility.go` 放各实体共用的「可见站点白名单」过滤规则。测试同样按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go` / `user_test.go`，`store_test.go` 只测连接与装配。
 
 约束的具体落地：
 
-- 每个 service 只注入自己需要的实体仓储**接口**（如 `AssetService` 拿 `AssetRepository`，`CrawlService` 拿 `SourceRepository` + `VideoRepository` + `JobRepository`），看不到 `*gorm.DB`；GORM 的 `ErrRecordNotFound` 在仓储层翻译为 `repository.ErrNotFound`，服务层再翻译为 `ErrInvalid / ErrNotFound / ErrConflict` 三个哨兵错误，控制器据此决定 400 / 404 / 409 / 500（采集接口默认 502）。
+- 每个 service 只注入自己需要的实体仓储**接口**（如 `AssetService` 拿 `AssetRepository`，`CrawlService` 拿 `SourceRepository` + `VideoRepository` + `JobRepository`），看不到 `*gorm.DB`；GORM 的 `ErrRecordNotFound` 在仓储层翻译为 `repository.ErrNotFound`，服务层再翻译为 `ErrInvalid / ErrUnauthorized / ErrForbidden / ErrNotFound / ErrConflict` 五个哨兵错误，控制器据此决定 400 / 401 / 403 / 404 / 409 / 500（采集接口默认 502）。
 - 采集协议客户端放在 `internal/service/collector`（service 层内部子包），只做 HTTP 抓取、JSON 零丢失解析与实体转换；原 `collector.Runner` 的编排逻辑（分页、去重入库、任务与游标回写）已上移到 `CrawlService`，不再直接访问数据库。
 - `internal/model`（实体）、`internal/config`（配置）、`internal/utils`（工具）是横切包，不属于四层，也不参与调用链；`internal/app` 是依赖装配层（composition root），只负责自底向上 `new` 出各层对象并注入，不发起任何业务调用；`main.go` 只做配置加载、装配与启动。
 - `internal/utils` 是新增的 utils 层，统一存放与业务无关的纯工具：`request.go`（路径/query 参数解析）、`json.go`（JSON 值字符串化）、`time.go`（时间归一化）、`hash.go`（内容指纹）、`env.go`（整数环境变量）。它可被任意一层引用，但自身**不允许依赖任何 `internal/*` 业务包**（由架构测试强制）。
@@ -65,7 +67,9 @@ go test ./...
 go build -o bin/assetspider .
 ```
 
-浏览器打开 http://localhost:8080 ，在「站点配置」里添加一个 JSON 接口，点「全量」即可采集入库。数据库默认创建在 `data/assetspider.db`（父目录自动创建）。
+浏览器打开 http://localhost:8080 ：**第一个登录的账号会自动注册为管理员**（用户名密码自行设定，无需预先建号），之后可在「用户管理」里创建普通用户并勾选其可见站点。管理员在「站点配置」里添加 JSON 接口，点「全量」即可采集入库。数据库默认创建在 `data/assetspider.db`（父目录自动创建）。
+
+> 生产环境：push 到 `main` 会自动部署到服务器并启动服务，详见下文「自动部署」章节。
 
 ## 采集能力
 
@@ -134,13 +138,13 @@ go build -o bin/assetspider .
 - **同站点互斥**：一个站点同一时刻只允许一个任务（重复发起返回 409），不同站点可并行。
 - **手动暂停**：`PUT /api/tasks/v1/{jobId}` + `{"status":"paused"}`。暂停是协作式的——在页边界生效并中断正在进行的 HTTP 请求，**已完成的整页数据不会回滚**，也不会写入半页数据；**「等待自动重试」期间同样可以暂停**，不必等退避结束。
 - **进度保存**：全量采集把「下一次从第几页开始」写入 `crawl_jobs.resume_page`；增量采集照常推进 `last_cursor`。因此暂停不是失败，站点与记录状态都是 `paused`。
-- **运行中定期落库**：任务运行时每 `collector.progress_save_seconds`（默认 60 秒，环境变量 `ASSETSPIDER_COLLECTOR_PROGRESS_SAVE`）把已完成页数、拉取/新增/更新/未变统计、`attempt` 与续采页 `resume_page` 写进采集记录。这样**进程被强杀或机器重启也不会丢进度**——重启后记录被标记为中断，`resume_page` 已指向下一页，点「重试」即从断点续采（而不是从头再来）。定期落库只写进度字段，`status` / `finished_at` / `message` 始终由任务收尾独占写入，不会把已结束的任务改回「进行中」。
-- **继续**：`PUT /api/tasks/v1/{jobId}` + `{"status":"running"}`，**复用原记录**（`crawl_jobs` 里不会多出一条），按原站点、原模式重新入队：全量从 `resume_page` 续采，增量从游标继续，不会从头再拉一遍；拉取/新增/更新/未变与页数接着累加，尝试次数继续往下数。进程重启后遗留的 `paused` 记录同样走这条路径，续采页来自定期落库的 `resume_page`。
+- **运行中定期落库**：任务运行时每 `collector.progress_save_seconds`（默认 60 秒，环境变量 `ASSETSPIDER_COLLECTOR_PROGRESS_SAVE`）把已完成页数、拉取/新增/更新/未变统计、`attempt` 与续采页 `resume_page` 写进采集记录。这样**进程被强杀或机器重启也不会丢进度**——重启后服务会自动复用原记录、从 `resume_page` 指向的下一页继续采集（而不是从头再来）。定期落库只写进度字段，`status` / `finished_at` / `message` 始终由任务收尾独占写入，不会把已结束的任务改回「进行中」。
+- **继续**：`PUT /api/tasks/v1/{jobId}` + `{"status":"running"}`，按原站点、原模式重新入队：全量从 `resume_page` 续采，增量从游标继续，不会从头再拉一遍。**复用原任务记录**，统计与尝试次数继续累加。
 - **失败自动重试**：抓取/入库失败后按指数退避自动重试，次数由 `collector.retry_times`（默认 2，即最多尝试 3 次）、首次间隔由 `collector.retry_backoff_seconds`（默认 3 秒，之后翻倍、上限 30 秒）决定，设 `0` 可关闭。重试**从上次失败的那一页**继续，已完成页面不会重复抓取；每次尝试都记在 `crawl_jobs.attempt`。等待重试期间任务视图带 `retryInSeconds` 倒计时与失败原因。
 - **手动重试**：`POST /api/tasks/v1/{jobId}/retry`，仅对 `failed` 的任务有效。**复用原任务记录**（不会新开一条 `crawl_jobs`），从失败页续采，拉取/新增/更新/未变与页数在原值上继续累加，尝试次数也接着往下数；记录的 `retry_of` 保持为空。
-- **重新运行**：`POST /api/tasks/v1/{jobId}/rerun`，对任何已结束（`failed` / `success` / `paused`）的任务有效，**同样复用原记录**（任务 ID 不变，历史里不会多一条）：忽略断点从第 1 页重来，并把上一轮的拉取/新增/更新/未变、页数与尝试次数**清零**后重新计数；仍在运行的任务返回 409。
+- **重新运行**：`POST /api/tasks/v1/{jobId}/rerun`，对任何已结束（`failed` / `success` / `paused`）的任务有效，**复用原任务记录**，忽略断点从第 1 页重来，上一轮的统计与尝试次数清零、记录 ID 不变；`retry_of` 保持为空，仍在运行的任务返回 409。即**继续 / 重试 / 重新运行都不再新开记录**。
 - **实时进度与统计**：`GET /api/tasks/v1` 的每个任务带 `page` / `pageCount` / `pages` / `fetched` / `new` / `updated` / `unchanged` / `percent`（-1 表示总量未知，前端展示不定态进度条）/ `itemsPerSecond` / `etaSeconds` / `attempt` / `maxAttempts` / `retryInSeconds` / `message`；**每完成一页就刷新一次**，所以拉取/新增/更新/未变都能随任务实时增长。采集记录接口对运行中的记录额外带 `live` 字段，页面优先用 `live` 里的统计，因此「采集记录」页看到的也是同一份实时数据。
-- **重启清理**：任务调度只存在于进程内存，服务启动时会把遗留的 `running` / `queued` 记录标记为中断（`paused` 的任务保留，仍可继续）。
+- **重启自动恢复**：任务调度只存在于进程内存，服务启动时会把上次遗留的 `running` / `queued` 记录**自动复用原记录重新入队**，全量从 `resume_page` 续采、增量从 `last_cursor` 继续，统计与尝试次数接着累加（不新开记录）。启动钩子会先把它们标记为中断兜底，即使某条恢复失败（站点已删除、同站点冲突）页面也不会一直显示「进行中」；失败只记日志、不阻断服务启动。用户**手动暂停的 `paused` 任务不动**，仍由用户自行「继续」。并发上限与同站点互斥沿用现有调度器。
 
 ### 自动视频分类
 
@@ -157,7 +161,7 @@ go build -o bin/assetspider .
 
 - 视频的 `type_id_1` 即其所属**一级分类 ID**（苹果CMS 的 level-1 字段），`type_id` 是（通常是二级的）具体分类 ID；`type_id_1` 为空或与 `type_id` 相同则视为一级分类。
 - 每批入库会先把一级分类、`type_pid` 解析出来：二级分类通过 `type_pid` 挂到对应一级分类之下，并标记 `level`（1=一级 / 2=二级）。
-- **父级暂未采集到也安全**：若某批只采到二级（其 `type_pid` 指向的一级分类尚未出现），该分类先记为二级、父级留空；待该一级分类随后续采集出现后，会自动回挂到正确父级，不会丢层级。此时 `/api/categories/v1/tree` 会把它当作根节点返回，前端「视频分类」页按站点分组时会把它归到该站点的**「未归类」分组**里，避免看起来像一级分类。
+- **父级暂未采集到也安全**：若某批只采到二级（其 `type_pid` 指向的一级分类尚未出现），该分类先记为二级、父级留空；待该一级分类随后续采集出现后，会自动回挂到正确父级，不会丢层级。
 - `categories` 表新增 `type_pid` / `parent_id` / `level` 三列（由 GORM 自动迁移），现有单级分类升级后默认 `level=1`、无父级，向后兼容。
 
 ### 播放组解析（苹果CMS 字段）
@@ -183,25 +187,60 @@ go build -o bin/assetspider .
 - 解析出任一集才保留该组，全空则不落库（回退尝试原 `vod_play_list` 文本）。
 - 单独接口 `GET /api/videos/v1/:id/play-groups` 返回该影片的播放组数组，便于前端独立展示多线路选集。
 
-### 播放 / 图片增强（解析地址与域名改写）
+### 播放页显示「没有播放地址」怎么排查
 
-站点可以额外配置四项**读取期改写**规则（播放地址两项、封面图片两项），**只在读取时生效**——数据库里的 `vod_play_list`、`vod_pic` 始终是采集到的原始地址，改配置不会污染已入库数据，清空配置即恢复原样。
+**先说结论：入库链路不丢字段。** `list[]` 每条记录按 `VodFields` 全字段映射，`vod_play_from` / `vod_play_url` / `vod_play_list` 三列都在写回 map 里；内容指纹变化即整行更新。播放页为空，几乎都是**接口响应里就没有播放地址数据**（或字段写法不是标准苹果CMS 键名），不是入库时丢的。
+
+按下面顺序自查：
+
+1. **直接看接口返回**（把域名换成自己的站点）：
+   ```bash
+   curl 'https://站点/api.php/provide/vod/?ac=videolist&pg=1'
+   curl 'https://站点/api.php/provide/vod/?ac=detail&pg=1'
+   ```
+   苹果CMS 官方约定：`ac=videolist` / `ac=detail` 返回含 `vod_play_url` 的完整字段，其中 `ac=detail`（不带 `ids`）返回的是含播放地址的详情列表；**`ac=list` 通常只返回分类或精简列表，不含播放地址**。若 `list[0]` 里连 `vod_play_url` 都没有，播放器自然没有地址。
+2. **检查站点配置**：接口地址或「附加参数」里不要带 `ac=list`；要指定动作就在附加参数里写 `ac=videolist` 或 `ac=detail`。显式配置了 `ac` 时系统尊重该配置，不再自动切换。
+3. **重新执行一次全量采集，看采集记录的「消息」**：
+   - 「已自动改用 `ac=detail` 补齐播放数据」→ 默认动作没给播放地址，系统已自动切到详情模式重新采集该页；
+   - 「其中 N 条记录接口未返回播放地址」→ 按提示检查 `ac` 与接口字段写法。
+   任务结果里还有 `noPlayUrl`（无播放地址条数）与 `autoAc`（自动切换的动作）两个诊断字段。
+
+采集器已兼容资源站的常见非标准写法（**仅在标准键缺失时补齐**，原始别名键仍保留在 `extra` 便于溯源）：
+
+| 标准键 | 兼容别名 / 形态 |
+| --- | --- |
+| `vod_play_url` | `vod_playurl` / `vod_url` / `v_playdata` / `play_url` / `playurl` / `vod_playurls`；也支持直接给**结构化 JSON 数组**（`[{"from":"m3u8","episodes":[{"name":"第1集","url":"..."}]}]`） |
+| `vod_play_from` | `vod_playfrom` / `v_playfrom` / `play_from` / `playfrom` |
+| `vod_play_list` | `vod_playlist` / `play_list` / `playlist` / `vod_play_url_list`（结构化数组会同步规范化 `vod_play_from` / `vod_play_url` 两列） |
+| `vod_id` | `id` / `v_id` / `vodid` / `vodId` |
+| `vod_name` / `vod_time` / `vod_pic` / `type_id` / `type_name` | `v_name` / `v_time` / `v_pic` / `tid` / `typename` 等（海洋CMS 系常见） |
+
+接口完全不返回 `vod_id` 时，只要记录有名称或播放地址，就用内容指纹生成稳定的 `auto-*` 伪 ID 入库（同一条影片重复采集仍命中同一 ID），不再整条跳过。
+
+> 自动探测只在**全新采集的第 1 页**发生：默认 `ac=videolist` 整页无播放地址且站点未显式指定 `ac` 时，尝试一次 `ac=detail`，只有确实拿到播放地址才切换，后续页沿用；续采 / 重试 / 重新运行都不额外请求，不改变断点续采的请求序列。探测失败保持原样并给出上述排查提示。
+
+### 地址改写（播放地址 / 封面图片）
+
+站点可以额外配置两组**读取期改写**规则，**只在读取时生效**——数据库里的 `vod_play_list` 与图片字段始终是采集到的原始地址，改配置不会污染已入库数据，清空配置即恢复原样。
 
 | 站点字段 | 作用 |
 | --- | --- |
 | `parseApi` 视频解析地址 | 拼接在播放地址前，如 `https://jx.example.com/?url=` 得到 `https://jx.example.com/?url=<原地址>`；支持 `{url}` 占位符（如 `https://jx.example.com/play?src={url}&q=1`），未含占位符时直接前缀拼接 |
 | `playDomain` 视频播放域名 | 替换原播放地址的**协议 + 域名**，保留路径、查询串与锚点；只写域名时自动补 `https://`，尾部斜杠会被去掉 |
-| `picApi` 图片解析地址 | 拼接在封面等图片地址前，如 `https://img.example.com/proxy?url=`；同样支持 `{url}` 占位符，适合接图片代理绕过防盗链 |
-| `picDomain` 图片域名 | 替换图片地址的**协议 + 域名**（图片站常与播放域名不同，故与 `playDomain` 分开配置），保留路径与查询串 |
+| `picApi` 图片解析/代理地址 | 拼接在封面等图片地址前，如 `https://img.example.com/proxy?url=`；同样支持 `{url}` 占位符 |
+| `picDomain` 图片域名 | 替换原图片地址的协议 + 域名，与 `playDomain` 互相独立（图片 CDN 通常与播放 CDN 不同） |
 
-- 播放的两项同时配置时**先替换域名、再拼接解析地址**（解析服务拿到的是已换到可用域名的地址）；图片的两项顺序相同。
-- 播放改写应用于影片列表（`GET /api/videos/v1`，详情弹窗直接复用列表数据）与播放组接口，两处结果一致。
-- 图片改写作用于 `vod_pic`、`vod_pic_thumb`、`vod_pic_slide`、`vod_pic_original` 以及 `vod_pic_screenshot`（多个截图以 `#` 连接，逐段改写后按原分隔符拼回），列表海报与详情「标准字段」看到的是同一份改写结果。
-- 前端播放：配置了解析地址时，地址已被拼成解析服务的网页地址，改用 `iframe` 承载解析页面（切换线路 / 集数即时换源）；未配置解析地址时仍按后缀走 `m3u8`（hls.js）或 mp4/webm 直链，非直链地址给出「在新窗口打开」入口。
+- 同一组内两者同时配置时**先替换域名、再拼接解析/代理地址**（代理服务拿到的是已换到可用域名的地址）。
+- 播放地址改写应用于影片列表（`GET /api/videos/v1`，详情弹窗直接复用列表数据）、单条详情与播放组接口，结果一致。
+- 图片改写作用于 `vod_pic` / `vod_pic_thumb` / `vod_pic_slide` / `vod_pic_original` 以及 `vod_pic_screenshot`（`#` 连接的截图集合逐段改写后拼回），列表与详情接口都会应用。
+- **解析地址 → iframe**：拼接了 `parseApi` 的播放地址是解析服务网页，后端改写时给该集打上 `frame: true` 标记，前端据此改用 `iframe` 承载（不依赖前端站点缓存，也不会把解析页误判成 m3u8）；清空配置即恢复直链播放。
+- **HLS 优先 hls.js**：`m3u8` 一律先走 `hls.js`（MediaSource），原生 `<video>` 仅在浏览器明确返回 `canPlayType(...) === 'probably'` 时兜底。Linux/Chrome 会误报 `'maybe'`，直接把 m3u8 交给 `<video>` 会报 `MEDIA_ERR_SRC_NOT_SUPPORTED`——这是此前播放组播放失败的根因。
+- **无后缀地址兜底**：苹果CMS 不少站点的播放地址不带扩展名，先按 HLS 试播、失败再回退 `<video>` 直链；mp4 / webm / ogg / mov / m4v 走直链。
+- **失败可见**：HLS 加载或解码错误、以及 `<video>` 的 `error.code` 都会翻译成中文提示并保留「在新窗口打开」入口；网络类 HLS 错误自动重试一次，切换线路/集数时清空错误提示。
 
 ### 数据入库
 
-`videos` 表保存全部标准字段、扩展字段、分类关联、内容指纹与首次/最近入库时间（不再冗余保存整条原始 JSON）。每次采集生成一条 `crawl_jobs` 记录（模式、状态、页数、拉取/新增/更新/未变条数、耗时、错误信息、续采页码 `resume_page`、尝试次数 `attempt`、重试来源 `retry_of`），站点表回写上次采集状态与游标。
+`videos` 表保存全部标准字段、扩展字段、分类关联、内容指纹与首次/最近入库时间（不再冗余保存整条原始 JSON）。每次采集生成一条 `crawl_jobs` 记录（模式、状态、页数、拉取/新增/更新/未变条数、耗时、错误信息、续采页码 `resume_page`、尝试次数 `attempt`；`retry_of` 为兼容旧数据保留的历史字段，现在继续 / 重试 / 重新运行都复用原记录，不再产生新值），站点表回写上次采集状态与游标。
 
 ## 配置
 
@@ -216,7 +255,7 @@ web:
   dir: "web/dist"
 collector:
   timeout_seconds: 20            # 单次接口请求超时
-  max_pages: 1000                # 单次采集最大页数
+  max_pages: 5000                # 单次采集最大页数
   page_size: 0                   # 0 = 由站点决定；>0 附加 limit
   user_agent: "AssetSpider/1.0 (+maccms-json-collector)"
   default_incremental_hours: 24  # 站点未配置时的增量时间窗
@@ -224,9 +263,13 @@ collector:
   retry_times: 2                 # 失败后自动重试次数（0 = 不重试），从失败页续采
   retry_backoff_seconds: 3       # 首次重试等待秒数，之后翻倍，上限 30 秒
   progress_save_seconds: 60      # 运行中任务把进度写库的间隔（秒），避免重启丢进度
+auth:
+  token_ttl_hours: 168           # 登录令牌有效期（小时），默认 7 天
+  bcrypt_cost: 10                # 密码哈希强度，4..31，越大越慢
 ```
 
-环境变量覆盖：`ASSETSPIDER_SERVER_ADDR`、`ASSETSPIDER_DB_PATH`、`ASSETSPIDER_WEB_DIR`，以及
+环境变量覆盖：`ASSETSPIDER_SERVER_ADDR`、`ASSETSPIDER_DB_PATH`、`ASSETSPIDER_WEB_DIR`，
+`ASSETSPIDER_AUTH_TOKEN_TTL_HOURS` / `ASSETSPIDER_AUTH_BCRYPT_COST`，以及
 `ASSETSPIDER_COLLECTOR_TIMEOUT` / `_MAX_PAGES` / `_PAGE_SIZE` / `_DEFAULT_HOURS` / `_MAX_CONCURRENT` / `_RETRY_TIMES` / `_RETRY_BACKOFF` / `_PROGRESS_SAVE` / `_USER_AGENT`
 （旧变量名 `_PARALLEL` 仍兼容，等价于 `_MAX_CONCURRENT`）。
 `-config` 指定其他配置文件，未填写的字段沿用默认值。
@@ -241,8 +284,8 @@ collector:
 | `extraParams` | 附加查询参数，如 `t=1&wd=电影`；可覆盖默认 `ac=videolist` |
 | `parseApi` | 视频解析地址，播放时拼在播放地址前，如 `https://jx.example.com/?url=`；支持 `{url}` 占位符，留空表示不使用解析 |
 | `playDomain` | 视频播放域名，播放时替换原播放地址的协议与域名，如 `https://cdn.example.com`（只写域名时自动补 `https://`），留空表示不替换 |
-| `picApi` | 图片解析/代理地址，展示时拼在封面等图片地址前，如 `https://img.example.com/proxy?url=`；支持 `{url}` 占位符，留空表示不拼接 |
-| `picDomain` | 图片域名，展示时替换原图片地址的协议与域名，如 `https://img.example.com`（只写域名时自动补 `https://`），留空表示不替换 |
+| `picApi` | 图片解析/代理地址，展示封面等图片时拼在原图片地址前，如 `https://img.example.com/proxy?url=`；支持 `{url}` 占位符，留空表示不使用 |
+| `picDomain` | 图片域名，展示时替换原图片地址的协议与域名，如 `https://img.example.com`；与播放域名互相独立，留空表示不替换 |
 | `enabled` | 是否参与「批量采集」 |
 | `incrementalHours` | 增量时间窗（对应 `h`），0 表示使用全局默认值 |
 | `maxPages` | 单次采集最大页数，0 表示使用全局值 |
@@ -253,9 +296,24 @@ collector:
 
 接口统一按 **`/api/{模块名}/{版本号}`** 组织，当前版本 `v1`（`internal/router.APIVersion`）。模块名一律是复数资源名词，操作由 HTTP 动词表达，路径中不含动词；升级时新增 `registerV2` 分组即可，旧版本保持可用。
 
+### 登录与权限
+
+- 除 `/api/system/v1/health`、`/api/auth/v1/status`、`/api/auth/v1/sessions`（登录）外，**所有接口都要带 `Authorization: Bearer <token>`**；未登录返回 `401`，权限不足返回 `403`。
+- **第一个登录者自动注册为管理员**，拥有全部权限；此后账号只能由管理员通过 `/api/users/v1` 创建。密码用 bcrypt 存储，数据库只保存令牌的 SHA-256 摘要。
+- 管理员可创建/启停/删除用户、修改角色与密码，并用 `sourceIds` 分配**可见站点**。非管理员只能看见被授权站点的**站点配置、影片、分类、采集记录与任务**，且只能采集这些站点；越权访问按 `404` 处理，避免泄露站点存在性。授权变更在下一个请求即刻生效，无需重新登录。
+- 站点配置的增删改、并发上限调整、用户管理为**管理员专属**；资产台账写入同样仅管理员。
+- 停用、删除、改密或变更角色会立即吊销该账号的既有会话；系统会保证始终保留至少一名启用状态的管理员，且禁止管理员停用/降级/删除自己。
+
 | 模块 | 方法 | 路径 | 说明 |
 | --- | --- | --- | --- |
-| system | GET | `/api/system/v1/health` | 状态、数据库路径、站点数与影片数 |
+| auth | GET | `/api/auth/v1/status` | 公开：系统是否已初始化、账号数 |
+| auth | POST | `/api/auth/v1/sessions` | 公开：登录并创建会话，返回 `token` / `expiresAt` / `firstUser` / `isAdmin` / `user` |
+| auth | DELETE | `/api/auth/v1/sessions` | 登出，吊销当前令牌 |
+| auth | GET | `/api/auth/v1/me` | 当前账号、角色与可见站点 ID |
+| auth | PUT | `/api/auth/v1/password` | 修改自己的密码，返回新令牌并作废旧会话 |
+| users | GET / POST | `/api/users/v1` | 管理员：账号列表（含 `sourceIds`）/ 创建用户 |
+| users | PUT / DELETE | `/api/users/v1/:id` | 管理员：更新（角色、启停、密码、站点授权）/ 删除用户 |
+| system | GET | `/api/system/v1/health` | 公开：状态、数据库路径、站点数与影片数 |
 | assets | GET / POST | `/api/assets/v1` | 通用资产台账（保留能力） |
 | assets | DELETE | `/api/assets/v1/:id` | 删除资产 |
 | sources | GET | `/api/sources/v1` | 站点列表，附带每个站点已入库影片数 |
@@ -268,7 +326,7 @@ collector:
 | tasks | POST | `/api/tasks/v1` | **异步**发起采集任务，body `{sourceId, mode}`，返回 `202` 与任务视图（`jobId`） |
 | tasks | PUT | `/api/tasks/v1/:id` | 更新任务状态：`{"status":"paused"}` 暂停 / `{"status":"running"}` 继续（`:id` 为 `jobId`） |
 | tasks | POST | `/api/tasks/v1/:id/retry` | 手动重试**失败**的任务：**复用原记录**从失败页续采（统计累加，不新开任务），返回 `202` 与任务视图（非 `failed` 返回 409） |
-| tasks | POST | `/api/tasks/v1/:id/rerun` | **重新运行**已结束的任务：**复用原记录**、统计与尝试次数清零、忽略断点从第 1 页重来，返回 `202` 与任务视图（运行中返回 409） |
+| tasks | POST | `/api/tasks/v1/:id/rerun` | **重新运行**已结束的任务：**复用原记录**忽略断点从第 1 页重来，统计与尝试次数清零，返回 `202` 与任务视图（运行中返回 409） |
 | tasks | GET | `/api/tasks/v1/capacity` | 读取并发容量 |
 | tasks | PUT | `/api/tasks/v1/capacity` | 调整同时运行的任务数：`{"maxConcurrent":2}`（1..64） |
 | videos | GET | `/api/videos/v1?source_id=&category_id=&area=&q=&sort=&page=&size=` | 分页查询入库影片（返回全部字段、extra、categoryId）。`q` 匹配名称/别名/演员/导演/分类/地域；`category_id` 按自动归档的分类过滤（含子分类）；`area` 按地域模糊筛选；`sort` 取值 `time_desc`（更新时间↓）/`time_asc`/`score_desc`（评分↓）/`score_asc`，空则为 id 倒序 |
@@ -276,7 +334,7 @@ collector:
 | videos | GET | `/api/videos/v1/:id` | 单条影片完整记录 |
 | videos | GET | `/api/videos/v1/:id/play-groups` | 该影片的播放组数组（来自苹果CMS 播放组字段，已解析为结构化 JSON） |
 | categories | GET | `/api/categories/v1?source_id=` | 视频分类列表，含 `videoCount`；`source_id` 只看该资源站的一套分类 |
-| categories | GET | `/api/categories/v1/tree?source_id=` | 视频分类二级树（父分类在前、子分类嵌套），按苹果CMS type_pid 模型；前端在它之上按 `sourceId` 再包一层**站点**节点，形成「站点 → 一级 → 二级」三层树 |
+| categories | GET | `/api/categories/v1/tree?source_id=` | 视频分类二级树（父分类在前、子分类嵌套），按苹果CMS type_pid 模型 |
 | categories | GET | `/api/categories/v1/:id` | 单个分类详情 |
 | meta | GET | `/api/meta/v1/fields` | 全字段元数据：`total`、`groups`、`fields[]`（`key` 原始键、`json` 前端键、`desc` 中文含义、`group`、`label`、`long`） |
 | jobs | GET | `/api/jobs/v1?source_id=&limit=` | 采集记录（含 `queued` / `running` / `paused` / `success` / `failed` 与续采页码 `resumePage`） |
@@ -284,39 +342,52 @@ collector:
 采集任务用 `POST` 创建，参数 `mode`（`full` / `incremental`，缺省 `incremental`）放在 **JSON body**，同时也兼容 query：
 
 ```bash
-curl -X POST http://localhost:8080/api/sources/v1 \
+# 1) 登录：第一个登录者自动成为管理员。之后所有请求都带这个令牌。
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/v1/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"your-password"}' \
+  | sed -E 's/.*"token":"([^"]+)".*/\1/')
+api() { curl -H "Authorization: Bearer $TOKEN" "$@"; }
+
+# 2) 管理员创建普通用户，只授权站点 1、2（sourceIds 为空数组表示不授权任何站点）
+api -X POST http://localhost:8080/api/users/v1 \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"viewer","password":"pass123456","role":"user","enabled":true,"sourceIds":[1,2]}'
+api http://localhost:8080/api/users/v1
+
+# 3) 站点配置（管理员）
+api -X POST http://localhost:8080/api/sources/v1 \
   -H 'Content-Type: application/json' \
   -d '{"name":"测试资源站","apiBase":"https://site.com/api.php/provide/vod/","enabled":true,"incrementalHours":24}'
 
-# 带播放 / 图片增强：解析地址拼接 + 域名替换（都可省略）
-curl -X PUT http://localhost:8080/api/sources/v1/1 \
+# 带播放增强：解析地址拼接 + 播放域名替换（都可省略）
+api -X PUT http://localhost:8080/api/sources/v1/1 \
   -H 'Content-Type: application/json' \
-  -d '{"name":"测试资源站","apiBase":"https://site.com/api.php/provide/vod/","enabled":true,"incrementalHours":24,"parseApi":"https://jx.example.com/?url=","playDomain":"https://cdn.example.com","picApi":"https://img.example.com/proxy?url=","picDomain":"https://img.example.com"}'
+  -d '{"name":"测试资源站","apiBase":"https://site.com/api.php/provide/vod/","enabled":true,"incrementalHours":24,"parseApi":"https://jx.example.com/?url=","playDomain":"https://cdn.example.com"}'
 
 # 异步发起（推荐，前端即走这条）：立即返回任务号
-curl -X POST http://localhost:8080/api/tasks/v1 \
+api -X POST http://localhost:8080/api/tasks/v1 \
   -H 'Content-Type: application/json' -d '{"sourceId":1,"mode":"full"}'
 # 查看进度 / 并发容量
-curl http://localhost:8080/api/tasks/v1
+api http://localhost:8080/api/tasks/v1
 # 暂停（进度会保存）与继续（从断点续采）
-curl -X PUT http://localhost:8080/api/tasks/v1/1 -H 'Content-Type: application/json' -d '{"status":"paused"}'
-curl -X PUT http://localhost:8080/api/tasks/v1/1 -H 'Content-Type: application/json' -d '{"status":"running"}'
-# 最多同时运行 2 个任务
-curl -X PUT http://localhost:8080/api/tasks/v1/capacity -H 'Content-Type: application/json' -d '{"maxConcurrent":2}'
-# 失败任务手动重试（在原任务记录上从失败页续采）/ 已结束任务重新运行（在原任务记录上从第 1 页重来）
-# 继续 / 重试 / 重新运行都复用同一条采集记录，不会新开任务
-curl -X POST http://localhost:8080/api/tasks/v1/3/retry
-curl -X POST http://localhost:8080/api/tasks/v1/3/rerun
+api -X PUT http://localhost:8080/api/tasks/v1/1 -H 'Content-Type: application/json' -d '{"status":"paused"}'
+api -X PUT http://localhost:8080/api/tasks/v1/1 -H 'Content-Type: application/json' -d '{"status":"running"}'
+# 最多同时运行 2 个任务（管理员）
+api -X PUT http://localhost:8080/api/tasks/v1/capacity -H 'Content-Type: application/json' -d '{"maxConcurrent":2}'
+# 失败任务手动重试（复用原记录从失败页续采）/ 已结束任务重新运行（复用原记录、统计清零、从第 1 页）
+api -X POST http://localhost:8080/api/tasks/v1/3/retry
+api -X POST http://localhost:8080/api/tasks/v1/3/rerun
 
 # 同步采集（脚本用，阻塞到任务结束）
-curl -X POST http://localhost:8080/api/sources/v1/1/crawls \
+api -X POST http://localhost:8080/api/sources/v1/1/crawls \
   -H 'Content-Type: application/json' -d '{"mode":"full"}'
-curl -X POST http://localhost:8080/api/crawls/v1 \
+api -X POST http://localhost:8080/api/crawls/v1 \
   -H 'Content-Type: application/json' -d '{"mode":"incremental"}'
-curl 'http://localhost:8080/api/videos/v1?page=1&size=20'
-curl 'http://localhost:8080/api/categories/v1'
-curl 'http://localhost:8080/api/videos/v1?category_id=1'
-curl 'http://localhost:8080/api/meta/v1/fields'
+api 'http://localhost:8080/api/videos/v1?page=1&size=20'
+api 'http://localhost:8080/api/categories/v1'
+api 'http://localhost:8080/api/videos/v1?category_id=1'
+api 'http://localhost:8080/api/meta/v1/fields'
 ```
 
 ## 前端开发
@@ -328,9 +399,11 @@ npm run dev      # Vite 开发服务器，/api 代理到 :8080
 npm run build    # 产物输出到 web/dist，由 Gin 托管
 ```
 
-页面分四块：**站点配置**（站点列表 + 弹窗式新增/编辑——点右上角「新增站点」或行内「编辑」打开同一个弹窗，内含站点基础信息、播放增强（解析地址 / 播放域名）、图片增强（图片解析地址 / 图片域名）三组，支持点击遮罩、Esc、取消关闭；行内可启停、删除，顶部「采集任务」卡片显示并发上限、运行/排队数，以及每个任务的**实时进度条**——百分比、当前页/总页数、已采条数、**拉取 / 新增 / 更新 / 未变**统计、速率、预估剩余时间、第几次尝试、等待重试倒计时；运行中可**暂停**、已暂停可**继续**，一键批量采集全部站点；站点行内也可直接发起全量/增量或暂停）、**资源库**（采集到的影片以海报卡片展示，每张卡片显示**资源名 + 海报图 + 更新集数**，图片加载失败自动退化占位；顶部可按**视频名称**检索、按**分类 / 地域 / 站点**筛选、按**更新时间**或**评分**升降序排序，分页浏览）、**视频分类**（三棵树状结构：顶层是**资源站点名**，其下挂该站的一级分类，一级分类下再挂二级分类；站点行与含子分类的一级行都可折叠，右上角「展开 / 收起」一键全开全收，每行显示层级徽章、站点分类 ID、影片数，点「查看影片」直接跳到该分类的影片列表；父分类尚未采集到的二级分类统一收进该站点的「未归类」分组，不再冒充一级分类）、**采集记录**（每次采集的统计与状态，运行中的记录用同一份实时数据展示进度条与**拉取 / 新增 / 更新 / 未变**；`已暂停` 可「继续」，`失败` 可「重试」，任意已结束的任务可「重新运行」——**三者都复用原记录**（「继续」「重试」从断点续采、统计累加；「重新运行」从第 1 页重来、统计清零），历史里不会多出重复条目）。
+页面在登录后才展示：**第一个登录的账号自动注册为管理员**，之后管理员可在「用户管理」新增用户、设置角色/启停、勾选该用户可见的站点；普通用户登录后只能看到被授权的站点与数据，站点增删改、并发上限与用户管理入口自动隐藏。顶部显示当前账号与角色，可修改密码或退出登录；令牌失效（401）时自动回到登录页。
 
-资源库点开卡片进入资源详情：顶部是播放器，下方是**播放组（线路）**与**剧集**选择，切换即换源；m3u8 走 hls.js（Safari 原生播放），mp4/webm 直链直接播放，非直链地址给出「在新窗口打开」入口。站点配置了**视频解析地址**时，播放地址已拼成解析页地址，改用 `iframe` 承载解析页面播放，地址行会标注「已拼接解析地址 / 播放域名已替换」。另有「标准字段」「扩展字段」两个页签，可按 14 个分组查看全部 91 个标准字段（支持「只看非空」）与站点自定义字段。`web/dist` 已随仓库提供，clone 后无需构建前端即可运行；未知前端路由由 Gin 回退到 `index.html`。
+页面分五块：**站点配置**（列表页点右上角「+ 新增站点」或行内「编辑」打开弹窗，支持 Esc / 点击遮罩 / 关闭按钮收起；增删改、启用开关；顶部「采集任务」卡片显示并发上限、运行/排队数，以及每个任务的**实时进度条**——百分比、当前页/总页数、已采条数、**拉取 / 新增 / 更新 / 未变**统计、速率、预估剩余时间、第几次尝试、等待重试倒计时；运行中可**暂停**、已暂停可**继续**，一键批量采集全部站点；站点行内也可直接发起全量/增量或暂停）、**资源库**（采集到的影片以海报卡片展示，每张卡片显示**资源名 + 海报图 + 更新集数**，图片加载失败自动退化占位；顶部可按**视频名称**检索、按**分类 / 地域 / 站点**筛选、按**更新时间**或**评分**升降序排序，分页浏览）、**视频分类**（按资源站分组的可折叠三级树：站点 → 一级分类 → 二级分类，显示分类数 / 影片数、一键展开收起，父分类未采到的二级归入「未归类」，点「查看影片」直接跳到该分类的影片列表）、**采集记录**（每次采集的统计与状态，运行中的记录用同一份实时数据展示进度条与**拉取 / 新增 / 更新 / 未变**；`已暂停` 可「继续」，`失败` 可「重试」（**复用原记录**从失败页续采、统计累加）或「重新运行」（**复用原记录**、从第 1 页重来、统计清零），`已暂停` 可「继续」（同样复用原记录）；三者都不会多出一条记录，页面会显示尝试次数）、**用户管理**（管理员专属：账号表单、角色/启停、可见站点勾选列表与账号列表）。
+
+资源库点开卡片进入资源详情：顶部是播放器，下方是**播放组（线路）**与**剧集**选择，切换即换源；m3u8 优先用 hls.js 播放（原生 HLS 仅在明确支持的浏览器兜底），mp4/webm 直链直接播放，无后缀地址先按 HLS 试播再回退直链，播放失败给出可读原因并保留「在新窗口打开」入口。站点配置了**视频解析地址**时，播放地址已拼成解析页地址，改用 `iframe` 承载解析页面播放，地址行会标注「已拼接解析地址 / 播放域名已替换」。另有「标准字段」「扩展字段」两个页签，可按 14 个分组查看全部 91 个标准字段（支持「只看非空」）与站点自定义字段。`web/dist` 已随仓库提供，clone 后无需构建前端即可运行；未知前端路由由 Gin 回退到 `index.html`。
 
 **手机端适配**：页面按 `@media (max-width: 760px)` 做响应式——手机上页签单行横滑、表单与筛选控件整行、按钮铺满宽度，卡片内边距与字号收紧；三个表格隐藏次要列（任务 ID / 速率 / 已运行 / 接口地址 / 上次采集 / 游标 / 模式 / 开始时间 / 说明），保留名称、状态、实时进度、拉取/新增/更新/未变与操作，剩余列可在卡片内横向滑动查看；资源卡片按窄屏自动降为 2–3 列；资源详情与播放器弹窗在手机上全屏，播放器高度按 56vh 收敛。已用 500px 视口逐页截图核对无横向溢出。
 
@@ -338,18 +411,26 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 
 ```
 .
+├── .github/workflows/deploy.yml   # push → main 自动部署工作流
+├── deploy/
+│   ├── deploy.sh                 # 幂等部署脚本：初始化 / 启动 / 探活 / 失败回滚
+│   ├── assetspider.service       # systemd 单元模板
+│   └── known_hosts               # 服务器 SSH 主机公钥（防中间人）
 ├── conf/config.yaml              # 运行配置
 ├── internal/
 │   ├── router/                   # 第 1 层：按 /api/{模块}/v1 分组的路由表（只依赖 controller）
 │   ├── controller/               # 第 2 层：HTTP 适配（只依赖 service / utils）
 │   ├── service/                  # 第 3 层：业务逻辑（只依赖 repository）
 │   │   ├── asset.go / source.go / video.go / category.go / job.go / health.go / meta.go
+│   │   ├── auth.go               # Principal（登录主体/可见站点）、认证与用户管理业务规则
 │   │   ├── crawl.go              # 全量 / 增量采集编排、分类归档、游标与去重
 │   │   ├── errors.go             # 业务错误语义
 │   │   └── collector/            # 采集协议客户端（零丢失 JSON 解析、URL 拼装、实体转换）
 │   ├── repository/               # 第 4 层：每个实体一个文件 / 对象 / 接口
 │   │   ├── store.go              # 连接、迁移、装配 Repositories、Path / Close
 │   │   ├── errors.go             # 共用的 ErrNotFound（包装 GORM 错误）
+│   │   ├── visibility.go         # 各实体共用的可见站点白名单过滤
+│   │   ├── user.go               # UserRepository → User / Session / UserSource
 │   │   ├── asset.go              # AssetRepository      → model.Asset
 │   │   ├── source.go             # SourceRepository     → model.Source
 │   │   ├── video.go              # VideoRepository      → model.Video（全字段 upsert）
@@ -358,6 +439,7 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 │   │   └── *_test.go             # 每个实体各一份测试 + store_test.go
 │   ├── model/                    # 横切：GORM 模型
 │   │   ├── video.go              # 全字段 Video 实体（含 CategoryID）
+│   │   ├── user.go               # User / Session / UserSource（认证与站点授权）
 │   │   ├── category.go           # Category 实体（按站点隔离）
 │   │   └── video_fields.go       # VodFields 字段清单（唯一数据源）
 │   ├── config/                   # 横切：配置加载与校验
@@ -380,11 +462,136 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 
 ## 测试
 
-`go test ./...` 覆盖**四层依赖方向守卫**、**utils 横切纯洁性守卫**、**仓储层一实体一对象守卫**、**`/api/{模块}/{版本}` 路由规范守卫**、配置加载、工具函数、站点/影片/任务/**分类** CRUD、分类自动创建与按站点隔离、分类幂等与改名、分类影片数与按分类筛选、**二级分类（苹果CMS type_pid / type_id_1 父子关联、父级缺失暂存孤儿、父级出现后自动挂接）**、去重 upsert、**字段清单与实体一致性**、**全字段零丢失解析（数字/字符串/null/对象/数组/自定义字段）**、**播放组解析（多线路 `$$$`/`#`/`$` 分隔符、默认/线路N 命名、无 `$` 回退）**、**全字段指纹与全字段写回**、URL 拼装、**`code != 1` 拒绝解析**、全量/增量/游标/去重/失败回写，**资源检索（名称 / 地域筛选、按更新时间与评分升降序排列、地域枚举去重）**、**采集任务调度（异步入队、并发上限运行时调整、运行中暂停、按续采页码继续、同站点互斥）**、**失败自动重试（退避等待、失败页续采、等待期间可暂停）**、**继续 / 手动重试 / 重新运行都复用原记录（继续与重试统计与尝试次数累加、断点续采；重新运行统计清零、从第 1 页重来），记录数不增加**、**实时进度与统计（当前页/总页数、百分比、速率、剩余时间、重试倒计时、拉取/新增/更新/未变逐页刷新、运行中记录带 live 进度）**、**运行中定期落库（进度与续采页滚动写库、只写进度不动终态、结束后续采页归 1）**、**播放增强（解析地址前缀拼接与 `{url}` 占位符、播放域名替换保留路径与查询串、先换域名再拼解析、列表与播放组一致改写、原始地址不被污染、配置校验）**、**图片增强（封面 / 缩略图 / 幻灯图 / 原图 / `#` 连接的多截图逐段改写、图片域名替换 + 代理前缀拼接、入库原始图片地址不变、非法配置拒绝保存）**，以及通过 HTTP 接口触发采集与字段元数据/详情/分类（含二级树）/播放组/地域与排序检索/任务管理接口的完整链路。采集测试用本地 HTTP 模拟站点，不依赖外网。
+`go test ./...` 覆盖**登录认证与站点权限端到端**（首用户自动管理员、401/403、A/B 站隔离、授权即时生效、停用/删除/改密后会话失效、越权采集 404、bcrypt 与令牌摘要落库、三张认证表自动迁移）、**四层依赖方向守卫**、**utils 横切纯洁性守卫**、**仓储层一实体一对象守卫**、**`/api/{模块}/{版本}` 路由规范守卫**、配置加载、工具函数、站点/影片/任务/**分类** CRUD、分类自动创建与按站点隔离、分类幂等与改名、分类影片数与按分类筛选、**二级分类（苹果CMS type_pid / type_id_1 父子关联、父级缺失暂存孤儿、父级出现后自动挂接）**、去重 upsert、**字段清单与实体一致性**、**全字段零丢失解析（数字/字符串/null/对象/数组/自定义字段）**、**播放组解析（多线路 `$$$`/`#`/`$` 分隔符、默认/线路N 命名、无 `$` 回退）**、**播放字段兼容（别名键 `vod_playurl`/`v_playdata` 等、结构化 JSON 数组、无 `vod_id` 稳定伪 ID）与播放地址诊断（自动切换 `ac=detail` 补齐播放数据、显式 `ac=list` 的排查提示、`noPlayUrl` 统计）**、**全字段指纹与全字段写回**、URL 拼装、**`code != 1` 拒绝解析**、全量/增量/游标/去重/失败回写，**资源检索（名称 / 地域筛选、按更新时间与评分升降序排列、地域枚举去重）**、**采集任务调度（异步入队、并发上限运行时调整、运行中暂停、按续采页码继续、同站点互斥）**、**失败自动重试（退避等待、失败页续采、等待期间可暂停）**、**继续 / 重试 / 重新运行（三者均复用原记录、不新开任务；继续与重试的统计和尝试次数累加，重新运行清零后从第 1 页重来）**、**实时进度与统计（当前页/总页数、百分比、速率、剩余时间、重试倒计时、拉取/新增/更新/未变逐页刷新、运行中记录带 live 进度）**、**运行中定期落库（进度与续采页滚动写库、只写进度不动终态、结束后续采页归 1）**、**重启自动恢复（模拟进程重启后自动复用原记录从续采页继续、统计与尝试次数累加、手动暂停的任务不动、不新开记录）**、**地址改写（解析地址前缀拼接与 `{url}` 占位符、播放域名替换保留路径与查询串、先换域名再拼解析、列表与播放组一致改写、拼接解析地址后给分集打 frame 标记、未配置解析地址时不打标记、封面/缩略图/幻灯片/原图与 `#` 截图集合逐段图片改写、原始地址不被污染、配置校验与规范化回读）**，以及通过 HTTP 接口触发采集与字段元数据/详情/分类（含二级树）/播放组/地域与排序检索/任务管理接口的完整链路。采集测试用本地 HTTP 模拟站点，不依赖外网。
 
-HTTP 链路测试位于 `internal/router`（装配后打真实请求，同时校验新路由结构与旧路由已下线），采集编排测试位于 `internal/service`，协议解析测试位于 `internal/service/collector`，纯工具测试位于 `internal/utils`；`internal/repository` 下按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go`，另有 `store_test.go` 校验连接与四个对象装配。SQLite 使用纯 Go 的 modernc.org/sqlite 驱动（经 github.com/glebarez/sqlite 接入 GORM），无需本机 gcc，测试直接运行即可（`CGO_ENABLED=0`）。
+HTTP 链路测试位于 `internal/router`（装配后打真实请求，同时校验新路由结构与旧路由已下线），采集编排测试位于 `internal/service`，协议解析测试位于 `internal/service/collector`，纯工具测试位于 `internal/utils`；`internal/repository` 下按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go` / `user_test.go`，另有 `store_test.go` 校验连接与各对象装配。HTTP 链路测试会自动注册首个管理员并让所有请求携带令牌，真实模拟登录后访问。SQLite 使用纯 Go 的 modernc.org/sqlite 驱动（经 github.com/glebarez/sqlite 接入 GORM），无需本机 gcc，测试直接运行即可（`CGO_ENABLED=0`）。
 
 端到端可用模拟站点验证：91 个标准字段全部落库、`extra` 保留自定义字段与嵌套对象（不再存整条 `raw`）、只改一个冷门字段也能触发更新、全量/增量/去重/幂等/批量采集、按站点自动分类归档与 Vue 页面托管均正常。
+
+## 自动部署（推送到 GitHub → 服务器）
+
+**推送到 `main` 分支即可自动部署到 `140.238.43.173` 并启动服务**，全程无需登录服务器。
+
+```
+git push origin main
+   └─ GitHub Actions (.github/workflows/deploy.yml)
+        ├─ 检出代码，SSH 探测服务器 CPU 架构（amd64 / arm64 自适应）
+        ├─ CGO_ENABLED=0 静态编译 Go 二进制 + npm ci && npm run build 构建 Vue
+        ├─ 打成自包含发布包 tar.gz（二进制 / web/dist / 配置样例 / systemd 单元 / 部署脚本）
+        ├─ scp 上传到服务器 /tmp
+        └─ ssh 执行 deploy/deploy.sh
+             ├─ 首次：建目录、生成 conf/config.yaml、安装并 enable systemd 服务
+             ├─ 备份旧版本 → 原子替换二进制与前端 → 重启服务
+             ├─ 轮询 /api/system/v1/health 探活（默认最多 30 秒）
+             └─ 失败自动回滚到上一版本；成功清理过期备份（保留 5 份）
+```
+
+设计要点：**构建发生在 CI runner 上**，服务器不需要 Go / Node，也不需要 `git pull` 访问 GitHub（避免国内服务器拉取不稳定）。SQLite 使用纯 Go 驱动，二进制静态链接，交叉编译到 amd64 / arm64 都能直接运行。发布包自包含，手动部署同样只需一个文件。`data/`（数据库）与 `conf/config.yaml`（用户配置）**永不被部署覆盖**。
+
+### 一次性配置
+
+**① 生成部署专用密钥，并把公钥放到服务器**（私钥只填到 GitHub，绝不要提交进仓库）：
+
+```bash
+ssh-keygen -t ed25519 -C "assetspider-deploy" -f ~/.ssh/assetspider_deploy -N ""
+ssh-copy-id -i ~/.ssh/assetspider_deploy.pub ubuntu@140.238.43.173
+cat ~/.ssh/assetspider_deploy        # 全文复制，填到 Secret DEPLOY_SSH_KEY
+```
+
+**② 在仓库 Settings → Secrets and variables → Actions 添加：**
+
+| 类型 | 名称 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| Secret | `DEPLOY_SSH_KEY` | ✅ | — | 上面生成的**私钥全文**（含 BEGIN / END 行） |
+| Secret | `DEPLOY_KNOWN_HOSTS` | 可选 | `deploy/known_hosts` | 服务器 SSH 主机公钥；换服务器时必须更新，用于防中间人 |
+| Variable | `DEPLOY_HOST` | 可选 | `140.238.43.173` | 服务器 IP |
+| Variable | `DEPLOY_USER` | 可选 | `ubuntu` | SSH 用户：OCI Ubuntu 为 `ubuntu`，Oracle Linux 为 `opc`，也可 `root` |
+| Variable | `DEPLOY_PORT` | 可选 | `22` | SSH 端口 |
+| Variable | `DEPLOY_PATH` | 可选 | `/opt/assetspider` | 部署根目录 |
+| Variable | `DEPLOY_MODE` | 可选 | `auto` | `auto` / `systemd` / `process`（无 systemd 时降级为 nohup 进程） |
+| Variable | `HEALTH_URL` | 可选 | 自动推导 | 改了服务端口时建议显式填写完整健康检查地址 |
+
+> 未配置 `DEPLOY_SSH_KEY` 时，工作流**只做构建校验、跳过部署**（保持绿色并给出警告）；配好后可在 Actions 页面点 **Run workflow** 手动重跑，不必空推一次。纯文档改动（`**.md`）不触发部署，`workflow_dispatch` 可随时手动触发；多次 push 串行执行，不会并发写同一台服务器。
+
+**③ 服务器前置条件**
+
+- systemd（Ubuntu 20.04+，脚本用 `systemctl` 管理进程并设置开机自启）
+- SSH 用户具备免密 `sudo`（OCI 镜像默认满足），或直接使用 root
+- 云安全组与主机防火墙放行 **22**（GitHub Actions runner 入站）与 **8080**（对外访问页面）；Oracle Cloud 需在控制台 Security List / NSG **和**主机 iptables 两处都放行
+- 已安装 `curl`、`tar`（Ubuntu 默认自带）
+
+### 首次部署与验证
+
+配置完成后 `git push origin main`，或到 Actions →「自动部署到生产服务器」→ **Run workflow**。工作流成功即表示服务已启动并通过健康检查。
+
+```bash
+ssh ubuntu@140.238.43.173
+sudo systemctl status assetspider            # active (running)
+cat /opt/assetspider/VERSION                 # 当前部署的 commit sha
+curl http://127.0.0.1:8080/api/system/v1/health
+# 浏览器访问 http://140.238.43.173:8080 ，第一个登录的账号自动成为管理员
+```
+
+部署后的目录：
+
+```
+/opt/assetspider/
+├── bin/assetspider              # 静态二进制
+├── web/dist/                    # Vue 前端
+├── conf/config.yaml             # 运行配置（仅首次生成，之后不会被覆盖）
+├── data/assetspider.db          # SQLite 数据库（永不覆盖）
+├── logs/assetspider.log         # 服务日志
+├── releases/backup-*            # 最近 5 个可回滚版本
+├── VERSION                      # 当前 commit sha
+└── run.pid                      # 仅 process 模式
+/etc/systemd/system/assetspider.service
+/etc/assetspider.env             # 端口等运行参数，改完 restart 生效（不会被部署覆盖）
+```
+
+### 日常运维
+
+```bash
+sudo systemctl status assetspider                  # 状态
+sudo systemctl restart assetspider                # 重启
+sudo systemctl stop assetspider                   # 停止
+tail -f /opt/assetspider/logs/assetspider.log     # 实时日志
+sudo journalctl -u assetspider -n 100 --no-pager  # systemd 日志
+cat /opt/assetspider/VERSION                      # 当前版本
+
+# 改端口：编辑 env（部署不会覆盖它），再重启；记得同步 Variable HEALTH_URL 与防火墙
+echo 'ASSETSPIDER_SERVER_ADDR=:9090' | sudo tee /etc/assetspider.env
+sudo systemctl restart assetspider
+
+# 手动回滚：从备份恢复二进制后重启
+ls -1t /opt/assetspider/releases/
+sudo cp /opt/assetspider/releases/backup-XXXX/assetspider /opt/assetspider/bin/assetspider
+sudo systemctl restart assetspider
+```
+
+**不走 GitHub 的手动部署**：按 `deploy.yml` 里「构建自包含发布包」步骤本地打一个 tar.gz（或直接使用 CI 产物），上传到服务器执行：
+
+```bash
+scp assetspider-release.tar.gz ubuntu@140.238.43.173:/tmp/
+ssh ubuntu@140.238.43.173
+mkdir -p /tmp/as && tar -xzf /tmp/assetspider-release.tar.gz -C /tmp/as
+bash /tmp/as/deploy/deploy.sh /tmp/assetspider-release.tar.gz
+```
+
+### 故障排查
+
+| 现象 | 排查方向 |
+| --- | --- |
+| 工作流跳过部署，日志有 warning | 未配置 Secret `DEPLOY_SSH_KEY`，或变量名写错 |
+| `tar: deploy/deploy.sh: Not found in archive` | 老版本工作流按成员名从发布包里挑单个文件，归档成员带 `./` 前缀导致匹配不到；已改为全量解包。若手动打包，请勿用 `tar -C <dir> .`，改用显式列出 `bin web conf deploy VERSION` |
+| `Permission denied (publickey)` | 公钥没进服务器 `~/.ssh/authorized_keys`；`DEPLOY_USER` 与公钥所属用户不一致；私钥粘贴时缺 BEGIN / END 行 |
+| `Host key verification failed` | 服务器重装或换 IP：更新 Secret `DEPLOY_KNOWN_HOSTS` 或仓库 `deploy/known_hosts` |
+| `Connection timed out` | 云安全组 / iptables 未对 GitHub runner 放行 22 端口 |
+| 部署成功但页面打不开 | 8080 未在云控制台与主机防火墙双向放行 |
+| 健康检查失败并自动回滚 | 看 `logs/assetspider.log`；常见是 8080 被占用，或 `/etc/assetspider.env` 端口与 `HEALTH_URL` 不一致 |
+| `sudo: a password is required` | 部署用户没有免密 sudo：改用 root，或设置 `DEPLOY_MODE=process` |
+| 服务能启动但采集异常 | 检查 `conf/config.yaml` 与 `data/` 权限；两者不会被部署覆盖 |
+
+> 安全建议：为部署单独生成密钥对并限制权限，不要复用个人私钥。`deploy/known_hosts` 是公开的主机公钥（非敏感信息）；私钥、`.env` 与数据库均已被 `.gitignore` 排除，切勿提交。
 
 ## 计划
 

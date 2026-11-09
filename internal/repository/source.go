@@ -9,9 +9,10 @@ import (
 
 // SourceRepository 是 Source 实体的数据访问契约。
 type SourceRepository interface {
-	ListSources() ([]model.Source, error)
-	ListEnabledSources() ([]model.Source, error)
-	GetSource(id uint) (*model.Source, error)
+	// visible 为可选站点白名单：不传 / nil 表示不过滤，空切片表示不返回任何站点。
+	ListSources(visible ...[]uint) ([]model.Source, error)
+	ListEnabledSources(visible ...[]uint) ([]model.Source, error)
+	GetSource(id uint, visible ...[]uint) (*model.Source, error)
 	CreateSource(src *model.Source) error
 	UpdateSource(id uint, in *model.Source) (*model.Source, error)
 	DeleteSource(id uint) error
@@ -29,28 +30,31 @@ func NewSourceRepository(db *gorm.DB) SourceRepository {
 
 var _ SourceRepository = (*sourceRepository)(nil)
 
-// ListSources 返回全部站点配置，按 ID 正序。
-func (r *sourceRepository) ListSources() ([]model.Source, error) {
+// ListSources 返回站点配置，按 ID 正序；可限定在可见站点集合内。
+func (r *sourceRepository) ListSources(visible ...[]uint) ([]model.Source, error) {
 	var items []model.Source
-	if err := r.db.Order("id ASC").Find(&items).Error; err != nil {
+	q := applyVisibility(r.db.Model(&model.Source{}), "id", firstVisible(visible...))
+	if err := q.Order("id ASC").Find(&items).Error; err != nil {
 		return nil, err
 	}
 	return items, nil
 }
 
-// ListEnabledSources 返回所有启用站点。
-func (r *sourceRepository) ListEnabledSources() ([]model.Source, error) {
+// ListEnabledSources 返回启用站点；可限定在可见站点集合内。
+func (r *sourceRepository) ListEnabledSources(visible ...[]uint) ([]model.Source, error) {
 	var items []model.Source
-	if err := r.db.Where("enabled = ?", true).Order("id ASC").Find(&items).Error; err != nil {
+	q := applyVisibility(r.db.Model(&model.Source{}).Where("enabled = ?", true), "id", firstVisible(visible...))
+	if err := q.Order("id ASC").Find(&items).Error; err != nil {
 		return nil, err
 	}
 	return items, nil
 }
 
-// GetSource 按 ID 读取站点配置。
-func (r *sourceRepository) GetSource(id uint) (*model.Source, error) {
+// GetSource 按 ID 读取站点配置；站点不在可见集合内时按「不存在」处理。
+func (r *sourceRepository) GetSource(id uint, visible ...[]uint) (*model.Source, error) {
 	var src model.Source
-	if err := r.db.First(&src, id).Error; err != nil {
+	q := applyVisibility(r.db.Model(&model.Source{}), "id", firstVisible(visible...))
+	if err := q.First(&src, id).Error; err != nil {
 		return nil, notFound(err)
 	}
 	return &src, nil
@@ -96,6 +100,10 @@ func (r *sourceRepository) DeleteSource(id uint) error {
 			return err
 		}
 		if err := tx.Where("source_id = ?", id).Delete(&model.Category{}).Error; err != nil {
+			return err
+		}
+		// 站点删除后同步撤掉所有用户对该站点的授权，避免 user_sources 悬挂。
+		if err := tx.Where("source_id = ?", id).Delete(&model.UserSource{}).Error; err != nil {
 			return err
 		}
 		return tx.Delete(&model.Source{}, id).Error

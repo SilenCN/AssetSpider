@@ -1,6 +1,25 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 
+// ---------- 登录态 ----------
+const TOKEN_KEY = 'assetspider_token'
+const token = ref(localStorage.getItem(TOKEN_KEY) || '')
+const me = ref(null)
+const authReady = ref(false)
+const initialized = ref(false)
+const isAdmin = computed(() => !!me.value?.isAdmin)
+const currentUsername = computed(() => me.value?.user?.username || '')
+
+function clearAuth() {
+  localStorage.removeItem(TOKEN_KEY)
+  token.value = ''
+  me.value = null
+}
+function setAuth(tk) {
+  token.value = tk
+  localStorage.setItem(TOKEN_KEY, tk)
+}
+
 // hls.js 体积较大，只在真正播放 m3u8 时按需加载，避免拖慢首屏。
 let HlsLib = null
 async function loadHls() {
@@ -16,6 +35,7 @@ const categories = ref([])
 const categoryTree = ref([])
 const jobs = ref([])
 const tasks = ref([])
+const users = ref([])
 const capacity = ref({ maxConcurrent: 3, running: 0, queued: 0 })
 const maxConcurrent = ref(3)
 const capacityDirty = ref(false)
@@ -41,8 +61,15 @@ function notify(text, type = 'ok') {
 }
 
 async function request(path, options = {}) {
-  const res = await fetch(path, options)
+  const headers = { ...(options.headers || {}) }
+  if (token.value) headers['Authorization'] = 'Bearer ' + token.value
+  const res = await fetch(path, { ...options, headers })
   const body = await res.json().catch(() => ({}))
+  // 令牌失效时立即清除本地登录态，回到登录页。
+  if (res.status === 401 && token.value) {
+    clearAuth()
+    throw new Error('登录已失效，请重新登录')
+  }
   if (!res.ok) throw new Error(body.error || `请求失败 (${res.status})`)
   return body
 }
@@ -95,13 +122,20 @@ async function loadCategoryTree() {
   categoryTree.value = (await request('/api/categories/v1/tree')) || []
 }
 
+async function loadUsers() {
+  if (!isAdmin.value) { users.value = []; return }
+  users.value = (await request('/api/users/v1')) || []
+}
+
 async function refresh() {
   error.value = ''
   try {
-    await Promise.all([
+    const pending = [
       loadHealth(), loadSources(), loadVideos(), loadJobs(),
       loadCategories(), loadCategoryTree(), loadAreas(), loadTasks(),
-    ])
+    ]
+    if (isAdmin.value) pending.push(loadUsers())
+    await Promise.all(pending)
   } catch (e) {
     error.value = e.message
   }
@@ -299,18 +333,61 @@ const currentGroup = computed(() => playGroups.value[activeGroup.value] || null)
 const currentEpisodes = computed(() => currentGroup.value?.episodes || [])
 const currentEpisode = computed(() => currentEpisodes.value[activeEp.value] || null)
 const currentUrl = computed(() => currentEpisode.value?.url || '')
-const isHls = computed(() => /\.m3u8(\?|#|$)/i.test(currentUrl.value))
-const isDirectVideo = computed(() => /\.(mp4|webm|ogg|mov)(\?|#|$)/i.test(currentUrl.value))
-const canPlay = computed(() => isHls.value || isDirectVideo.value)
 
-// 站点配置了「视频解析地址」时，播放地址已被后端拼接成解析服务的网页地址，
-// <video> 无法直链播放（地址里常带 ?url=...m3u8，不能按后缀判断为媒体流），
-// 因此统一改用 iframe 承载解析页面；未配置解析地址时仍按后缀走 hls.js / 直链。
+// 站点配置了「视频解析地址」时，后端把播放地址拼成解析服务网页地址并打上
+// frame 标记；此时必须用 iframe 承载，<video> 无法直链播放（地址里常带
+// ?url=...m3u8，容易被后缀判断误认成媒体流）。parseEnabled 作为旧数据兜底。
 const detailSource = computed(() => sources.value.find(s => s.id === detail.value?.sourceId) || null)
 const parseEnabled = computed(() => !!detailSource.value?.parseApi)
-const useFrame = computed(() => !!currentUrl.value && parseEnabled.value)
+const useFrame = computed(() => !!currentUrl.value && (currentEpisode.value?.frame === true || parseEnabled.value))
+
+// 含 m3u8 即按 HLS 处理（很多站点地址是 ...?url=xxx.m3u8，不能只匹配结尾）。
+const isHls = computed(() => !!currentUrl.value && /m3u8/i.test(currentUrl.value))
+const isDirectVideo = computed(() => !!currentUrl.value && /\.(mp4|webm|ogg|mov|m4v)(\?|#|$)/i.test(currentUrl.value))
+// 苹果CMS 不少站点的播放地址不带后缀（如 /play/abc123），不能按后缀判死。
+// 这类地址先交给 hls.js 试播（多数实际是 m3u8），失败再回退 <video> 直链。
+const isUnknownStream = computed(() => !!currentUrl.value && !useFrame.value && !isHls.value && !isDirectVideo.value)
+const canPlay = computed(() => !!currentUrl.value && (isHls.value || isDirectVideo.value || isUnknownStream.value))
+
+const playError = ref('')
+let playErrorTimer = null
+
+function onVideoLoaded() {
+  playError.value = ''
+  if (playErrorTimer) { clearTimeout(playErrorTimer); playErrorTimer = null }
+}
+
+function hlsErrorText(data) {
+  const map = {
+    manifestLoadError: '播放列表加载失败（地址不可达、跨域或被拦截）',
+    manifestLoadTimeOut: '播放列表加载超时',
+    manifestParsingError: '播放列表格式错误（不是合法 m3u8）',
+    levelLoadError: '线路加载失败',
+    fragLoadError: '视频分片加载失败',
+    fragLoadTimeOut: '视频分片加载超时',
+    manifestIncompatibleCodecsError: '浏览器不支持该视频编码',
+    bufferAppendError: '视频缓冲写入失败',
+  }
+  return map[data?.details] || data?.details || '未知错误'
+}
+
+function videoErrorText(code) {
+  return ({
+    1: '加载被中止',
+    2: '网络错误（地址不可达或被拦截）',
+    3: '视频解码失败（浏览器不支持该编码）',
+    4: '媒体地址不支持或格式不匹配',
+  })[code] || '未知错误'
+}
+
+function onVideoError(e) {
+  // destroyPlayer 里的 removeAttribute('src') + load() 也会触发 error，忽略空 src 的情况。
+  if (!e.target?.getAttribute('src')) return
+  playError.value = '播放失败：' + videoErrorText(e.target?.error?.code) + '。可在新窗口打开原地址确认，或为站点配置视频解析地址。'
+}
 
 function destroyPlayer() {
+  if (playErrorTimer) { clearTimeout(playErrorTimer); playErrorTimer = null }
   if (hlsInstance) {
     try { hlsInstance.destroy() } catch (e) { /* 忽略销毁异常 */ }
     hlsInstance = null
@@ -322,29 +399,67 @@ function destroyPlayer() {
   }
 }
 
-// 按地址类型挂载播放器：HLS 用 hls.js（Safari 可直接播），mp4 等直接给 src。
+// 按地址类型挂载播放器。
+//
+// 关键：Linux/Chrome 的 canPlayType('application/vnd.apple.mpegurl') 会返回 'maybe'，
+// 但原生 <video> 实际解不了 m3u8（只有 Safari 能），直接赋 src 必然
+// MEDIA_ERR_SRC_NOT_SUPPORTED。因此只要 MediaSource 可用就一律优先用 hls.js，
+// 原生播放仅作为 hls.js 不可用且浏览器明确返回 'probably' 时的兜底。
 async function mountPlayer() {
   destroyPlayer()
+  playError.value = ''
   await nextTick()
   if (useFrame.value) return // 解析地址走 iframe，无需挂载 <video>
   const el = playerEl.value
   const url = currentUrl.value
   if (!el || !url || !canPlay.value) return
-  if (isHls.value) {
-    if (el.canPlayType('application/vnd.apple.mpegurl')) {
-      el.src = url
-    } else {
+  if (isHls.value || isUnknownStream.value) {
+    try {
       const Hls = await loadHls()
-      if (!Hls.isSupported()) return
-      hlsInstance = new Hls({ enableWorker: true })
-      hlsInstance.loadSource(url)
-      hlsInstance.attachMedia(el)
-      hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => { el.play().catch(() => {}) })
+      if (!Hls.isSupported()) throw new Error('浏览器不支持 MediaSource，无法播放 HLS')
+      const inst = new Hls({ enableWorker: true })
+      hlsInstance = inst
+      let recovered = false
+      inst.on(Hls.Events.MANIFEST_PARSED, () => { el.play().catch(() => {}) })
+      inst.on(Hls.Events.ERROR, (_evt, data) => {
+        if (!data?.fatal) return
+        // 无后缀地址可能其实是直链视频：hls.js 试播失败后回退 <video> 再试一次。
+        if (isUnknownStream.value) {
+          try { inst.destroy() } catch (e) { /* 忽略 */ }
+          hlsInstance = null
+          el.src = url
+          el.play().catch(() => {})
+          return
+        }
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR && !recovered) {
+          recovered = true
+          playError.value = 'HLS ' + hlsErrorText(data) + '，正在重试…'
+          try { inst.startLoad() } catch (e) { /* 忽略 */ }
+          // 重试迟迟不成功时给出明确结论，避免一直停在「正在重试」。
+          playErrorTimer = setTimeout(() => {
+            if (playError.value.includes('正在重试')) {
+              playError.value = 'HLS 播放失败：' + hlsErrorText(data) + '。请检查站点的播放域名 / 解析地址配置，或在新窗口打开原地址确认。'
+            }
+          }, 8000)
+          return
+        }
+        playError.value = 'HLS 播放失败：' + hlsErrorText(data) + '。可在新窗口打开原地址确认，或为站点配置视频解析地址。'
+      })
+      inst.loadSource(url)
+      inst.attachMedia(el)
+      return
+    } catch (e) {
+      // 只有明确支持原生 HLS（Safari 返回 'probably'）时才回退，'maybe' 不可信。
+      if (el.canPlayType('application/vnd.apple.mpegurl') === 'probably') {
+        el.src = url
+        el.play().catch(() => {})
+        return
+      }
+      playError.value = '无法播放该地址：' + (e?.message || String(e))
       return
     }
-  } else {
-    el.src = url
   }
+  el.src = url
   el.play().catch(() => { /* 自动播放被浏览器拦截时由用户点播放键 */ })
 }
 
@@ -397,7 +512,6 @@ onMounted(() => window.addEventListener('keydown', onEsc))
 onBeforeUnmount(() => window.removeEventListener('keydown', onEsc))
 
 // ---------- 站点配置 ----------
-// 站点配置改成弹窗：列表页只留一个「新增站点」入口，编辑时点行内「编辑」打开同一个弹窗。
 const emptyForm = () => ({
   id: null, name: '', apiBase: '', format: 'seacms_json', extraParams: '',
   incrementalHours: 24, maxPages: 0, enabled: true,
@@ -420,6 +534,7 @@ function sourcePayload(s) {
   }
 }
 
+// 站点配置改成弹窗：列表页只留一个「新增站点」入口，编辑时点行内「编辑」打开同一个弹窗。
 function openSourceForm(s) {
   if (s) {
     Object.assign(form, {
@@ -432,6 +547,7 @@ function openSourceForm(s) {
   } else {
     resetForm()
   }
+  error.value = ''
   sourceOpen.value = true
 }
 
@@ -440,9 +556,7 @@ function closeSourceForm() {
   resetForm()
 }
 
-function editSource(s) {
-  openSourceForm(s)
-}
+function editSource(s) { openSourceForm(s) }
 
 async function saveSource() {
   error.value = ''
@@ -524,7 +638,7 @@ async function resumeTask(jobId) {
   } catch (e) { notify(e.message, 'err') }
 }
 
-// 失败任务：在原任务记录上从失败页续采（不新开任务，统计继续累加）
+// 失败任务：复用原记录，从失败页续采（统计与尝试次数继续累加）
 async function retryTask(jobId) {
   try {
     const t = await request(`/api/tasks/v1/${jobId}/retry`, { method: 'POST' })
@@ -533,7 +647,7 @@ async function retryTask(jobId) {
   } catch (e) { notify(e.message, 'err') }
 }
 
-// 已结束任务：复用原记录，忽略断点从第 1 页重新采集，统计清零
+// 已结束任务：复用原记录，忽略断点从第 1 页重采，统计清零
 async function rerunTask(jobId) {
   try {
     const t = await request(`/api/tasks/v1/${jobId}/rerun`, { method: 'POST' })
@@ -606,13 +720,143 @@ function jobMessage(j) {
   return (j.live && j.live.message) || j.message || '-'
 }
 
-// 任务进度轮询：页面不可见时暂停，避免无谓请求
+// ---------- 登录 / 会话 ----------
+const loginForm = reactive({ username: '', password: '' })
+const loginBusy = ref(false)
+const loginError = ref('')
+
+async function doLogin() {
+  loginError.value = ''
+  loginBusy.value = true
+  try {
+    const d = await request('/api/auth/v1/sessions', jsonOptions('POST', {
+      username: loginForm.username.trim(), password: loginForm.password,
+    }))
+    setAuth(d.token)
+    me.value = { user: d.user, isAdmin: d.isAdmin, visibleSourceIds: [] }
+    initialized.value = true
+    loginForm.password = ''
+    notify(d.firstUser ? '系统已初始化，你的账号自动注册为管理员' : `欢迎回来，${d.user.username}`)
+    loadFieldMeta().catch(() => {})
+    await refresh()
+  } catch (e) {
+    loginError.value = e.message
+  } finally {
+    loginBusy.value = false
+  }
+}
+
+async function doLogout() {
+  try { await request('/api/auth/v1/sessions', { method: 'DELETE' }) } catch (e) { /* 忽略 */ }
+  clearAuth()
+  tab.value = 'sources'
+  notify('已退出登录', 'info')
+}
+
+const pwdModal = ref(false)
+const pwdForm = reactive({ oldPassword: '', newPassword: '' })
+async function doChangePassword() {
+  try {
+    const d = await request('/api/auth/v1/password', jsonOptions('PUT', { ...pwdForm }))
+    setAuth(d.token)
+    pwdForm.oldPassword = ''
+    pwdForm.newPassword = ''
+    pwdModal.value = false
+    notify(d.message || '密码已修改')
+  } catch (e) { notify(e.message, 'err') }
+}
+
+async function bootstrap() {
+  authReady.value = false
+  try {
+    const st = await request('/api/auth/v1/status')
+    initialized.value = st.initialized
+    if (token.value) {
+      try { me.value = await request('/api/auth/v1/me') } catch (e) { clearAuth() }
+    }
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    authReady.value = true
+  }
+  if (me.value) {
+    loadFieldMeta().catch(() => {})
+    await refresh()
+  }
+}
+
+// ---------- 用户管理（管理员） ----------
+const emptyUserForm = () => ({
+  id: null, username: '', password: '', role: 'user', enabled: true, sourceIds: [],
+})
+const userForm = reactive(emptyUserForm())
+const userEditing = computed(() => !!userForm.id)
+
+function resetUserForm() { Object.assign(userForm, emptyUserForm()) }
+
+function editUser(u) {
+  Object.assign(userForm, {
+    id: u.id, username: u.username, password: '', role: u.role,
+    enabled: u.enabled, sourceIds: [...(u.sourceIds || [])],
+  })
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+async function saveUser() {
+  error.value = ''
+  try {
+    const payload = {
+      role: userForm.role, enabled: userForm.enabled,
+      sourceIds: [...userForm.sourceIds],
+    }
+    if (userForm.id) {
+      if (userForm.password) payload.password = userForm.password
+      await request(`/api/users/v1/${userForm.id}`, jsonOptions('PUT', payload))
+    } else {
+      payload.username = userForm.username.trim()
+      payload.password = userForm.password
+      await request('/api/users/v1', jsonOptions('POST', payload))
+    }
+    resetUserForm()
+    notify('用户信息已保存')
+    await refresh()
+  } catch (e) {
+    error.value = e.message
+    notify(e.message, 'err')
+  }
+}
+
+async function toggleUser(u) {
+  try {
+    await request(`/api/users/v1/${u.id}`, jsonOptions('PUT', { enabled: !u.enabled }))
+    notify(u.enabled ? '账号已停用' : '账号已启用')
+    await refresh()
+  } catch (e) { notify(e.message, 'err') }
+}
+
+async function removeUser(u) {
+  if (!confirm(`确认删除用户「${u.username}」？该用户的登录会话与站点授权会一并清除。`)) return
+  try {
+    await request(`/api/users/v1/${u.id}`, { method: 'DELETE' })
+    notify('用户已删除')
+    if (userForm.id === u.id) resetUserForm()
+    await refresh()
+  } catch (e) { notify(e.message, 'err') }
+}
+
+function visibleLabel(u) {
+  if (u.role === 'admin') return '全部站点（管理员）'
+  const ids = u.sourceIds || []
+  if (!ids.length) return '未授权任何站点'
+  return ids.map(id => sources.value.find(s => s.id === id)?.name || `#${id}`).join('、')
+}
+
+// 任务进度轮询：页面不可见或尚未登录时暂停，避免无谓请求
 let taskTimer = null
-onMounted(() => {
-  refresh()
-  loadFieldMeta()
+onMounted(async () => {
+  await bootstrap()
   taskTimer = setInterval(() => {
-    if (document.hidden) return
+    if (!me.value || document.hidden) return
     loadTasks().catch(() => {})
     if (tasks.value.length) loadJobs().catch(() => {})
   }, 1500)
@@ -621,15 +865,42 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
 </script>
 
 <template>
+  <div v-if="!authReady" class="boot">正在检查登录状态…</div>
+
+  <div v-else-if="!me" class="login-wrap">
+    <div class="login-card">
+      <h1>AssetSpider</h1>
+      <p class="muted">视频站点采集 · JSON 接口 · 全量 / 增量 · 全字段入库</p>
+      <form @submit.prevent="doLogin">
+        <input v-model="loginForm.username" placeholder="用户名" autocomplete="username" required />
+        <input v-model="loginForm.password" type="password" placeholder="密码" autocomplete="current-password" required />
+        <button type="submit" :disabled="loginBusy">
+          {{ loginBusy ? '登录中…' : (initialized ? '登录' : '注册并登录') }}
+        </button>
+      </form>
+      <p v-if="!initialized" class="hint">
+        第一个登录的账号将<strong>自动注册为管理员</strong>，拥有全部权限；之后可创建用户并分配可见站点。
+      </p>
+      <p v-if="loginError" class="error">{{ loginError }}</p>
+    </div>
+  </div>
+
+  <template v-else>
   <main class="page">
     <header>
       <h1>AssetSpider</h1>
       <p>视频站点采集 · JSON 接口 · 全量 / 增量 · 全字段入库 · Vue 3 + Gin + GORM/SQLite</p>
       <div class="stats">
         <span class="db">DB: {{ health.database || '加载中…' }}</span>
-        <span class="stat">站点 <b>{{ health.sources ?? '-' }}</b></span>
-        <span class="stat">影片 <b>{{ health.videos ?? '-' }}</b></span>
+        <span class="stat">可见站点 <b>{{ sources.length }}</b></span>
+        <span class="stat">可见影片 <b>{{ videoTotal }}</b></span>
         <span class="stat">字段 <b>{{ fieldMeta.total || '-' }}</b></span>
+      </div>
+      <div class="userbar">
+        <span class="host">{{ currentUsername }}</span>
+        <span class="badge" :class="isAdmin ? 'on' : 'off'">{{ isAdmin ? '管理员' : '普通用户' }}</span>
+        <button class="mini ghost" @click="pwdModal = true">修改密码</button>
+        <button class="mini ghost" @click="doLogout">退出登录</button>
       </div>
     </header>
 
@@ -641,6 +912,7 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
       <button :class="{ active: tab === 'videos' }" @click="tab = 'videos'; loadVideos()">资源库</button>
       <button :class="{ active: tab === 'categories' }" @click="tab = 'categories'; loadCategories()">视频分类</button>
       <button :class="{ active: tab === 'jobs' }" @click="tab = 'jobs'; loadJobs()">采集记录</button>
+      <button v-if="isAdmin" :class="{ active: tab === 'users' }" @click="tab = 'users'; loadUsers()">用户管理</button>
       <button class="ghost refresh" @click="refresh">刷新</button>
     </nav>
 
@@ -654,20 +926,22 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
           </span>
         </div>
         <div class="actions">
-          <button @click="crawlAll('full')">全量采集全部站点</button>
-          <button class="ghost" @click="crawlAll('incremental')">增量采集全部站点</button>
-          <label class="field inline">最多同时运行
-            <input v-model.number="maxConcurrent" type="number" min="1" max="64"
-                   @input="capacityDirty = true" />
-          </label>
-          <button class="ghost" :disabled="!capacityDirty" @click="saveCapacity">保存上限</button>
+          <button @click="crawlAll('full')">全量采集可见站点</button>
+          <button class="ghost" @click="crawlAll('incremental')">增量采集可见站点</button>
+          <template v-if="isAdmin">
+            <label class="field inline">最多同时运行
+              <input v-model.number="maxConcurrent" type="number" min="1" max="64"
+                     @input="capacityDirty = true" />
+            </label>
+            <button class="ghost" :disabled="!capacityDirty" @click="saveCapacity">保存上限</button>
+          </template>
         </div>
         <p class="hint">
           采集为异步任务：发起后立即入队，同时运行的任务数不超过上面的上限，其余排队等待。
           运行中的任务可随时<b>暂停</b>——已完成分页的数据已经入库，全量采集的续采页码与增量采集的游标都会保存，
           点「继续」即可从断点接着采。抓取失败会<b>自动退避重试</b>（次数由 <code>collector.retry_times</code> 配置），
           仍然失败的任务可在「采集记录」里<b>手动重试</b>（从失败页续采）或<b>重新运行</b>（从第 1 页重来）——
-          两者都<b>复用原任务记录</b>，不会多出一条历史。
+          <b>继续 / 重试 / 重新运行都复用原任务记录</b>，不会多出一条历史；重新运行时统计与尝试次数清零。
         </p>
         <p v-if="!tasks.length" class="empty">当前没有排队或运行中的采集任务。</p>
         <div v-else class="table-wrap">
@@ -719,12 +993,11 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
       <section class="card">
         <div class="list-head">
           <div class="list-head-l">
-            <h2>站点列表</h2>
-            <span class="muted">共 {{ sources.length }} 个</span>
+            <h2>站点列表</h2><span class="muted">共 {{ sources.length }} 个</span>
           </div>
-          <button @click="openSourceForm()">+ 新增站点</button>
+          <button v-if="isAdmin" @click="openSourceForm()">+ 新增站点</button>
         </div>
-        <p v-if="!sources.length" class="empty">还没有站点，点右上角「新增站点」添加一个 JSON 采集接口。</p>
+        <p v-if="!sources.length" class="empty">{{ isAdmin ? '还没有站点，点右上角「新增站点」添加一个 JSON 采集接口。' : '管理员尚未给你分配任何可见站点。' }}</p>
         <div v-else class="table-wrap">
           <table>
             <thead>
@@ -738,20 +1011,8 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
                 <td class="mono hide-sm">{{ s.id }}</td>
                 <td class="host">
                   {{ s.name }}
-                  <div v-if="s.parseApi || s.playDomain || s.picApi || s.picDomain" class="tiny muted"
-                       :title="[
-                         s.parseApi && ('解析：' + s.parseApi),
-                         s.playDomain && ('播放域名：' + s.playDomain),
-                         s.picApi && ('图片解析：' + s.picApi),
-                         s.picDomain && ('图片域名：' + s.picDomain),
-                       ].filter(Boolean).join('\n')">
-                    <span v-if="s.parseApi">解析播放</span>
-                    <span v-if="s.parseApi && s.playDomain"> · </span>
-                    <span v-if="s.playDomain">播放域名</span>
-                    <span v-if="(s.parseApi || s.playDomain) && (s.picApi || s.picDomain)"> · </span>
-                    <span v-if="s.picApi">图片解析</span>
-                    <span v-if="s.picApi && s.picDomain"> · </span>
-                    <span v-if="s.picDomain">图片域名</span>
+                  <div v-if="s.parseApi || s.playDomain || s.picApi || s.picDomain" class="tiny muted" :title="[s.parseApi && ('解析：' + s.parseApi), s.playDomain && ('播放域名：' + s.playDomain), s.picApi && ('图片代理：' + s.picApi), s.picDomain && ('图片域名：' + s.picDomain)].filter(Boolean).join(' / ')">
+                    {{ [s.parseApi && '解析播放', s.playDomain && '播放域名替换', (s.picApi || s.picDomain) && '图片改写'].filter(Boolean).join(' · ') }}
                   </div>
                 </td>
                 <td class="url hide-sm" :title="s.apiBase">{{ short(s.apiBase, 38) }}</td>
@@ -773,9 +1034,11 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
                     <button class="mini" @click="startTask(s, 'full')">全量</button>
                     <button class="mini ghost" @click="startTask(s, 'incremental')">增量</button>
                   </template>
-                  <button class="mini ghost" @click="editSource(s)">编辑</button>
-                  <button class="mini ghost" @click="toggleSource(s)">{{ s.enabled ? '停用' : '启用' }}</button>
-                  <button class="mini danger" @click="removeSource(s)">删除</button>
+                  <template v-if="isAdmin">
+                    <button class="mini ghost" @click="editSource(s)">编辑</button>
+                    <button class="mini ghost" @click="toggleSource(s)">{{ s.enabled ? '停用' : '启用' }}</button>
+                    <button class="mini danger" @click="removeSource(s)">删除</button>
+                  </template>
                 </td>
               </tr>
             </tbody>
@@ -863,7 +1126,7 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
           <button @click="searchVideos">搜索</button>
           <span class="muted">共 {{ videoTotal }} 条</span>
         </div>
-        <p v-if="!videos.length" class="empty">暂无采集数据，可到「站点配置」执行一次全量采集。</p>
+        <p v-if="!videos.length" class="empty">{{ isAdmin ? '暂无采集数据，可到「站点配置」执行一次全量采集。' : '暂无可见的采集数据。' }}</p>
         <div v-else class="res-grid">
           <article v-for="v in videos" :key="v.id" class="res-card" @click="openDetail(v)">
             <div class="res-poster">
@@ -944,8 +1207,67 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
       </section>
     </template>
 
-    <!-- 站点配置弹窗（新增 / 编辑共用） -->
-    <div v-if="sourceOpen" class="modal-mask" @click.self="closeSourceForm">
+    <!-- 用户管理（管理员） -->
+    <template v-if="tab === 'users' && isAdmin">
+      <section class="card">
+        <h2>{{ userEditing ? `编辑用户「${userForm.username}」` : '新增用户' }}</h2>
+        <form class="user-form" @submit.prevent="saveUser">
+          <input v-model="userForm.username" placeholder="用户名 *" :disabled="userEditing" :required="!userEditing" />
+          <input v-model="userForm.password" type="password"
+                 :placeholder="userEditing ? '新密码（留空不改）' : '密码 *（至少 6 位）'" :required="!userEditing" />
+          <label class="field">角色
+            <select v-model="userForm.role">
+              <option value="user">普通用户</option>
+              <option value="admin">管理员</option>
+            </select>
+          </label>
+          <label class="check"><input v-model="userForm.enabled" type="checkbox" /> 启用</label>
+          <button type="submit">{{ userEditing ? '保存修改' : '创建用户' }}</button>
+          <button v-if="userEditing" type="button" class="ghost" @click="resetUserForm">取消</button>
+          <div class="source-grants">
+            <span class="muted">可见站点授权</span>
+            <span class="hint">普通用户只能看见被勾选的站点；管理员默认可见全部，无需授权。</span>
+            <div class="grant-list">
+              <label v-for="s in sources" :key="s.id" class="check">
+                <input type="checkbox" :value="s.id" v-model="userForm.sourceIds" /> {{ s.name }}
+              </label>
+              <span v-if="!sources.length" class="muted">还没有站点可分配</span>
+            </div>
+          </div>
+        </form>
+        <p class="hint">创建/修改后立即生效，无需用户重新登录。停用、改密或变更角色会使该用户的现有会话失效。</p>
+      </section>
+
+      <section class="card">
+        <div class="list-head"><h2>用户列表</h2><span class="muted">共 {{ users.length }} 个账号</span></div>
+        <p v-if="!users.length" class="empty">还没有其他账号。</p>
+        <div v-else class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>ID</th><th>用户名</th><th>角色</th><th>状态</th><th>可见站点</th><th class="hide-sm">最后登录</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="u in users" :key="u.id">
+                <td class="mono">{{ u.id }}</td>
+                <td class="host">{{ u.username }}<span v-if="u.id === me.user?.id" class="tiny muted">（我）</span></td>
+                <td><span class="badge" :class="u.role === 'admin' ? 'on' : 'off'">{{ u.role === 'admin' ? '管理员' : '普通用户' }}</span></td>
+                <td><span class="badge" :class="u.enabled ? 'on' : 'off'">{{ u.enabled ? '启用' : '停用' }}</span></td>
+                <td class="muted">{{ visibleLabel(u) }}</td>
+                <td class="muted hide-sm">{{ formatTime(u.lastLoginAt) }}</td>
+                <td class="ops">
+                  <button class="mini ghost" @click="editUser(u)">编辑</button>
+                  <button class="mini ghost" @click="toggleUser(u)">{{ u.enabled ? '停用' : '启用' }}</button>
+                  <button class="mini danger" @click="removeUser(u)">删除</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </template>
+
+    <!-- 站点配置弹窗（新增 / 编辑共用，仅管理员） -->
+    <div v-if="sourceOpen && isAdmin" class="modal-mask" @click.self="closeSourceForm">
       <div class="modal narrow">
         <div class="modal-head">
           <div>
@@ -980,7 +1302,7 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
 
           <p class="sf-group full">图片增强<span class="muted">封面等图片地址，同样只影响展示、不改动入库数据</span></p>
           <label class="sf-item full">
-            <span>图片解析地址</span>
+            <span>图片解析 / 代理地址</span>
             <input v-model="form.picApi" placeholder="https://img.example.com/proxy?url=（可留空，拼在图片地址前，支持 {url}）" />
           </label>
           <label class="sf-item full">
@@ -1000,7 +1322,7 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
 
           <p class="hint full">
             增量采集附加 <code>h=&lt;小时数&gt;</code> 并按 <code>vod_time</code> 游标去重；接口返回的<strong>全部标准字段</strong>结构化入库，站点自定义字段存入 <code>extra</code>，不丢字段。<br />
-            地址改写顺序统一为<strong>先换域名、再拼解析/代理地址</strong>：解析地址含 <code>{url}</code> 时按占位符插入，未含时直接前缀拼接。
+            地址改写统一<strong>先换域名、再拼解析/代理地址</strong>：解析地址含 <code>{url}</code> 时按占位符插入，未含时直接前缀拼接；图片改写还作用于 <code>#</code> 分隔的截图集合。
           </p>
           <div class="sf-actions full">
             <button type="submit">{{ editing ? '保存修改' : '添加站点' }}</button>
@@ -1035,7 +1357,8 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
         <div class="modal-body">
           <template v-if="detailTab === 'play'">
             <div class="player-wrap">
-              <video v-show="!useFrame" ref="playerEl" class="player" controls playsinline preload="metadata"></video>
+              <video v-show="!useFrame" ref="playerEl" class="player" controls playsinline preload="metadata"
+                     @error="onVideoError" @loadeddata="onVideoLoaded"></video>
               <iframe v-if="useFrame" :key="currentUrl" class="player-frame" :src="currentUrl"
                       allow="autoplay; fullscreen; encrypted-media" allowfullscreen
                       referrerpolicy="no-referrer"></iframe>
@@ -1045,11 +1368,14 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
                 可在<strong>解析页面内</strong>点击播放。
                 <a v-if="currentUrl" :href="currentUrl" target="_blank" rel="noopener" class="ep-url">在新窗口打开</a>
               </p>
-              <p v-else-if="!canPlay" class="hint">
-                当前集不是可直链播放的视频地址：<code>{{ currentUrl || '（空地址）' }}</code>
+              <p v-else-if="!currentUrl" class="hint">
+                当前线路这一集没有播放地址。
+              </p>
+              <p v-else class="hint">m3u8 优先用 hls.js 播放，mp4 / webm 走直链；无后缀地址会先按 HLS 试播再回退直链。切换线路或集数即时切换。</p>
+              <p v-if="playError" class="play-error">
+                {{ playError }}
                 <a v-if="currentUrl" :href="currentUrl" target="_blank" rel="noopener" class="ep-url">在新窗口打开</a>
               </p>
-              <p v-else class="hint">支持 m3u8（自动用 hls.js 播放）与 mp4 / webm 直链；切换线路或集数即时切换。</p>
             </div>
             <template v-if="playGroups.length">
               <div class="group-tabs">
@@ -1097,7 +1423,25 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
         </div>
       </div>
     </div>
+    <!-- 修改密码 -->
+    <div v-if="pwdModal" class="modal-mask" @click.self="pwdModal = false">
+      <div class="modal sm">
+        <div class="modal-head">
+          <h3>修改密码</h3>
+          <button class="ghost" @click="pwdModal = false">关闭</button>
+        </div>
+        <div class="modal-body">
+          <form class="user-form" @submit.prevent="doChangePassword">
+            <input v-model="pwdForm.oldPassword" type="password" placeholder="原密码" required />
+            <input v-model="pwdForm.newPassword" type="password" placeholder="新密码（至少 6 位）" required />
+            <button type="submit">确认修改</button>
+          </form>
+          <p class="hint">修改后该账号的其他登录会话会立即失效，当前会话会自动换发新令牌。</p>
+        </div>
+      </div>
+    </div>
   </main>
+  </template>
 </template>
 
 <style>
@@ -1187,7 +1531,7 @@ th { color: #86909c; font-weight: 500; }
 .list-head-l h2 { margin: 0; }
 /* 站点配置弹窗表单 */
 .modal.narrow { width: min(720px, 100%); }
-.sf-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 18px; padding: 16px 22px 22px; }
+.sf-form { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 12px 18px; padding: 16px 22px 22px; }
 .sf-item { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .sf-item > span { font-size: 12px; color: #4e5969; }
 .sf-item input { width: 100%; flex: none; }
@@ -1237,6 +1581,7 @@ th { color: #86909c; font-weight: 500; }
 .group-tabs, .ep-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .ep-chips { max-height: 168px; overflow-y: auto; padding: 2px; }
 .play-url { margin: 10px 0 0; font-size: 11px; color: #86909c; word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.play-error { margin: 10px 0 0; padding: 9px 12px; border: 1px solid #ffb3b3; background: #fff2f0; border-radius: 6px; font-size: 12px; color: #cb2634; line-height: 1.7; word-break: break-all; }
 /* 分类树：资源站点 → 一级分类 → 二级分类 */
 .tree { display: flex; flex-direction: column; gap: 12px; }
 .tree-site { border: 1px solid #e5e6eb; border-radius: 8px; overflow: hidden; }
@@ -1346,4 +1691,20 @@ th { color: #86909c; font-weight: 500; }
   .pager { gap: 10px; font-size: 12px; }
   .notice, .error { font-size: 12px; padding: 8px 10px; }
 }
+
+/* ---------- 登录与账号 ---------- */
+.boot { min-height: 100vh; display: flex; align-items: center; justify-content: center; color: #86909c; font-size: 14px; }
+.login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; background: linear-gradient(160deg, #eef2ff 0%, #f5f6f8 60%); }
+.login-card { width: min(420px, 100%); background: #fff; border: 1px solid #e5e6eb; border-radius: 14px; padding: 32px; box-shadow: 0 12px 40px rgba(31,35,41,.08); }
+.login-card h1 { margin: 0; font-size: 26px; }
+.login-card > p.muted { margin: 6px 0 20px; font-size: 13px; }
+.login-card form { display: flex; flex-direction: column; gap: 12px; }
+.login-card form input { width: 100%; flex: none; padding: 10px 12px; }
+.login-card form button { width: 100%; padding: 10px; margin-top: 4px; }
+.login-card .hint { margin: 16px 0 0; }
+.userbar { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.user-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.source-grants { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; }
+.grant-list { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 4px; }
+.modal.sm { width: min(460px, 100%); }
 </style>

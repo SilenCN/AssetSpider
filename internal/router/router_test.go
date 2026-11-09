@@ -3,6 +3,7 @@ package router_test
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,10 +17,24 @@ import (
 	"github.com/SilenCN/AssetSpider/internal/app"
 	"github.com/SilenCN/AssetSpider/internal/config"
 	"github.com/SilenCN/AssetSpider/internal/model"
+	"github.com/SilenCN/AssetSpider/internal/repository"
 	routerpkg "github.com/SilenCN/AssetSpider/internal/router"
 	"github.com/SilenCN/AssetSpider/internal/service"
 	"github.com/gin-gonic/gin"
 )
+
+// testToken 是上一个测试路由里首个登录者（自动注册为管理员）的令牌。
+// 测试串行执行，每个用例都会用独立数据库重建令牌。
+var testToken string
+
+// authReq 构造自动携带管理员令牌的请求，让既有接口测试在启用登录校验后仍然有效。
+func authReq(method, path string, body io.Reader) *http.Request {
+	req := httptest.NewRequest(method, path, body)
+	if testToken != "" {
+		req.Header.Set("Authorization", "Bearer "+testToken)
+	}
+	return req
+}
 
 func newTestRouter(t *testing.T) (*gin.Engine, string) {
 	t.Helper()
@@ -49,6 +64,27 @@ func newTestRouterWith(t *testing.T, tune func(*config.Config)) (*gin.Engine, st
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { application.Close() })
+
+	// 每个测试库都是全新的：先通过登录接口注册首个管理员，
+	// 之后本文件里的所有请求由 authReq 自动携带该令牌。
+	loginReq, err := http.NewRequest(http.MethodPost, "/api/auth/v1/sessions",
+		jsonBody(map[string]string{"username": "admin", "password": "admin123456"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginReq.Header.Set("Content-Type", "application/json")
+	lw := httptest.NewRecorder()
+	application.Engine.ServeHTTP(lw, loginReq)
+	if lw.Code != http.StatusOK {
+		t.Fatalf("初始化管理员失败: %d %s", lw.Code, lw.Body.String())
+	}
+	var lr struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(lw.Body.Bytes(), &lr); err != nil || lr.Token == "" {
+		t.Fatalf("登录响应缺少 token: %s", lw.Body.String())
+	}
+	testToken = lr.Token
 	return application.Engine, dbPath
 }
 
@@ -58,7 +94,7 @@ func jsonBody(v interface{}) *strings.Reader {
 }
 
 func doJSON(r *gin.Engine, method, path string, body interface{}) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, path, jsonBody(body))
+	req := authReq(method, path, jsonBody(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -90,7 +126,7 @@ func TestHealthAndIndex(t *testing.T) {
 	r, dbPath := newTestRouter(t)
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/system/v1/health", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/system/v1/health", nil))
 	// 直接解析 JSON 比对，避免 Windows 路径在 JSON 中被转义成 \\ 导致字符串匹配失败。
 	var health struct {
 		Status   string `json:"status"`
@@ -102,20 +138,20 @@ func TestHealthAndIndex(t *testing.T) {
 	}
 
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/", nil))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "AssetSpider") {
 		t.Fatalf("首页未托管 Vue 页面: %d %s", w.Code, w.Body.String())
 	}
 
 	// SPA 回退：未知的前端路由也应返回 index.html
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/some/spa/route", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/some/spa/route", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("SPA 回退失败: %d", w.Code)
 	}
 
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/not-exist", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/not-exist", nil))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("未知 API 应返回 404，实际 %d", w.Code)
 	}
@@ -138,7 +174,7 @@ func TestAssetAPI(t *testing.T) {
 	}
 
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/assets/v1", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/assets/v1", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("列表失败: %d %s", w.Code, w.Body.String())
 	}
@@ -158,7 +194,7 @@ func TestAssetAPI(t *testing.T) {
 
 	// 删除
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete,
+	r.ServeHTTP(w, authReq(http.MethodDelete,
 		"/api/assets/v1/"+strconv.Itoa(int(created.ID)), nil))
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("删除失败: %d %s", w.Code, w.Body.String())
@@ -204,7 +240,7 @@ func TestSourceAndCrawlAPI(t *testing.T) {
 
 	// 2. 列表附带影片数
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/sources/v1", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/sources/v1", nil))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"videoCount":0`) {
 		t.Fatalf("站点列表异常: %d %s", w.Code, w.Body.String())
 	}
@@ -228,7 +264,7 @@ func TestSourceAndCrawlAPI(t *testing.T) {
 
 	// 4. 数据入库可查询
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1?q=影片A", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1?q=影片A", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("视频查询失败: %d %s", w.Code, w.Body.String())
 	}
@@ -258,7 +294,7 @@ func TestSourceAndCrawlAPI(t *testing.T) {
 
 	// 7. 采集记录
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/jobs/v1", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/jobs/v1", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("采集记录查询失败: %d", w.Code)
 	}
@@ -275,7 +311,7 @@ func TestSourceAndCrawlAPI(t *testing.T) {
 		t.Errorf("非法模式应返回 400，实际 %d", got.Code)
 	}
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/sources/v1/9999/crawls?mode=full", nil))
+	r.ServeHTTP(w, authReq(http.MethodPost, "/api/sources/v1/9999/crawls?mode=full", nil))
 	if w.Code != http.StatusNotFound {
 		t.Errorf("不存在的站点应返回 404，实际 %d", w.Code)
 	}
@@ -286,12 +322,12 @@ func TestSourceAndCrawlAPI(t *testing.T) {
 		t.Fatalf("更新站点失败: %d %s", w.Code, w.Body.String())
 	}
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/sources/v1/"+strconv.Itoa(int(src.ID)), nil))
+	r.ServeHTTP(w, authReq(http.MethodDelete, "/api/sources/v1/"+strconv.Itoa(int(src.ID)), nil))
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("删除站点失败: %d %s", w.Code, w.Body.String())
 	}
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1", nil))
 	if !strings.Contains(w.Body.String(), `"total":0`) {
 		t.Fatalf("删除站点后影片未级联清理: %s", w.Body.String())
 	}
@@ -302,7 +338,7 @@ func TestVideoFieldMetaAndDetailAPI(t *testing.T) {
 
 	// 1. 字段元数据：覆盖全部标准字段，且带中文分组信息
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/meta/v1/fields", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/meta/v1/fields", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("字段元数据接口异常: %d %s", w.Code, w.Body.String())
 	}
@@ -344,7 +380,7 @@ func TestVideoFieldMetaAndDetailAPI(t *testing.T) {
 		t.Fatalf("采集失败: %d %s", w.Code, w.Body.String())
 	}
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1", nil))
 	var list struct {
 		Items []map[string]interface{} `json:"items"`
 	}
@@ -373,13 +409,13 @@ func TestVideoFieldMetaAndDetailAPI(t *testing.T) {
 	}
 
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1/1", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1/1", nil))
 	body := w.Body.String()
 	if w.Code != http.StatusOK || strings.Contains(body, `"raw"`) || !strings.Contains(body, `"vodName"`) {
 		t.Fatalf("详情接口异常（不应含 raw）: %d %s", w.Code, body)
 	}
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1/9999", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1/9999", nil))
 	if w.Code != http.StatusNotFound {
 		t.Errorf("不存在的影片应返回 404，实际 %d", w.Code)
 	}
@@ -393,6 +429,7 @@ func TestAPIRoutesFollowModuleVersionConvention(t *testing.T) {
 		"system": true, "assets": true, "sources": true,
 		"crawls": true, "videos": true, "categories": true,
 		"meta": true, "jobs": true, "tasks": true,
+		"auth": true, "users": true,
 	}
 	forbidden := map[string]bool{
 		"crawl": true, "crawls-run": true, "create": true, "update": true,
@@ -439,7 +476,7 @@ func TestLegacyRoutesAreGone(t *testing.T) {
 	}
 	for _, o := range old {
 		w := httptest.NewRecorder()
-		r.ServeHTTP(w, httptest.NewRequest(o.method, o.path, nil))
+		r.ServeHTTP(w, authReq(o.method, o.path, nil))
 		if w.Code != http.StatusNotFound {
 			t.Errorf("旧路由 %s 应返回 404，实际 %d", o.path, w.Code)
 		}
@@ -450,7 +487,7 @@ func TestCategoryAPI(t *testing.T) {
 	r, _ := newTestRouter(t)
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/categories/v1", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/categories/v1", nil))
 	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "[]" {
 		t.Fatalf("空分类列表异常: %d %s", w.Code, w.Body.String())
 	}
@@ -469,7 +506,7 @@ func TestCategoryAPI(t *testing.T) {
 
 	// 模拟站点没给 type_id，分类应按 type_name 回退生成
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/categories/v1", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/categories/v1", nil))
 	var cats []struct {
 		ID         uint   `json:"id"`
 		SourceID   uint   `json:"sourceId"`
@@ -488,24 +525,24 @@ func TestCategoryAPI(t *testing.T) {
 
 	// 详情与不存在
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/categories/v1/"+strconv.Itoa(int(cats[0].ID)), nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/categories/v1/"+strconv.Itoa(int(cats[0].ID)), nil))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), cats[0].Name) {
 		t.Fatalf("分类详情异常: %d %s", w.Code, w.Body.String())
 	}
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/categories/v1/9999", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/categories/v1/9999", nil))
 	if w.Code != http.StatusNotFound {
 		t.Errorf("不存在的分类应返回 404，实际 %d", w.Code)
 	}
 
 	// 按站点过滤 + 按分类过滤影片
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/categories/v1?source_id=999", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/categories/v1?source_id=999", nil))
 	if !strings.Contains(w.Body.String(), "[]") {
 		t.Errorf("按站点过滤分类异常: %s", w.Body.String())
 	}
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+	r.ServeHTTP(w, authReq(http.MethodGet,
 		"/api/videos/v1?category_id="+strconv.Itoa(int(cats[0].ID)), nil))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"total":1`) {
 		t.Fatalf("按分类筛选影片异常: %d %s", w.Code, w.Body.String())
@@ -545,7 +582,7 @@ func TestCategoryTreeEndpoint(t *testing.T) {
 	}
 
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/categories/v1/tree", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/categories/v1/tree", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("tree 接口异常: %d %s", w.Code, w.Body.String())
 	}
@@ -584,7 +621,7 @@ func TestCategoryTreeEndpoint(t *testing.T) {
 
 	// 按一级分类筛选影片：应命中其下全部二级分类的影片（3 部）
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+	r.ServeHTTP(w, authReq(http.MethodGet,
 		"/api/videos/v1?category_id="+strconv.Itoa(int(root.ID)), nil))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"total":3`) {
 		t.Fatalf("按一级分类筛选应命中 3 部影片: %d %s", w.Code, w.Body.String())
@@ -655,7 +692,7 @@ func TestVideoPlayGroupsEndpoint(t *testing.T) {
 
 	// 取入库影片 ID
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1?q=播放组测试片", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1?q=播放组测试片", nil))
 	var videos struct {
 		Items []model.Video `json:"items"`
 	}
@@ -666,7 +703,7 @@ func TestVideoPlayGroupsEndpoint(t *testing.T) {
 
 	// 播放组子资源
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1/"+strconv.Itoa(int(vid))+"/play-groups", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1/"+strconv.Itoa(int(vid))+"/play-groups", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("播放组接口异常: %d %s", w.Code, w.Body.String())
 	}
@@ -687,7 +724,7 @@ func TestVideoPlayGroupsEndpoint(t *testing.T) {
 
 	// 不存在的影片返回 404
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1/999999/play-groups", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1/999999/play-groups", nil))
 	if w.Code != http.StatusNotFound {
 		t.Errorf("不存在影片的播放组应返回 404，实际 %d", w.Code)
 	}
@@ -709,7 +746,7 @@ func TestVideoAreasAndSortEndpoint(t *testing.T) {
 
 	// 地域枚举去重
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1/areas", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1/areas", nil))
 	var areas []string
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &areas) != nil {
 		t.Fatalf("地域接口异常: %d %s", w.Code, w.Body.String())
@@ -724,7 +761,7 @@ func TestVideoAreasAndSortEndpoint(t *testing.T) {
 	}
 	get := func(qs string) listResp {
 		w := httptest.NewRecorder()
-		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1?"+qs, nil))
+		r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1?"+qs, nil))
 		var out listResp
 		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &out) != nil {
 			t.Fatalf("列表接口异常(%s): %d %s", qs, w.Code, w.Body.String())
@@ -805,7 +842,7 @@ func TestTaskPauseResumeAndCapacity(t *testing.T) {
 		t.Fatalf("非法并发上限应返回 400，实际 %d", w.Code)
 	}
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/tasks/v1/capacity", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/tasks/v1/capacity", nil))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"maxConcurrent":2`) {
 		t.Fatalf("读取并发上限异常: %d %s", w.Code, w.Body.String())
 	}
@@ -841,7 +878,7 @@ func TestTaskPauseResumeAndCapacity(t *testing.T) {
 	}
 	listTasks := func() taskList {
 		w := httptest.NewRecorder()
-		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/tasks/v1", nil))
+		r.ServeHTTP(w, authReq(http.MethodGet, "/api/tasks/v1", nil))
 		var out taskList
 		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &out) != nil {
 			t.Fatalf("任务列表异常: %d %s", w.Code, w.Body.String())
@@ -953,7 +990,7 @@ func TestTaskPauseResumeAndCapacity(t *testing.T) {
 func lastJob(t *testing.T, r *gin.Engine) model.CrawlJob {
 	t.Helper()
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/jobs/v1?limit=1", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/jobs/v1?limit=1", nil))
 	var jobs []model.CrawlJob
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &jobs) != nil || len(jobs) != 1 {
 		t.Fatalf("采集记录异常: %d %s", w.Code, w.Body.String())
@@ -965,7 +1002,7 @@ func lastJob(t *testing.T, r *gin.Engine) model.CrawlJob {
 func liveOf(t *testing.T, r *gin.Engine, id uint) *service.TaskView {
 	t.Helper()
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/jobs/v1?limit=50", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/jobs/v1?limit=50", nil))
 	var jobs []service.JobView
 	if err := json.Unmarshal(w.Body.Bytes(), &jobs); err != nil {
 		t.Fatalf("采集记录解析失败: %v", err)
@@ -982,7 +1019,7 @@ func liveOf(t *testing.T, r *gin.Engine, id uint) *service.TaskView {
 func listJobs(t *testing.T, r *gin.Engine) []model.CrawlJob {
 	t.Helper()
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/jobs/v1?limit=50", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/jobs/v1?limit=50", nil))
 	var jobs []model.CrawlJob
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &jobs) != nil {
 		t.Fatalf("采集记录异常: %d %s", w.Code, w.Body.String())
@@ -994,7 +1031,7 @@ func listJobs(t *testing.T, r *gin.Engine) []model.CrawlJob {
 func jobByID(t *testing.T, r *gin.Engine, id uint) model.CrawlJob {
 	t.Helper()
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/jobs/v1?limit=50", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/jobs/v1?limit=50", nil))
 	var jobs []model.CrawlJob
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &jobs) != nil {
 		t.Fatalf("采集记录异常: %d %s", w.Code, w.Body.String())
@@ -1026,7 +1063,7 @@ func waitJobStatus(t *testing.T, r *gin.Engine, id uint, want string) model.Craw
 
 func taskViews(r *gin.Engine) []service.TaskView {
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/tasks/v1", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/tasks/v1", nil))
 	var out struct {
 		Items []service.TaskView `json:"items"`
 	}
@@ -1362,7 +1399,7 @@ func TestTaskLiveProgress(t *testing.T) {
 	}
 	// 采集记录里的 live 字段应为空
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/jobs/v1?limit=1", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/jobs/v1?limit=1", nil))
 	if strings.Contains(w.Body.String(), `"live"`) {
 		t.Fatalf("已结束任务的采集记录不应带 live 进度: %s", w.Body.String())
 	}
@@ -1536,7 +1573,7 @@ func TestSourcePlayRewriteAPI(t *testing.T) {
 	listVideos := func() model.Video {
 		t.Helper()
 		w := httptest.NewRecorder()
-		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/videos/v1?q=改写地址影片", nil))
+		r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1?q=改写地址影片", nil))
 		var out struct {
 			Items []model.Video `json:"items"`
 		}
@@ -1553,10 +1590,13 @@ func TestSourcePlayRewriteAPI(t *testing.T) {
 	if got := groups[0].Episodes[0].Url; got != want {
 		t.Fatalf("列表播放地址改写异常: %q，期望 %q", got, want)
 	}
+	if !groups[0].Episodes[0].Frame {
+		t.Error("列表播放组应带 frame=true，供前端用 iframe 承载解析页面")
+	}
 
 	// 3. 播放组子资源同样改写
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+	r.ServeHTTP(w, authReq(http.MethodGet,
 		"/api/videos/v1/"+strconv.Itoa(int(v.ID))+"/play-groups", nil))
 	var got []model.PlayGroup
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &got) != nil || len(got) != 1 {
@@ -1564,6 +1604,9 @@ func TestSourcePlayRewriteAPI(t *testing.T) {
 	}
 	if got[0].Episodes[0].Url != want {
 		t.Fatalf("播放组地址改写异常: %q", got[0].Episodes[0].Url)
+	}
+	if !got[0].Episodes[0].Frame {
+		t.Error("播放组接口应带 frame=true")
 	}
 
 	// 4. 清空配置后恢复原始地址（数据库里始终是原始值）
@@ -1588,5 +1631,129 @@ func TestSourcePlayRewriteAPI(t *testing.T) {
 		"parseApi": "jx.example.com/?url=",
 	}); w.Code != http.StatusBadRequest {
 		t.Fatalf("非法解析地址应返回 400，实际 %d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestRecoverInterruptedOnRestart 验证服务重启后自动恢复被中断的采集任务：
+// 复用原记录、从续采页继续、统计累加、不新开任务；用户手动暂停的任务不动。
+func TestRecoverInterruptedOnRestart(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	dbPath := filepath.Join(t.TempDir(), "restart.db")
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<div id=\"app\"></div>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 模拟站点：共 3 页，记录每次请求的页码。
+	var mu sync.Mutex
+	var pages []int
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		page, _ := strconv.Atoi(req.URL.Query().Get("pg"))
+		if page < 1 {
+			page = 1
+		}
+		mu.Lock()
+		pages = append(pages, page)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": 1, "msg": "ok", "page": page, "pagecount": 3, "limit": "1", "total": 3,
+			"list": []map[string]interface{}{{
+				"vod_id": 2000 + page, "vod_name": fmt.Sprintf("重启恢复%d", page),
+				"type_name": "动作片", "vod_time": fmt.Sprintf("2026-11-07 10:%02d:00", page),
+			}},
+		})
+	}))
+	defer site.Close()
+
+	// 预置「上次进程」遗留的站点与一条进度已保存到第 2 页的 running 记录。
+	st, err := repository.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := &model.Source{
+		Name: "重启恢复站点", APIBase: site.URL + "/api.php/provide/vod/",
+		Format: model.FormatMacCMSJSON, Enabled: true, IncrementalHours: 24,
+	}
+	if err := st.Sources.CreateSource(src); err != nil {
+		t.Fatal(err)
+	}
+	job := &model.CrawlJob{
+		SourceID: src.ID, SourceName: src.Name, Mode: model.ModeFull,
+		Status: model.JobRunning, StartedAt: time.Now(),
+		ResumePage: 2, Pages: 1, Fetched: 1, Attempt: 1,
+	}
+	if err := st.Jobs.CreateJob(job); err != nil {
+		t.Fatal(err)
+	}
+	interruptedID := job.ID
+	// 另放一条用户手动暂停的记录，确认不会被自动恢复。
+	paused := &model.CrawlJob{
+		SourceID: src.ID, SourceName: src.Name, Mode: model.ModeFull,
+		Status: model.JobPaused, StartedAt: time.Now(), ResumePage: 3,
+	}
+	if err := st.Jobs.CreateJob(paused); err != nil {
+		t.Fatal(err)
+	}
+	pausedID := paused.ID
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 模拟重启：同一个数据库，重新装配应用。
+	cfg := config.Default()
+	cfg.Database.Path = dbPath
+	cfg.Web.Dir = webDir
+	cfg.Collector.RetryTimes = 0
+	application, err := app.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+
+	loginReq, _ := http.NewRequest(http.MethodPost, "/api/auth/v1/sessions",
+		jsonBody(map[string]string{"username": "admin", "password": "admin123456"}))
+	loginReq.Header.Set("Content-Type", "application/json")
+	lw := httptest.NewRecorder()
+	application.Engine.ServeHTTP(lw, loginReq)
+	if lw.Code != http.StatusOK {
+		t.Fatalf("登录失败: %d %s", lw.Code, lw.Body.String())
+	}
+	var lr struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(lw.Body.Bytes(), &lr); err != nil || lr.Token == "" {
+		t.Fatal("登录响应缺少 token")
+	}
+	testToken = lr.Token
+	defer func() { testToken = "" }()
+
+	r := application.Engine
+	got := waitJobStatus(t, r, interruptedID, model.JobSuccess)
+
+	if got.ID != interruptedID {
+		t.Fatalf("应复用原记录 %d，实际 %d", interruptedID, got.ID)
+	}
+	if strings.Contains(got.Message, "服务重启") {
+		t.Fatalf("恢复后中断提示应清空，实际 %q", got.Message)
+	}
+	if got.RetryOf != 0 {
+		t.Fatalf("恢复不应标记来源任务，实际 %d", got.RetryOf)
+	}
+	// 从第 2 页续采 2 页，统计在原记录上累加：1 + 2 = 3。
+	if got.Pages != 3 || got.Fetched != 3 {
+		t.Fatalf("统计应在原记录上累加（3 页 / 3 条），实际 %d 页 / %d 条", got.Pages, got.Fetched)
+	}
+	if jobs := listJobs(t, r); len(jobs) != 2 {
+		t.Fatalf("重启恢复不应新开任务，期望 2 条记录，实际 %d 条", len(jobs))
+	}
+	if p := jobByID(t, r, pausedID); p.Status != model.JobPaused {
+		t.Fatalf("用户手动暂停的任务不应被自动恢复，实际 %s", p.Status)
+	}
+	mu.Lock()
+	gotPages := append([]int(nil), pages...)
+	mu.Unlock()
+	if len(gotPages) != 2 || gotPages[0] != 2 || gotPages[1] != 3 {
+		t.Fatalf("应从第 2 页续采且只请求 2、3 页，实际 %v", gotPages)
 	}
 }

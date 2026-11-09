@@ -95,11 +95,47 @@ func (it *VideoItem) UnmarshalJSON(b []byte) error {
 	for k, v := range it.RawFields {
 		it.Fields[k] = utils.StringifyJSONValue(v)
 	}
+	it.normalizeFields()
 	return nil
 }
 
 // Get 返回某个字段的字符串值，字段不存在时返回空字符串。
 func (it VideoItem) Get(key string) string { return it.Fields[key] }
+
+// fieldAliases 把资源站常见的字段别名映射到苹果CMS 标准键。
+//
+// 真实资源站差异很大：海洋CMS 系用 v_* / v_playdata，部分二次开发模板用
+// vod_playurl / play_list / playlist，还有站点直接返回结构化播放数组。
+// 只在标准键「缺失或为空」时补齐，接口显式给出的标准值永远优先；
+// 原始别名键仍留在 RawFields / Fields 里，因此 Extra 依旧能溯源到原始响应。
+var fieldAliases = map[string][]string{
+	"vod_id":        {"id", "v_id", "vodid", "vodId"},
+	"vod_name":      {"name", "v_name", "vodname"},
+	"vod_time":      {"v_time", "vodtime", "vod_addtime", "addtime", "update_time"},
+	"vod_pic":       {"v_pic", "vodpic", "pic"},
+	"vod_content":   {"v_content", "vodcontent", "content", "desc"},
+	"type_id":       {"tid", "typeid", "v_type"},
+	"type_name":     {"typename", "v_type_name"},
+	"vod_play_from": {"vod_playfrom", "v_playfrom", "play_from", "playfrom"},
+	"vod_play_url":  {"vod_playurl", "vod_url", "v_playdata", "play_url", "playurl", "vod_playurls"},
+	"vod_play_list": {"vod_playlist", "play_list", "playlist", "vod_play_url_list"},
+}
+
+// normalizeFields 补齐字段别名，让后续「按标准键映射实体列」的逻辑能识别
+// 非标准写法。放在 UnmarshalJSON 内一次性完成，避免每个调用方重复处理。
+func (it *VideoItem) normalizeFields() {
+	for std, aliases := range fieldAliases {
+		if strings.TrimSpace(it.Fields[std]) != "" {
+			continue
+		}
+		for _, alias := range aliases {
+			if v := strings.TrimSpace(it.Fields[alias]); v != "" {
+				it.Fields[std] = v
+				break
+			}
+		}
+	}
+}
 
 // ListResponse 对应 api.php/provide/vod/?ac=videolist 的 JSON 响应。
 //

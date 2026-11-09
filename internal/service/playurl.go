@@ -47,6 +47,9 @@ func NewPicURLRewriterFrom(src model.Source) URLRewriter {
 // Enabled 表示该站点是否需要改写地址。
 func (r URLRewriter) Enabled() bool { return r.prefix != "" || r.domain != "" }
 
+// UsesFrame 表示改写结果已是「解析服务的网页地址」，前端需要用 iframe 承载。
+func (r URLRewriter) UsesFrame() bool { return r.prefix != "" }
+
 // Rewrite 返回改写后的地址；未配置或被改写项为空时原样返回。
 func (r URLRewriter) Rewrite(raw string) string {
 	u := strings.TrimSpace(raw)

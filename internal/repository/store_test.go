@@ -31,8 +31,8 @@ func TestOpenMigratesAndAssemblesRepositories(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("数据库文件未创建（嵌套目录未自动建立）: %v", err)
 	}
-	if r.Assets == nil || r.Sources == nil || r.Videos == nil || r.Categories == nil || r.Jobs == nil {
-		t.Fatal("五个实体仓储对象必须全部装配")
+	if r.Assets == nil || r.Sources == nil || r.Videos == nil || r.Categories == nil || r.Jobs == nil || r.Users == nil {
+		t.Fatal("各实体仓储对象必须全部装配")
 	}
 	// 迁移后每张表都可访问，且每个对象只服务自己的实体。
 	if _, err := r.Assets.List(); err != nil {
@@ -49,5 +49,14 @@ func TestOpenMigratesAndAssemblesRepositories(t *testing.T) {
 	}
 	if _, err := r.Jobs.ListJobs(0, 10); err != nil {
 		t.Fatalf("crawl_jobs 表未迁移: %v", err)
+	}
+	if _, err := r.Users.CountUsers(); err != nil {
+		t.Fatalf("users 表未迁移: %v", err)
+	}
+	if _, err := r.Users.ListSourceIDsByUsers(); err != nil {
+		t.Fatalf("user_sources 表未迁移: %v", err)
+	}
+	if err := r.Users.PurgeExpiredSessions(); err != nil {
+		t.Fatalf("sessions 表未迁移: %v", err)
 	}
 }

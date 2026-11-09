@@ -406,3 +406,83 @@ func TestCrawlStoresPlayGroups(t *testing.T) {
 		t.Errorf("不存在影片的播放组应返回错误")
 	}
 }
+
+// 站点接口在默认 ac=videolist 下只返回精简字段、ac=detail 才带播放地址时，
+// 采集应自动补齐播放数据；显式配置了 ac 的站点则尊重配置并给出诊断提示。
+func TestCrawlPlayURLCompatAndAutoDetect(t *testing.T) {
+	var mu sync.Mutex
+	var acs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ac := r.URL.Query().Get("ac")
+		mu.Lock()
+		acs = append(acs, ac)
+		mu.Unlock()
+		item := map[string]interface{}{
+			"vod_id": 1, "vod_name": "测试片", "vod_time": "2026-11-07 10:00:00",
+			"type_id": 1, "type_name": "动作片",
+		}
+		if ac == "detail" {
+			item["vod_play_from"] = "m3u8"
+			item["vod_play_url"] = "第1集$https://x/1.m3u8"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": 1, "msg": "数据列表", "page": 1, "pagecount": 1,
+			"limit": "20", "total": 1, "list": []interface{}{item},
+		})
+	}))
+	defer srv.Close()
+
+	// 场景 1：默认动作无播放地址 → 自动切到 ac=detail，播放地址正常入库
+	st, svc := newCrawlService(t)
+	id := addSource(t, st, srv.URL+"/api.php/provide/vod/", true)
+	res, err := svc.RunOne(context.Background(), id, model.ModeFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.AutoAC != "detail" {
+		t.Fatalf("应自动切换到 ac=detail，实际 %q", res.AutoAC)
+	}
+	if res.NoPlayURL != 0 {
+		t.Fatalf("补齐后不应再有无播放地址记录，实际 %d", res.NoPlayURL)
+	}
+	if !strings.Contains(res.Message, "ac=detail") {
+		t.Errorf("任务消息应说明自动切换，实际 %q", res.Message)
+	}
+	vids, _, err := st.Videos.ListVideos(repository.NewVideoQuery(0, "", 1, 20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vids) != 1 || vids[0].VodPlayList == "" || !strings.Contains(vids[0].VodPlayURL, "https://x/1.m3u8") {
+		t.Fatalf("播放地址未入库: %+v", vids)
+	}
+	mu.Lock()
+	got := append([]string(nil), acs...)
+	mu.Unlock()
+	if len(got) != 2 || got[0] != "videolist" || got[1] != "detail" {
+		t.Fatalf("应先按默认动作(videolist)探测、再按 detail 采集，实际 %v", got)
+	}
+
+	// 场景 2：显式 ac=list → 尊重配置、不自动切换、给出可操作诊断
+	st2, svc2 := newCrawlService(t)
+	src2 := &model.Source{
+		Name: "精简站", APIBase: srv.URL + "/api.php/provide/vod/", Format: "seacms_json",
+		Enabled: true, ExtraParams: "ac=list",
+	}
+	if err := st2.Sources.CreateSource(src2); err != nil {
+		t.Fatal(err)
+	}
+	res2, err := svc2.RunOne(context.Background(), src2.ID, model.ModeFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.AutoAC != "" {
+		t.Fatalf("显式指定 ac 时不应自动切换，实际 %q", res2.AutoAC)
+	}
+	if res2.NoPlayURL != 1 {
+		t.Fatalf("精简响应应统计 1 条无播放地址，实际 %d", res2.NoPlayURL)
+	}
+	if !strings.Contains(res2.Message, "ac=list") || !strings.Contains(res2.Message, "未返回播放地址") {
+		t.Errorf("任务消息应给出 ac 排查提示，实际 %q", res2.Message)
+	}
+}

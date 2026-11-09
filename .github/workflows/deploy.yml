@@ -1,0 +1,173 @@
+name: 自动部署到生产服务器
+
+# 推送到 main 即部署；也支持在 Actions 页面手动重跑（配好 Secrets 后不必再空推一次）。
+on:
+  push:
+    branches: [main]
+    # 纯文档改动不触发部署
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+# 串行部署，后到的 push 排队而不是取消进行中的部署，避免并发写同一台服务器。
+concurrency:
+  group: assetspider-deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: 构建并部署到 140.238.43.173
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    # 主机 / 路径等非敏感项用 Repository Variables，未配置时走括号里的默认值。
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST || '140.238.43.173' }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'ubuntu' }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/assetspider' }}
+      DEPLOY_MODE: ${{ vars.DEPLOY_MODE || 'auto' }}
+      HEALTH_URL: ${{ vars.HEALTH_URL || '' }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # 未配置私钥时只做构建校验并跳过部署，工作流保持绿色但给出醒目警告。
+      - name: 检查部署密钥
+        id: precheck
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$DEPLOY_SSH_KEY" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::尚未配置 Secret DEPLOY_SSH_KEY，本次只做构建校验、跳过部署。请在 Settings → Secrets and variables → Actions → Secrets 添加私钥后，手动重跑本工作流或再次 push。"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 私钥只落在 runner 的临时文件里（600），known_hosts 固定主机公钥防中间人。
+      - name: 准备 SSH 并探测服务器架构
+        if: steps.precheck.outputs.ready == 'true'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          KEY="$HOME/.ssh/assetspider_deploy_key"
+          KH="$HOME/.ssh/known_hosts"
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+
+          : > "$KH"
+          if [ -n "${DEPLOY_KNOWN_HOSTS:-}" ]; then
+            printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$KH"
+          elif [ "$DEPLOY_HOST" = "140.238.43.173" ] && [ -f deploy/known_hosts ]; then
+            cp deploy/known_hosts "$KH"
+          else
+            echo "::notice::未找到该主机的预置公钥指纹，改用 ssh-keyscan；建议配置 Secret DEPLOY_KNOWN_HOSTS。"
+            ssh-keyscan -T 15 -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> "$KH" 2>/dev/null
+          fi
+          chmod 600 "$KH"
+          echo "DEPLOY_KEY_PATH=$KEY" >> "$GITHUB_ENV"
+          echo "DEPLOY_KNOWN_HOSTS_PATH=$KH" >> "$GITHUB_ENV"
+
+          SSH_OPTS=(-i "$KEY" -p "$DEPLOY_PORT"
+                    -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KH"
+                    -o ConnectTimeout=20 -o BatchMode=yes)
+          RAW="$(ssh "${SSH_OPTS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" 'uname -m')"
+          case "$RAW" in
+            x86_64|amd64)  GOARCH=amd64 ;;
+            aarch64|arm64) GOARCH=arm64 ;;
+            armv7l|armv6l) GOARCH=arm; echo "TARGET_GOARM=7" >> "$GITHUB_ENV" ;;
+            *) echo "::error::不支持的服务器 CPU 架构: $RAW"; exit 1 ;;
+          esac
+          echo "TARGET_GOARCH=$GOARCH" >> "$GITHUB_ENV"
+          echo "服务器架构 $RAW → 编译目标 linux/$GOARCH"
+
+      # 纯 Go SQLite 驱动（modernc.org/sqlite），无需 CGO，可静态交叉编译。
+      # 即使没有部署密钥也照常构建，作为每次 push 的编译校验。
+      - name: 构建自包含发布包
+        run: |
+          set -euo pipefail
+          # 未探测到架构时（未配置部署密钥）默认 amd64，仅用于本地校验产物。
+          GOARCH="${TARGET_GOARCH:-amd64}"
+          echo "::group::编译 Go 二进制"
+          CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" GOARM="${TARGET_GOARM:-}" \
+            go build -trimpath -ldflags='-s -w' -o "$RUNNER_TEMP/assetspider" .
+          file "$RUNNER_TEMP/assetspider"
+          echo "::endgroup::"
+
+          echo "::group::构建 Vue 前端"
+          (cd web && npm ci --no-audit --no-fund && npm run build)
+          echo "::endgroup::"
+
+          STAGE="$RUNNER_TEMP/assetspider-release"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"/bin "$STAGE"/web "$STAGE"/conf "$STAGE"/deploy
+          install -m 0755 "$RUNNER_TEMP/assetspider" "$STAGE/bin/assetspider"
+          cp -a web/dist "$STAGE/web/dist"
+          cp conf/config.yaml "$STAGE/conf/config.yaml.example"
+          cp deploy/deploy.sh deploy/assetspider.service "$STAGE/deploy/"
+          chmod 0755 "$STAGE/deploy/deploy.sh"
+          printf '%s\n' "$GITHUB_SHA" > "$STAGE/VERSION"
+          # 显式列出顶层条目：若用 "-C $STAGE ." 归档成员会带 ./ 前缀，
+          # 远端按 "deploy/deploy.sh" 精确提取时会匹配不到（Not found in archive）。
+          tar -czf "$RUNNER_TEMP/assetspider-release.tar.gz" -C "$STAGE" \
+            bin web conf deploy VERSION
+          echo "发布包大小: $(du -h "$RUNNER_TEMP/assetspider-release.tar.gz" | cut -f1)"
+          echo "RELEASE_TAR=$RUNNER_TEMP/assetspider-release.tar.gz" >> "$GITHUB_ENV"
+
+      # 发布包自包含：服务器无需 clone 仓库、无需装 Go/Node。
+      - name: 上传并部署（自动启动服务）
+        if: steps.precheck.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          KEY="$DEPLOY_KEY_PATH"
+          KH="$DEPLOY_KNOWN_HOSTS_PATH"
+          SSH_BASE=(-i "$KEY" -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KH"
+                    -o ConnectTimeout=20 -o BatchMode=yes)
+          # ssh 用小写 -p 指定端口；scp 必须用大写 -P（小写 -p 是保留文件属性，会把端口当源文件）
+          SSH_OPTS=("${SSH_BASE[@]}" -p "$DEPLOY_PORT")
+          SCP_OPTS=("${SSH_BASE[@]}" -P "$DEPLOY_PORT")
+          TARGET="$DEPLOY_USER@$DEPLOY_HOST"
+          REMOTE_TAR="/tmp/assetspider-${GITHUB_RUN_ID}.tar.gz"
+          REMOTE_DIR="/tmp/assetspider-deploy-${GITHUB_RUN_ID}"
+
+          scp "${SCP_OPTS[@]}" "$RELEASE_TAR" "$TARGET:$REMOTE_TAR"
+          # 无论部署成功还是失败，都清理服务器上的临时文件。
+          trap 'ssh "${SSH_OPTS[@]}" "$TARGET" "rm -f $REMOTE_TAR && rm -rf $REMOTE_DIR" >/dev/null 2>&1 || true' EXIT
+
+          # 全量解包，不按成员名挑文件：避免归档成员名前缀差异导致提取失败。
+          ssh "${SSH_OPTS[@]}" "$TARGET" \
+            "mkdir -p $REMOTE_DIR && tar -xzf $REMOTE_TAR -C $REMOTE_DIR && test -f $REMOTE_DIR/deploy/deploy.sh"
+
+          # printf %q 保证各变量在远端 shell 中被正确转义
+          REMOTE_CMD="$(printf 'DEPLOY_PATH=%q DEPLOY_MODE=%q HEALTH_URL=%q SERVICE_NAME=%q bash %q %q' \
+            "$DEPLOY_PATH" "$DEPLOY_MODE" "$HEALTH_URL" "assetspider" \
+            "$REMOTE_DIR/deploy/deploy.sh" "$REMOTE_TAR")"
+          ssh "${SSH_OPTS[@]}" "$TARGET" "$REMOTE_CMD"
+          echo "::notice::部署完成，服务已启动。访问 http://$DEPLOY_HOST:8080"
+
+      - name: 清理临时密钥
+        if: always()
+        run: rm -f "$HOME/.ssh/assetspider_deploy_key" "$HOME/.ssh/known_hosts"

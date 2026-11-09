@@ -387,3 +387,122 @@ func TestFetchList(t *testing.T) {
 		t.Errorf("User-Agent 未正确设置: %q", agents[0])
 	}
 }
+
+// 真实资源站的播放字段写法五花八门：标准 $$$ 串、别名键、结构化数组、
+// 海洋CMS 的 v_* 字段。这里锁定「只要接口给了播放地址，就必须完整入库」
+// 这一契约，避免播放页出现「没有播放地址」。
+func TestPlayFieldAliasesAndStructured(t *testing.T) {
+	cases := []struct {
+		name         string
+		obj          map[string]interface{}
+		wantVodID    string
+		wantURLPart  string
+		wantFrom     string
+		wantGroups   int
+		wantExtraKey string
+	}{
+		{
+			name: "标准 vod_play_url 串",
+			obj: map[string]interface{}{
+				"vod_id": 1, "vod_name": "标准", "vod_time": "2026-11-07 10:00:00",
+				"vod_play_from": "youku$$$qq",
+				"vod_play_url":  "第1集$https://x/1.m3u8#第2集$https://x/2.m3u8$$$第1集$https://y/1.m3u8",
+			},
+			wantVodID: "1", wantURLPart: "第1集$https://x/1.m3u8", wantFrom: "youku$$$qq", wantGroups: 2,
+		},
+		{
+			name: "别名 vod_playurl",
+			obj: map[string]interface{}{
+				"vod_id": 2, "vod_name": "别名", "vod_play_from": "m3u8",
+				"vod_playurl": "第1集$https://x/1.m3u8#第2集$https://x/2.m3u8",
+			},
+			wantVodID: "2", wantURLPart: "第1集$https://x/1.m3u8", wantFrom: "m3u8",
+			wantGroups: 1, wantExtraKey: "vod_playurl",
+		},
+		{
+			name: "海洋CMS v_playdata / v_id",
+			obj: map[string]interface{}{
+				"v_id": 3, "v_name": "海洋", "v_playdata": "正片$https://x/1.m3u8",
+			},
+			wantVodID: "3", wantURLPart: "正片$https://x/1.m3u8",
+			wantGroups: 1, wantExtraKey: "v_playdata",
+		},
+		{
+			name: "vod_play_url 为结构化数组",
+			obj: map[string]interface{}{
+				"vod_id": 4, "vod_name": "结构化",
+				"vod_play_url": []interface{}{
+					map[string]interface{}{"from": "m3u8", "episodes": []interface{}{
+						map[string]interface{}{"name": "第1集", "url": "https://x/1.m3u8"},
+					}},
+				},
+			},
+			wantVodID: "4", wantURLPart: "第1集$https://x/1.m3u8", wantFrom: "m3u8", wantGroups: 1,
+		},
+		{
+			name: "只有 vod_play_list 结构化数组",
+			obj: map[string]interface{}{
+				"vod_id": 5, "vod_name": "播放列表",
+				"vod_play_list": []interface{}{
+					map[string]interface{}{"from": "m3u8", "episodes": []interface{}{
+						map[string]interface{}{"name": "第1集", "url": "https://x/1.m3u8"},
+					}},
+				},
+			},
+			wantVodID: "5", wantURLPart: "第1集$https://x/1.m3u8", wantFrom: "m3u8", wantGroups: 1,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v := ToVideo(1, parseOne(t, c.obj).List[0])
+			if v.VodID != c.wantVodID {
+				t.Errorf("vod_id 异常: %q，期望 %q", v.VodID, c.wantVodID)
+			}
+			if !strings.Contains(v.VodPlayURL, c.wantURLPart) {
+				t.Errorf("vod_play_url 未正确入库: %q", v.VodPlayURL)
+			}
+			if c.wantFrom != "" && !strings.Contains(v.VodPlayFrom, c.wantFrom) {
+				t.Errorf("vod_play_from 异常: %q", v.VodPlayFrom)
+			}
+			var groups []model.PlayGroup
+			if err := json.Unmarshal([]byte(v.VodPlayList), &groups); err != nil {
+				t.Fatalf("vod_play_list 不是合法播放组 JSON: %v | %s", err, v.VodPlayList)
+			}
+			if len(groups) != c.wantGroups {
+				t.Fatalf("播放组数 %d != 期望 %d: %+v", len(groups), c.wantGroups, groups)
+			}
+			for _, g := range groups {
+				if g.From == "" {
+					t.Errorf("播放组缺少线路名: %+v", g)
+				}
+				for _, e := range g.Episodes {
+					if !strings.HasPrefix(e.Url, "https://") {
+						t.Errorf("分集地址异常: %+v", e)
+					}
+				}
+			}
+			if c.wantExtraKey != "" && !strings.Contains(v.Extra, `"`+c.wantExtraKey+`"`) {
+				t.Errorf("原始别名键应保留在 Extra 便于溯源: %s", v.Extra)
+			}
+		})
+	}
+
+	// 接口完全不给 vod_id：只要有名称或播放地址就生成稳定伪 ID，不再整条跳过。
+	noID := map[string]interface{}{"v_name": "无 ID 片", "v_playdata": "正片$https://x/1.m3u8"}
+	a := ToVideo(1, parseOne(t, noID).List[0])
+	b := ToVideo(1, parseOne(t, noID).List[0])
+	if !strings.HasPrefix(a.VodID, "auto-") || a.VodID != b.VodID {
+		t.Fatalf("无 vod_id 时应生成稳定伪 ID，实际 %q / %q", a.VodID, b.VodID)
+	}
+	if a.VodPlayList == "" {
+		t.Fatal("无 vod_id 记录的播放地址也应入库")
+	}
+
+	// 精简响应（ac=list 之类）确实没有播放字段时保持为空，由任务诊断提示用户。
+	slim := map[string]interface{}{"vod_id": 9, "vod_name": "精简", "vod_time": "2026-11-07 10:00:00"}
+	plain := ToVideo(1, parseOne(t, slim).List[0])
+	if plain.VodPlayURL != "" || plain.VodPlayList != "" {
+		t.Fatalf("接口未返回播放字段时不应凭空生成: %+v", plain)
+	}
+}

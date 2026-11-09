@@ -28,12 +28,13 @@ func NewCategoryService(categories repository.CategoryRepository, videos reposit
 }
 
 // List 按站点返回分类（sourceID 为 0 时返回全部站点），并附带影片数。
-func (s *CategoryService) List(sourceID uint) ([]CategoryView, error) {
-	items, err := s.categories.List(sourceID)
+func (s *CategoryService) List(sourceID uint, p ...Principal) ([]CategoryView, error) {
+	visible := principalOf(p...).Visible()
+	items, err := s.categories.List(sourceID, visible)
 	if err != nil {
 		return nil, err
 	}
-	counts, err := s.videos.CountVideosByCategory()
+	counts, err := s.videos.CountVideosByCategory(visible)
 	if err != nil {
 		return nil, err
 	}
@@ -44,8 +45,8 @@ func (s *CategoryService) List(sourceID uint) ([]CategoryView, error) {
 	return out, nil
 }
 
-func (s *CategoryService) Get(id uint) (*model.Category, error) {
-	cat, err := s.categories.Get(id)
+func (s *CategoryService) Get(id uint, p ...Principal) (*model.Category, error) {
+	cat, err := s.categories.Get(id, principalOf(p...).Visible())
 	if err != nil {
 		return nil, wrapRepo(err)
 	}
@@ -54,12 +55,13 @@ func (s *CategoryService) Get(id uint) (*model.Category, error) {
 
 // Tree 按站点返回分类的二级树（sourceID 为 0 时返回全部站点），父分类在前、子分类嵌套其下。
 // 苹果CMS 分类最多两级，因此用指针索引一次组装即可，避免值拷贝导致子节点丢失。
-func (s *CategoryService) Tree(sourceID uint) ([]CategoryNode, error) {
-	items, err := s.categories.List(sourceID)
+func (s *CategoryService) Tree(sourceID uint, p ...Principal) ([]CategoryNode, error) {
+	visible := principalOf(p...).Visible()
+	items, err := s.categories.List(sourceID, visible)
 	if err != nil {
 		return nil, err
 	}
-	counts, err := s.videos.CountVideosByCategory()
+	counts, err := s.videos.CountVideosByCategory(visible)
 	if err != nil {
 		return nil, err
 	}

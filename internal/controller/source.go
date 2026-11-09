@@ -17,7 +17,7 @@ func NewSourceController(svc *service.SourceService) *SourceController {
 }
 
 func (s *SourceController) List(c *gin.Context) {
-	out, err := s.svc.List()
+	out, err := s.svc.List(principalOf(c))
 	if err != nil {
 		writeError(c, err)
 		return

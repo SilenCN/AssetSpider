@@ -232,11 +232,18 @@ func TestVideoServiceAppliesPlayRewrite(t *testing.T) {
 			if groups[0].Episodes[0].Url != want {
 				t.Errorf("播放地址改写异常: %q", groups[0].Episodes[0].Url)
 			}
+			// 拼了解析地址后必须打 frame 标记，前端才会用 iframe 而不是把解析页当 m3u8 播。
+			if !groups[0].Episodes[0].Frame {
+				t.Error("使用视频解析地址时播放组应标记 frame=true")
+			}
 			rewritten = true
 		case plain.ID:
 			groups := decodeGroups(t, v.VodPlayList)
 			if groups[0].Episodes[0].Url != "https://dead.example.net/v/1/index.m3u8" {
 				t.Errorf("未配置改写的站点不应变化: %q", groups[0].Episodes[0].Url)
+			}
+			if groups[0].Episodes[0].Frame {
+				t.Error("未配置解析地址时不应标记 frame")
 			}
 			untouched = true
 		}
@@ -253,6 +260,9 @@ func TestVideoServiceAppliesPlayRewrite(t *testing.T) {
 	if groups[0].Episodes[0].Url != want && groups[0].Episodes[0].Url != "https://dead.example.net/v/1/index.m3u8" {
 		t.Fatalf("播放组改写异常: %+v", groups)
 	}
+	if groups[0].Episodes[0].Url == want && !groups[0].Episodes[0].Frame {
+		t.Errorf("播放组子资源也应标记 frame=true: %+v", groups)
+	}
 
 	// 数据库里仍是原始地址
 	stored, err := st.Videos.GetVideo(list.Items[0].ID)
@@ -261,6 +271,32 @@ func TestVideoServiceAppliesPlayRewrite(t *testing.T) {
 	}
 	if !strings.Contains(stored.VodPlayList, "https://dead.example.net/v/1/index.m3u8") {
 		t.Errorf("原始播放地址不应被改写: %s", stored.VodPlayList)
+	}
+}
+
+// TestURLRewriterUsesFrame 区分「只换域名」与「拼了解析地址」：
+// 前者仍是媒体流可直链播放，后者是解析页面必须用 iframe。
+func TestURLRewriterUsesFrame(t *testing.T) {
+	cases := []struct {
+		name       string
+		prefix     string
+		domain     string
+		wantFrame  bool
+		wantEnable bool
+	}{
+		{"未配置", "", "", false, false},
+		{"只换域名", "", "https://cdn.example.com", false, true},
+		{"拼解析地址", "https://jx.example.com/?url=", "", true, true},
+		{"两者都配", "https://jx.example.com/?url=", "https://cdn.example.com", true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := NewURLRewriter(c.prefix, c.domain)
+			if r.Enabled() != c.wantEnable || r.UsesFrame() != c.wantFrame {
+				t.Errorf("Enabled=%v UsesFrame=%v，期望 %v / %v",
+					r.Enabled(), r.UsesFrame(), c.wantEnable, c.wantFrame)
+			}
+		})
 	}
 }
 

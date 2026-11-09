@@ -32,8 +32,8 @@ func NewJobService(jobs repository.JobRepository) *JobService {
 // SetLiveSource 注入实时进度来源（可为空，为空时只返回落库数据）。
 func (s *JobService) SetLiveSource(live LiveSource) { s.live = live }
 
-func (s *JobService) List(sourceID uint, limit int) ([]JobView, error) {
-	items, err := s.jobs.ListJobs(sourceID, limit)
+func (s *JobService) List(sourceID uint, limit int, p ...Principal) ([]JobView, error) {
+	items, err := s.jobs.ListJobs(sourceID, limit, principalOf(p...).Visible())
 	if err != nil {
 		return nil, err
 	}

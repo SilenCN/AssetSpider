@@ -15,9 +15,11 @@ import (
 // 业务错误语义。controller 只认这几个哨兵错误，再翻译成 HTTP 状态码，
 // 从而无需知道 repository / gorm 的具体错误类型。
 var (
-	ErrInvalid  = errors.New("参数无效")
-	ErrNotFound = errors.New("资源不存在")
-	ErrConflict = errors.New("资源冲突")
+	ErrInvalid      = errors.New("参数无效")
+	ErrNotFound     = errors.New("资源不存在")
+	ErrConflict     = errors.New("资源冲突")
+	ErrUnauthorized = errors.New("未认证")
+	ErrForbidden    = errors.New("无权限")
 )
 
 func invalid(format string, args ...interface{}) error {

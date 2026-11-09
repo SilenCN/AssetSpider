@@ -46,7 +46,7 @@ func (c *CrawlController) RunOne(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	res, err := c.svc.RunOne(ctx.Request.Context(), id, mode)
+	res, err := c.svc.RunOne(ctx.Request.Context(), id, mode, principalOf(ctx))
 	if err != nil {
 		c.writeError(ctx, err, res)
 		return
@@ -59,7 +59,7 @@ func (c *CrawlController) RunAll(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	results, err := c.svc.RunAll(ctx.Request.Context(), mode)
+	results, err := c.svc.RunAll(ctx.Request.Context(), mode, principalOf(ctx))
 	body := gin.H{"mode": mode, "results": results}
 	if err != nil {
 		body["error"] = err.Error()

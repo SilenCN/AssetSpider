@@ -25,7 +25,7 @@ func (v *VideoController) List(c *gin.Context) {
 		Sort:       c.Query("sort"),
 		Page:       utils.ParseIntQuery(c.Query("page")),
 		Size:       utils.ParseIntQuery(c.Query("size")),
-	})
+	}, principalOf(c))
 	if err != nil {
 		writeError(c, err)
 		return
@@ -35,7 +35,7 @@ func (v *VideoController) List(c *gin.Context) {
 
 // Areas 返回库中出现过的地域列表，供前端筛选下拉使用。
 func (v *VideoController) Areas(c *gin.Context) {
-	areas, err := v.svc.Areas()
+	areas, err := v.svc.Areas(principalOf(c))
 	if err != nil {
 		writeError(c, err)
 		return
@@ -50,7 +50,7 @@ func (v *VideoController) Get(c *gin.Context) {
 		badRequest(c, err.Error())
 		return
 	}
-	item, err := v.svc.Get(id)
+	item, err := v.svc.Get(id, principalOf(c))
 	if err != nil {
 		writeError(c, err)
 		return
@@ -65,7 +65,7 @@ func (v *VideoController) PlayGroups(c *gin.Context) {
 		badRequest(c, err.Error())
 		return
 	}
-	groups, err := v.svc.GetPlayGroups(id)
+	groups, err := v.svc.GetPlayGroups(id, principalOf(c))
 	if err != nil {
 		writeError(c, err)
 		return

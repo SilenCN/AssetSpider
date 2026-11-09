@@ -5,6 +5,10 @@ package model
 type PlayEpisode struct {
 	Name string `json:"name"`
 	Url  string `json:"url"`
+	// Frame 表示这条地址已被站点的「视频解析地址」拼接成解析页面地址：
+	// 前端必须用 iframe 承载，不能再按 m3u8/mp4 后缀当媒体流播放。
+	// 只在读取时由 URLRewriter 写入，采集入库的原始 JSON 不含此字段。
+	Frame bool `json:"frame,omitempty"`
 }
 
 // PlayGroup 对应苹果CMS 的一个播放组（播放源 / 线路）。

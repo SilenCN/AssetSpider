@@ -98,6 +98,7 @@ func TestRepositoryOneObjectPerEntity(t *testing.T) {
 		{"video.go", "VideoRepository", "videoRepository", "NewVideoRepository"},
 		{"category.go", "CategoryRepository", "categoryRepository", "NewCategoryRepository"},
 		{"job.go", "JobRepository", "jobRepository", "NewJobRepository"},
+		{"user.go", "UserRepository", "userRepository", "NewUserRepository"},
 	}
 	implNames := map[string]bool{}
 	for _, e := range entities {
