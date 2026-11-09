@@ -55,6 +55,13 @@ const videoSize = ref(24)
 const videoTotal = ref(0)
 const videoPages = computed(() => Math.max(1, Math.ceil(videoTotal.value / videoSize.value)))
 
+// 页面头部的「可见影片」直接累加站点表上的影片数快照（videoCount），
+// 不再依赖资源库列表接口返回的 total——那样每次刷新都要对 videos 表做一次 COUNT。
+// 它与「可见站点」同源，因此资源库里的搜索/分类/标签筛选不会改变这个总数。
+const visibleVideoTotal = computed(() =>
+  sources.value.reduce((n, s) => n + (Number(s.videoCount) || 0), 0)
+)
+
 let noticeTimer = null
 function notify(text, type = 'ok') {
   notice.value = { text, type }
@@ -1033,7 +1040,7 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
       <div class="stats">
         <span class="db">DB: {{ health.database || '加载中…' }}</span>
         <span class="stat">可见站点 <b>{{ sources.length }}</b></span>
-        <span class="stat">可见影片 <b>{{ videoTotal }}</b></span>
+        <span class="stat" title="按站点记录的影片数快照累加，不查 videos 表">可见影片 <b>{{ visibleVideoTotal }}</b></span>
         <span class="stat">字段 <b>{{ fieldMeta.total || '-' }}</b></span>
       </div>
       <div class="userbar">
