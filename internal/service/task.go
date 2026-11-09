@@ -627,11 +627,32 @@ func (s *CrawlService) startTask(sourceID uint, mode string, opt startOptions) (
 	if err != nil {
 		return nil, err
 	}
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		_, _ = s.runTask(context.Background(), task, src)
 	}()
 	view := task.snapshot()
 	return &view, nil
+}
+
+// WaitForTasks 等待所有异步采集 goroutine 收尾，最长等待 timeout。
+// 关闭数据库前先调用它，避免后台任务在连接已关闭后仍写库（既防止测试里的
+// 临时目录清理竞态，也让重启时正在收尾的任务有机会把进度写完）。
+// 超时返回 false，调用方仍会关闭数据库；未跑完的记录保持 running/queued，
+// 下次启动时由 RecoverInterrupted 自动恢复。
+func (s *CrawlService) WaitForTasks(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // StartTask 异步发起一个采集任务；非管理员只能采集自己可见的站点。

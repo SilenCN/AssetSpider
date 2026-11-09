@@ -16,6 +16,8 @@ type JobRepository interface {
 	FinishJob(job *model.CrawlJob, status, message string) error
 	GetJob(id uint) (*model.CrawlJob, error)
 	LastJob(sourceID uint, mode string) (*model.CrawlJob, error)
+	// ListInterrupted 返回上次进程遗留的 running / queued 记录（按 ID 正序）。
+	ListInterrupted() ([]model.CrawlJob, error)
 	ResetInterrupted(message string) (int64, error)
 	// visible 为可选站点白名单，语义见 visibility.go。
 	ListJobs(sourceID uint, limit int, visible ...[]uint) ([]model.CrawlJob, error)
@@ -139,10 +141,21 @@ func (r *jobRepository) LastJob(sourceID uint, mode string) (*model.CrawlJob, er
 	return &job, nil
 }
 
+// ListInterrupted 按 ID 正序列出上次进程遗留的 running / queued 记录，
+// 供启动钩子自动恢复（见 service.RecoverInterrupted）。
+func (r *jobRepository) ListInterrupted() ([]model.CrawlJob, error) {
+	var items []model.CrawlJob
+	err := r.db.Model(&model.CrawlJob{}).
+		Where("status IN ?", []string{model.JobRunning, model.JobQueued}).
+		Order("id ASC").Find(&items).Error
+	return items, err
+}
+
 // ResetInterrupted 把上次进程遗留的 running / queued 任务标记为失败。
 //
 // 任务调度只存在于内存中，进程重启后这些记录不可能再推进；不清理的话
 // 页面会一直显示「进行中」。已暂停（paused）的任务不在此列——它们可以继续。
+// 自动恢复开启时，这个标记只是「恢复前兜底」，随后记录会被重新入队。
 func (r *jobRepository) ResetInterrupted(message string) (int64, error) {
 	res := r.db.Model(&model.CrawlJob{}).
 		Where("status IN ?", []string{model.JobRunning, model.JobQueued}).

@@ -17,6 +17,7 @@ import (
 	"github.com/SilenCN/AssetSpider/internal/app"
 	"github.com/SilenCN/AssetSpider/internal/config"
 	"github.com/SilenCN/AssetSpider/internal/model"
+	"github.com/SilenCN/AssetSpider/internal/repository"
 	routerpkg "github.com/SilenCN/AssetSpider/internal/router"
 	"github.com/SilenCN/AssetSpider/internal/service"
 	"github.com/gin-gonic/gin"
@@ -1624,5 +1625,129 @@ func TestSourcePlayRewriteAPI(t *testing.T) {
 		"parseApi": "jx.example.com/?url=",
 	}); w.Code != http.StatusBadRequest {
 		t.Fatalf("非法解析地址应返回 400，实际 %d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestRecoverInterruptedOnRestart 验证服务重启后自动恢复被中断的采集任务：
+// 复用原记录、从续采页继续、统计累加、不新开任务；用户手动暂停的任务不动。
+func TestRecoverInterruptedOnRestart(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	dbPath := filepath.Join(t.TempDir(), "restart.db")
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<div id=\"app\"></div>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 模拟站点：共 3 页，记录每次请求的页码。
+	var mu sync.Mutex
+	var pages []int
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		page, _ := strconv.Atoi(req.URL.Query().Get("pg"))
+		if page < 1 {
+			page = 1
+		}
+		mu.Lock()
+		pages = append(pages, page)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": 1, "msg": "ok", "page": page, "pagecount": 3, "limit": "1", "total": 3,
+			"list": []map[string]interface{}{{
+				"vod_id": 2000 + page, "vod_name": fmt.Sprintf("重启恢复%d", page),
+				"type_name": "动作片", "vod_time": fmt.Sprintf("2026-11-07 10:%02d:00", page),
+			}},
+		})
+	}))
+	defer site.Close()
+
+	// 预置「上次进程」遗留的站点与一条进度已保存到第 2 页的 running 记录。
+	st, err := repository.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := &model.Source{
+		Name: "重启恢复站点", APIBase: site.URL + "/api.php/provide/vod/",
+		Format: model.FormatMacCMSJSON, Enabled: true, IncrementalHours: 24,
+	}
+	if err := st.Sources.CreateSource(src); err != nil {
+		t.Fatal(err)
+	}
+	job := &model.CrawlJob{
+		SourceID: src.ID, SourceName: src.Name, Mode: model.ModeFull,
+		Status: model.JobRunning, StartedAt: time.Now(),
+		ResumePage: 2, Pages: 1, Fetched: 1, Attempt: 1,
+	}
+	if err := st.Jobs.CreateJob(job); err != nil {
+		t.Fatal(err)
+	}
+	interruptedID := job.ID
+	// 另放一条用户手动暂停的记录，确认不会被自动恢复。
+	paused := &model.CrawlJob{
+		SourceID: src.ID, SourceName: src.Name, Mode: model.ModeFull,
+		Status: model.JobPaused, StartedAt: time.Now(), ResumePage: 3,
+	}
+	if err := st.Jobs.CreateJob(paused); err != nil {
+		t.Fatal(err)
+	}
+	pausedID := paused.ID
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 模拟重启：同一个数据库，重新装配应用。
+	cfg := config.Default()
+	cfg.Database.Path = dbPath
+	cfg.Web.Dir = webDir
+	cfg.Collector.RetryTimes = 0
+	application, err := app.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+
+	loginReq, _ := http.NewRequest(http.MethodPost, "/api/auth/v1/sessions",
+		jsonBody(map[string]string{"username": "admin", "password": "admin123456"}))
+	loginReq.Header.Set("Content-Type", "application/json")
+	lw := httptest.NewRecorder()
+	application.Engine.ServeHTTP(lw, loginReq)
+	if lw.Code != http.StatusOK {
+		t.Fatalf("登录失败: %d %s", lw.Code, lw.Body.String())
+	}
+	var lr struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(lw.Body.Bytes(), &lr); err != nil || lr.Token == "" {
+		t.Fatal("登录响应缺少 token")
+	}
+	testToken = lr.Token
+	defer func() { testToken = "" }()
+
+	r := application.Engine
+	got := waitJobStatus(t, r, interruptedID, model.JobSuccess)
+
+	if got.ID != interruptedID {
+		t.Fatalf("应复用原记录 %d，实际 %d", interruptedID, got.ID)
+	}
+	if strings.Contains(got.Message, "服务重启") {
+		t.Fatalf("恢复后中断提示应清空，实际 %q", got.Message)
+	}
+	if got.RetryOf != 0 {
+		t.Fatalf("恢复不应标记来源任务，实际 %d", got.RetryOf)
+	}
+	// 从第 2 页续采 2 页，统计在原记录上累加：1 + 2 = 3。
+	if got.Pages != 3 || got.Fetched != 3 {
+		t.Fatalf("统计应在原记录上累加（3 页 / 3 条），实际 %d 页 / %d 条", got.Pages, got.Fetched)
+	}
+	if jobs := listJobs(t, r); len(jobs) != 2 {
+		t.Fatalf("重启恢复不应新开任务，期望 2 条记录，实际 %d 条", len(jobs))
+	}
+	if p := jobByID(t, r, pausedID); p.Status != model.JobPaused {
+		t.Fatalf("用户手动暂停的任务不应被自动恢复，实际 %s", p.Status)
+	}
+	mu.Lock()
+	gotPages := append([]int(nil), pages...)
+	mu.Unlock()
+	if len(gotPages) != 2 || gotPages[0] != 2 || gotPages[1] != 3 {
+		t.Fatalf("应从第 2 页续采且只请求 2、3 页，实际 %v", gotPages)
 	}
 }

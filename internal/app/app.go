@@ -1,12 +1,15 @@
 // Package app 是依赖装配层（composition root），不属于四层调用链。
 //
 // 它唯一的职责是自底向上构造 repository → service → controller → router 并把
-// 下层对象注入上层；这里没有任何业务调用，也不参与请求处理。任何依赖注入都
-// 必须触碰全部四层，因此把装配收敛在单独一处，反而能保证四层内部不越级。
+// 下层对象注入上层；除「启动时自动恢复中断任务」这一启动钩子外，没有任何业务
+// 调用，也不参与请求处理。任何依赖注入都必须触碰全部四层，因此把装配收敛在
+// 单独一处，反而能保证四层内部不越级。
 package app
 
 import (
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/SilenCN/AssetSpider/internal/config"
 	"github.com/SilenCN/AssetSpider/internal/controller"
@@ -20,6 +23,7 @@ import (
 type App struct {
 	Engine *gin.Engine
 	repos  *repository.Repositories
+	crawl  *service.CrawlService
 }
 
 // New 按四层顺序完成构造与注入。
@@ -29,18 +33,18 @@ func New(cfg *config.Config) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("初始化数据库失败: %w", err)
 	}
-	// 任务调度状态只存在于进程内存，重启后遗留的 running/queued 记录无法再推进，
-	// 统一标记为中断，避免页面一直显示「进行中」（paused 的任务仍可继续）。
-	if _, err := repos.Jobs.ResetInterrupted("服务重启，任务已中断（进度已定期保存，可重试从断点续采）"); err != nil {
-		_ = repos.Close()
-		return nil, fmt.Errorf("清理中断任务失败: %w", err)
-	}
-
 	// 第 3 层：业务服务，各自只注入需要的实体仓储
 	healthSvc := service.NewHealthService(repos.Sources, repos.Videos, repos.Path())
 	assetSvc := service.NewAssetService(repos.Assets)
 	sourceSvc := service.NewSourceService(repos.Sources, repos.Videos)
 	crawlSvc := service.NewCrawlService(repos.Sources, repos.Videos, repos.Categories, repos.Jobs, cfg.Collector)
+	// 启动钩子：自动恢复因进程重启而中断的采集任务（用户手动暂停的任务不动）。
+	// 恢复是异步的，且失败只记日志、不阻断服务启动，避免单个坏记录拖垮整个服务。
+	if recovered, err := crawlSvc.RecoverInterrupted(); err != nil {
+		log.Printf("启动恢复中断任务失败（不影响服务启动）: %v", err)
+	} else if recovered > 0 {
+		log.Printf("启动完成：已自动恢复 %d 个因重启中断的采集任务", recovered)
+	}
 	videoSvc := service.NewVideoService(repos.Videos, repos.Sources)
 	categorySvc := service.NewCategoryService(repos.Categories, repos.Videos)
 	metaSvc := service.NewMetaService()
@@ -67,8 +71,14 @@ func New(cfg *config.Config) (*App, error) {
 	}
 
 	// 第 1 层：路由
-	return &App{Engine: router.New(set), repos: repos}, nil
+	return &App{Engine: router.New(set), repos: repos, crawl: crawlSvc}, nil
 }
 
-// Close 释放数据库连接。
-func (a *App) Close() error { return a.repos.Close() }
+// Close 先等异步采集任务收尾再释放数据库连接：
+// 已完成的任务把统计/状态写完整，未跑完的留给下次启动自动恢复。
+func (a *App) Close() error {
+	if a.crawl != nil {
+		a.crawl.WaitForTasks(3 * time.Second)
+	}
+	return a.repos.Close()
+}

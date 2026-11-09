@@ -67,6 +67,7 @@ type CrawlService struct {
 	tasks    map[uint]*crawlTask // jobID → 运行时任务
 	bySource map[uint]uint       // sourceID → jobID（防止同站点并发采集）
 	limiter  *concurrencyLimiter
+	wg       sync.WaitGroup // 追踪异步采集 goroutine，供 Close 时优雅收尾
 }
 
 func NewCrawlService(
