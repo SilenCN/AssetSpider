@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -461,6 +462,22 @@ func (s *CrawlService) runTask(ctx context.Context, task *crawlTask, src *model.
 		msg = crawlErr.Error()
 		if task.maxAttempts > 1 {
 			msg = fmt.Sprintf("%s（已自动尝试 %d 次）", msg, task.attempt)
+		}
+	}
+	// 采集成功但接口没返回播放地址时，把结论直接写进记录的消息里。
+	// 这是最常见的一类「播放页显示没有播放地址」根因：数据本身入库正常，
+	// 只是接口走到了精简模式（没有 vod_play_url），用户看记录即可自助排查。
+	if status == model.JobSuccess && res != nil {
+		if res.AutoAC != "" {
+			msg += fmt.Sprintf("；默认 ac=videolist 未返回播放地址，已自动改用 ac=%s 补齐播放数据", res.AutoAC)
+		}
+		if res.NoPlayURL > 0 {
+			params := strings.ToLower(src.APIBase + " " + src.ExtraParams)
+			if strings.Contains(params, "ac=list") {
+				msg += fmt.Sprintf("；其中 %d 条记录接口未返回播放地址：站点地址/附加参数里带了 ac=list，该动作通常只返回分类或精简列表，请改用 ac=videolist 或 ac=detail 后重新采集", res.NoPlayURL)
+			} else {
+				msg += fmt.Sprintf("；其中 %d 条记录接口未返回播放地址字段，请直接访问采集接口确认响应里是否有 vod_play_url（或播放地址数组），必要时在附加参数里指定 ac=videolist / ac=detail", res.NoPlayURL)
+			}
 		}
 	}
 	// 收尾前先停掉定期落库，避免与终态写入交叉。
