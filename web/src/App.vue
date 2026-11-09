@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 // ---------- 登录态 ----------
 const TOKEN_KEY = 'assetspider_token'
@@ -851,17 +851,36 @@ function visibleLabel(u) {
   return ids.map(id => sources.value.find(s => s.id === id)?.name || `#${id}`).join('、')
 }
 
-// 任务进度轮询：页面不可见或尚未登录时暂停，避免无谓请求
+// 采集数据（站点状态 / 实时任务 / 采集记录）只在这两个页签自动刷新。
+// 停留在资源库、视频分类、用户管理时不发轮询请求，避免无谓流量和其它页面被反复重绘。
+const collectTabs = ['sources', 'jobs']
+function refreshCollectData() {
+  // 站点配置页看任务卡片与站点「上次采集」状态；采集记录页看记录（含运行中的 live 进度）。
+  if (tab.value === 'sources') return Promise.all([loadTasks(), loadSources()])
+  if (tab.value === 'jobs') return loadJobs()
+  return Promise.resolve()
+}
+
 let taskTimer = null
 onMounted(async () => {
   await bootstrap()
   taskTimer = setInterval(() => {
-    if (!me.value || document.hidden) return
-    loadTasks().catch(() => {})
-    if (tasks.value.length) loadJobs().catch(() => {})
+    if (!me.value || document.hidden || !collectTabs.includes(tab.value)) return
+    refreshCollectData().catch(() => {})
   }, 1500)
 })
 onBeforeUnmount(() => { clearInterval(taskTimer) })
+
+// 从别的页签切回来时立刻补一次，不用等下一个轮询周期；页面重新可见时也补一次。
+watch(tab, (v) => {
+  if (!me.value || !collectTabs.includes(v)) return
+  refreshCollectData().catch(() => {})
+})
+function onVisible() {
+  if (!document.hidden && me.value && collectTabs.includes(tab.value)) refreshCollectData().catch(() => {})
+}
+onMounted(() => document.addEventListener('visibilitychange', onVisible))
+onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible))
 </script>
 
 <template>
@@ -911,7 +930,7 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
       <button :class="{ active: tab === 'sources' }" @click="tab = 'sources'">站点配置</button>
       <button :class="{ active: tab === 'videos' }" @click="tab = 'videos'; loadVideos()">资源库</button>
       <button :class="{ active: tab === 'categories' }" @click="tab = 'categories'; loadCategories()">视频分类</button>
-      <button :class="{ active: tab === 'jobs' }" @click="tab = 'jobs'; loadJobs()">采集记录</button>
+      <button :class="{ active: tab === 'jobs' }" @click="tab = 'jobs'">采集记录</button>
       <button v-if="isAdmin" :class="{ active: tab === 'users' }" @click="tab = 'users'; loadUsers()">用户管理</button>
       <button class="ghost refresh" @click="refresh">刷新</button>
     </nav>

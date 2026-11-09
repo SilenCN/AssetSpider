@@ -187,6 +187,11 @@ func TestAuthFirstUserBecomesAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 这条额外打开的连接必须显式关闭：否则 Windows 上 t.TempDir 清理时
+	// auth.db 仍被占用，测试会以 "used by another process" 失败。
+	if sqlDB, dbErr := db.DB(); dbErr == nil {
+		defer sqlDB.Close()
+	}
 	var hash string
 	if err := db.Raw("SELECT password_hash FROM users WHERE username = ?", "root").Row().Scan(&hash); err != nil {
 		t.Fatal(err)
