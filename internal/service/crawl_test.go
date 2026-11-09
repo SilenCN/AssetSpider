@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/SilenCN/AssetSpider/internal/config"
 	"github.com/SilenCN/AssetSpider/internal/model"
@@ -36,6 +37,8 @@ type mockSite struct {
 	status  int
 	queries []url.Values
 	server  *httptest.Server
+	// delay 让每次响应慢一点，用于观察「运行中」的中间状态（如定期刷新影片总数）。
+	delay time.Duration
 }
 
 func newMockSite(t *testing.T, items []mockItem) *mockSite {
@@ -85,9 +88,13 @@ func (m *mockSite) serve(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	m.queries = append(m.queries, r.URL.Query())
 	status := m.status
+	delay := m.delay
 	snapshot := append([]mockItem(nil), m.items...)
 	m.mu.Unlock()
 
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 	if status != 0 {
 		w.WriteHeader(status)
 		return

@@ -89,36 +89,32 @@ func (in SourceInput) apply(dst *model.Source) *model.Source {
 	return dst
 }
 
-// SourceView 在站点配置上附加该站已入库的影片数量。
+// SourceView 是站点配置的对外视图。
+//
+// 影片总数 videoCount 随 model.Source 一起返回：它是采集任务维护的快照列
+// （运行中每分钟刷新、结束时刷新），因此列表查询不再对 videos 表做 COUNT(*)。
 type SourceView struct {
 	model.Source
-	VideoCount int64 `json:"videoCount"`
 }
 
 // SourceService 处理站点配置的校验、默认值与读写编排。
 type SourceService struct {
 	sources repository.SourceRepository
-	videos  repository.VideoRepository
 }
 
-func NewSourceService(sources repository.SourceRepository, videos repository.VideoRepository) *SourceService {
-	return &SourceService{sources: sources, videos: videos}
+func NewSourceService(sources repository.SourceRepository) *SourceService {
+	return &SourceService{sources: sources}
 }
 
 // List 返回当前登录主体可见的站点配置；管理员不传主体时可见全部。
 func (s *SourceService) List(p ...Principal) ([]SourceView, error) {
-	visible := principalOf(p...).Visible()
-	srcs, err := s.sources.ListSources(visible)
-	if err != nil {
-		return nil, err
-	}
-	counts, err := s.videos.CountVideosBySource(visible)
+	srcs, err := s.sources.ListSources(principalOf(p...).Visible())
 	if err != nil {
 		return nil, err
 	}
 	out := make([]SourceView, 0, len(srcs))
 	for _, src := range srcs {
-		out = append(out, SourceView{Source: src, VideoCount: counts[src.ID]})
+		out = append(out, SourceView{Source: src})
 	}
 	return out, nil
 }

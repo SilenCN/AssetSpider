@@ -53,6 +53,13 @@ type Source struct {
 	LastStatus     string     `gorm:"size:16" json:"lastStatus"` // success / failed / never
 	LastError      string     `gorm:"size:1024" json:"lastError"`
 
+	// VideoCount 是该站点当前已入库的影片总数（只读快照，由采集任务维护）。
+	//
+	// 采集任务运行期间按进度落库间隔（默认 60 秒）刷新一次，任务结束时再刷新一次；
+	// 服务启动时也会按 videos 表整体重算一次，避免升级后历史站点停留在默认值 0。
+	// 存成列而不是每次列表都 COUNT(*)，让站点列表的查询代价与影片总量无关。
+	VideoCount int64 `gorm:"not null;default:0" json:"videoCount"`
+
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }

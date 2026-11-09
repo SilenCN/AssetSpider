@@ -1164,7 +1164,7 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
                 <td>
                   <span class="badge" :class="s.enabled ? 'on' : 'off'">{{ s.enabled ? '启用' : '停用' }}</span>
                 </td>
-                <td class="mono">{{ s.videoCount }}</td>
+                <td class="mono" title="已入库影片总数：采集运行中按进度落库间隔（默认每分钟）刷新，任务结束时再刷新一次">{{ s.videoCount }}</td>
                 <td class="muted hide-sm">{{ formatTime(s.lastSyncAt) }}</td>
                 <td class="muted hide-sm">
                   <span class="badge" :class="s.lastStatus">{{ statusLabel(s.lastStatus) }}</span>

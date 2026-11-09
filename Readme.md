@@ -139,6 +139,7 @@ go build -o bin/assetspider .
 - **手动暂停**：`PUT /api/tasks/v1/{jobId}` + `{"status":"paused"}`。暂停是协作式的——在页边界生效并中断正在进行的 HTTP 请求，**已完成的整页数据不会回滚**，也不会写入半页数据；**「等待自动重试」期间同样可以暂停**，不必等退避结束。
 - **进度保存**：全量采集把「下一次从第几页开始」写入 `crawl_jobs.resume_page`；增量采集照常推进 `last_cursor`。因此暂停不是失败，站点与记录状态都是 `paused`。
 - **运行中定期落库**：任务运行时每 `collector.progress_save_seconds`（默认 60 秒，环境变量 `ASSETSPIDER_COLLECTOR_PROGRESS_SAVE`）把已完成页数、拉取/新增/更新/未变统计、`attempt` 与续采页 `resume_page` 写进采集记录。这样**进程被强杀或机器重启也不会丢进度**——重启后服务会自动复用原记录、从 `resume_page` 指向的下一页继续采集（而不是从头再来）。定期落库只写进度字段，`status` / `finished_at` / `message` 始终由任务收尾独占写入，不会把已结束的任务改回「进行中」。
+- **站点影片总数**：`sources.video_count` 是站点已入库影片数的快照，让站点列表不必每次都对 `videos` 做 `COUNT(*)`。它在**同一个节拍**上维护：运行中每 `progress_save_seconds`（默认 60 秒）重算一次，任务结束（成功/暂停/失败）时再重算一次；每次都是 `COUNT(*)` 重算而不是在旧值上累加，所以重复采集既有影片不会把数字算多。服务启动时会按 `videos` 表整体校准一次，升级后历史站点不会停留在默认值 0。
 - **继续**：`PUT /api/tasks/v1/{jobId}` + `{"status":"running"}`，按原站点、原模式重新入队：全量从 `resume_page` 续采，增量从游标继续，不会从头再拉一遍。**复用原任务记录**，统计与尝试次数继续累加。
 - **失败自动重试**：抓取/入库失败后按指数退避自动重试，次数由 `collector.retry_times`（默认 2，即最多尝试 3 次）、首次间隔由 `collector.retry_backoff_seconds`（默认 3 秒，之后翻倍、上限 30 秒）决定，设 `0` 可关闭。重试**从上次失败的那一页**继续，已完成页面不会重复抓取；每次尝试都记在 `crawl_jobs.attempt`。等待重试期间任务视图带 `retryInSeconds` 倒计时与失败原因。
 - **手动重试**：`POST /api/tasks/v1/{jobId}/retry`，仅对 `failed` 的任务有效。**复用原任务记录**（不会新开一条 `crawl_jobs`），从失败页续采，拉取/新增/更新/未变与页数在原值上继续累加，尝试次数也接着往下数；记录的 `retry_of` 保持为空。
@@ -275,7 +276,7 @@ collector:
   max_concurrent: 3              # 同时运行的采集任务上限，超出的排队；可在页面/接口运行时调整
   retry_times: 2                 # 失败后自动重试次数（0 = 不重试），从失败页续采
   retry_backoff_seconds: 3       # 首次重试等待秒数，之后翻倍，上限 30 秒
-  progress_save_seconds: 60      # 运行中任务把进度写库的间隔（秒），避免重启丢进度
+  progress_save_seconds: 60      # 运行中任务把进度与站点影片总数写库的间隔（秒）
 auth:
   token_ttl_hours: 168           # 登录令牌有效期（小时），默认 7 天
   bcrypt_cost: 10                # 密码哈希强度，4..31，越大越慢
@@ -362,7 +363,7 @@ auth:
 | system | GET | `/api/system/v1/health` | 公开：状态、数据库路径、站点数与影片数 |
 | assets | GET / POST | `/api/assets/v1` | 通用资产台账（保留能力） |
 | assets | DELETE | `/api/assets/v1/:id` | 删除资产 |
-| sources | GET | `/api/sources/v1` | 站点列表，附带每个站点已入库影片数 |
+| sources | GET | `/api/sources/v1` | 站点列表，附带每个站点已入库影片数 `videoCount`（采集运行中每分钟刷新、结束时刷新，启动时整体校准） |
 | sources | POST | `/api/sources/v1` | 新增站点（名称全系统唯一，重名返回 409） |
 | sources | PUT | `/api/sources/v1/:id` | 全量更新站点（改名成另一条已存在站点返回 409，改名成自身允许） |
 | sources | DELETE | `/api/sources/v1/:id` | 删除站点，级联清理其影片与采集记录 |

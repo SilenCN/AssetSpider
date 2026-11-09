@@ -521,6 +521,9 @@ func (s *CrawlService) startProgressSaver(task *crawlTask) func() {
 				return
 			case <-ticker.C:
 				s.saveProgress(task)
+				// 与进度快照同频刷新站点的影片总数：采集运行期间列表上的
+				// 「影片数」也在一分钟粒度上跟着涨，不必等任务结束才更新。
+				s.syncSourceVideoCount(task.sourceID)
 			}
 		}
 	}()
@@ -538,6 +541,23 @@ func (s *CrawlService) saveProgress(task *crawlTask) {
 	}
 	if err := s.jobs.SaveProgress(job); err != nil {
 		log.Printf("保存任务 #%d 进度失败: %v", job.ID, err)
+	}
+}
+
+// syncSourceVideoCount 重新统计站点影片总数并回写到 sources.video_count。
+//
+// 采集运行中按进度落库间隔（默认 60 秒）调用，任务结束时再调用一次。
+// 每次都重新 COUNT(*) 而不是在旧值上累加：采集会 upsert 既有影片（unchanged/updated），
+// 累加会把「未新增」也算进去；重算则永远等于 videos 表的真实行数。
+// 写库失败只记日志——统计显示不准确不应影响采集本身。
+func (s *CrawlService) syncSourceVideoCount(sourceID uint) {
+	n, err := s.videos.CountVideos(sourceID)
+	if err != nil {
+		log.Printf("统计站点 #%d 影片总数失败: %v", sourceID, err)
+		return
+	}
+	if err := s.sources.UpdateVideoCount(sourceID, n); err != nil {
+		log.Printf("回写站点 #%d 影片总数失败: %v", sourceID, err)
 	}
 }
 
@@ -619,6 +639,8 @@ func (s *CrawlService) settle(task *crawlTask, res *RunResult, status, msg strin
 	if err := s.sources.UpdateSourceResult(job.SourceID, job.Mode, status, cursor, errMsg, now); err != nil {
 		return res, fmt.Errorf("更新站点状态失败: %w", err)
 	}
+	// 任务结束后再校准一次影片总数：暂停/失败时也把已入库的部分如实反映到站点列表上。
+	s.syncSourceVideoCount(job.SourceID)
 	return res, nil
 }
 

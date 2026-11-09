@@ -21,6 +21,10 @@ type SourceRepository interface {
 	UpdateSource(id uint, in *model.Source) (*model.Source, error)
 	DeleteSource(id uint) error
 	UpdateSourceResult(id uint, mode, status, cursor, errMsg string, at time.Time) error
+	// UpdateVideoCount 回写站点已入库的影片总数（采集运行中定期 + 任务结束时调用）。
+	UpdateVideoCount(id uint, count int64) error
+	// RefreshVideoCounts 按 videos 表重算全部站点的影片总数，用于启动时校准历史数据。
+	RefreshVideoCounts() error
 }
 
 // sourceRepository 是 Source 实体专属的仓储对象。
@@ -161,4 +165,28 @@ func (r *sourceRepository) UpdateSourceResult(id uint, mode, status, cursor, err
 		updates["last_full_sync_at"] = at
 	}
 	return r.db.Model(&model.Source{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// UpdateVideoCount 回写站点已入库的影片总数。
+//
+// 用 UpdateColumn 而不是 Updates：统计值是「采集运行期间每分钟都会变」的附属数据，
+// 不应把站点的 updated_at 也一起刷新，否则列表上会误显示「刚修改过配置」。
+func (r *sourceRepository) UpdateVideoCount(id uint, count int64) error {
+	if count < 0 {
+		count = 0
+	}
+	return r.db.Model(&model.Source{}).Where("id = ?", id).
+		UpdateColumn("video_count", count).Error
+}
+
+// RefreshVideoCounts 按 videos 表重算全部站点的影片总数。
+//
+// 一条语句完成全量校准：带 video_count 列的版本首次启动时，历史站点该列是默认值 0，
+// 需要与真实影片数对齐。videos 上有 (source_id, vod_id) 联合唯一索引，
+// 每个站点的 COUNT(*) 都走索引，不随影片总量放大。
+func (r *sourceRepository) RefreshVideoCounts() error {
+	return r.db.Exec(`
+		UPDATE sources
+		SET video_count = (SELECT COUNT(*) FROM videos WHERE videos.source_id = sources.id)
+	`).Error
 }

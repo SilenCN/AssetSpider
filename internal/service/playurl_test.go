@@ -94,7 +94,7 @@ func TestSourcePlayAndPicConfigRoundTrip(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	svc := NewSourceService(st.Sources, st.Videos)
+	svc := NewSourceService(st.Sources)
 	enabled := true
 	created, err := svc.Create(SourceInput{
 		Name: "图片改写", APIBase: "https://site.example.com/api.php/provide/vod/",

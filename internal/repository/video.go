@@ -45,6 +45,8 @@ type VideoRepository interface {
 	ListVideos(query VideoQuery) ([]model.Video, int64, error)
 	// MapVodIDs 把一批 vod_id 解析为库内影片主键，供标签关联回填等场景使用。
 	MapVodIDs(sourceID uint, vodIDs []string) (map[string]uint, error)
+	// CountVideos 返回某站点已入库的影片总数，供站点表的 video_count 快照回写。
+	CountVideos(sourceID uint) (int64, error)
 	ListVideoAreas(visible ...[]uint) ([]string, error)
 	CountVideosBySource(visible ...[]uint) (map[uint]int64, error)
 	CountVideosByCategory(visible ...[]uint) (map[uint]int64, error)
@@ -243,6 +245,18 @@ func (r *videoRepository) ListVideoAreas(visible ...[]uint) ([]string, error) {
 		return nil, err
 	}
 	return areas, nil
+}
+
+// CountVideos 返回某站点已入库的影片总数。
+//
+// 站点表的 video_count 列就是它的快照：采集运行中定期、结束时各回写一次，
+// 避免每次列出站点都要对 videos 表做一次聚合。
+func (r *videoRepository) CountVideos(sourceID uint) (int64, error) {
+	var n int64
+	if err := r.db.Model(&model.Video{}).Where("source_id = ?", sourceID).Count(&n).Error; err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // CountVideosBySource 返回每个站点的影片数量。
