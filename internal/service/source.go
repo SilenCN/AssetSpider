@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -126,6 +127,11 @@ func (s *SourceService) Create(in SourceInput) (*model.Source, error) {
 	if err := in.validate(); err != nil {
 		return nil, err
 	}
+	if taken, err := s.nameTakenByOther(in.Name, 0); err != nil {
+		return nil, err
+	} else if taken {
+		return nil, conflict("站点名称已存在：%s", strings.TrimSpace(in.Name))
+	}
 	src := in.apply(&model.Source{})
 	if err := s.sources.CreateSource(src); err != nil {
 		return nil, wrapRepo(err)
@@ -141,11 +147,29 @@ func (s *SourceService) Update(id uint, in SourceInput) (*model.Source, error) {
 	if err != nil {
 		return nil, wrapRepo(err)
 	}
+	if taken, err := s.nameTakenByOther(in.Name, id); err != nil {
+		return nil, err
+	} else if taken {
+		return nil, conflict("站点名称已存在：%s", strings.TrimSpace(in.Name))
+	}
 	updated, err := s.sources.UpdateSource(id, in.apply(existing))
 	if err != nil {
 		return nil, wrapRepo(err)
 	}
 	return updated, nil
+}
+
+// nameTakenByOther 判断归一化后的名称是否已被「另一条」站点占用。
+// exceptID 表示排除自身（更新场景），0 表示不排除（新建场景）。
+func (s *SourceService) nameTakenByOther(name string, exceptID uint) (bool, error) {
+	other, err := s.sources.GetSourceByName(name)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return false, nil
+		}
+		return false, wrapRepo(err)
+	}
+	return other.ID != exceptID, nil
 }
 
 func (s *SourceService) Delete(id uint) error {

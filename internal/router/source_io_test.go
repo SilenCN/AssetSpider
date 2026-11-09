@@ -254,3 +254,66 @@ func TestSourceImportRequiresAdmin(t *testing.T) {
 		t.Fatalf("导出应只含授权站点: %+v", bundle.Sources)
 	}
 }
+
+// TestSourceCreateDuplicateNameRejected 验证手动新增站点时按名称去重
+// （忽略大小写与首尾空白），重名返回 409；与导入的「重名即更新」互补——
+// 手工建站不允许重名，必须走编辑或导入更新。
+func TestSourceCreateDuplicateNameRejected(t *testing.T) {
+	r, _ := newTestRouter(t)
+	if w := doJSON(r, http.MethodPost, "/api/sources/v1", map[string]interface{}{
+		"name": "重名站", "apiBase": "https://dup.example.com/api.php/provide/vod/",
+	}); w.Code != http.StatusCreated {
+		t.Fatalf("首次创建失败: %d %s", w.Code, w.Body.String())
+	}
+	// 完全相同
+	if w := doJSON(r, http.MethodPost, "/api/sources/v1", map[string]interface{}{
+		"name": "重名站", "apiBase": "https://dup2.example.com/api.php/provide/vod/",
+	}); w.Code != http.StatusConflict {
+		t.Fatalf("同名应返回 409，实际 %d %s", w.Code, w.Body.String())
+	}
+	// 仅首尾空白不同
+	if w := doJSON(r, http.MethodPost, "/api/sources/v1", map[string]interface{}{
+		"name": "  重名站  ", "apiBase": "https://dup3.example.com/api.php/provide/vod/",
+	}); w.Code != http.StatusConflict {
+		t.Fatalf("仅首尾空白不同的同名应返回 409，实际 %d %s", w.Code, w.Body.String())
+	}
+	// 不同名应成功
+	if w := doJSON(r, http.MethodPost, "/api/sources/v1", map[string]interface{}{
+		"name": "另一个站", "apiBase": "https://dup4.example.com/api.php/provide/vod/",
+	}); w.Code != http.StatusCreated {
+		t.Fatalf("不同名应创建成功: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestSourceUpdateToExistingNameRejected 验证编辑站点时不能把名称改成另一条已存在站点，
+// 但改名成「自身」（含仅大小写不同）是允许的。
+func TestSourceUpdateToExistingNameRejected(t *testing.T) {
+	r, _ := newTestRouter(t)
+	authCreateSource(t, r, testToken, "SiteA", "https://a.example.com/api.php/provide/vod/")
+	authCreateSource(t, r, testToken, "SiteB", "https://b.example.com/api.php/provide/vod/")
+
+	// 甲改名成乙：409
+	if w := doJSON(r, http.MethodPut, "/api/sources/v1/1", map[string]interface{}{
+		"name": "SiteB", "apiBase": "https://a.example.com/api.php/provide/vod/",
+	}); w.Code != http.StatusConflict {
+		t.Fatalf("改名成已存在站点应返回 409，实际 %d %s", w.Code, w.Body.String())
+	}
+	// 甲改名成乙的大小写变体 siteb：大小写不敏感，仍 409
+	if w := doJSON(r, http.MethodPut, "/api/sources/v1/1", map[string]interface{}{
+		"name": "siteb", "apiBase": "https://a.example.com/api.php/provide/vod/",
+	}); w.Code != http.StatusConflict {
+		t.Fatalf("大小写变体仍应冲突，实际 %d %s", w.Code, w.Body.String())
+	}
+	// 甲改名成自身（仅改其它字段）：200
+	if w := doJSON(r, http.MethodPut, "/api/sources/v1/1", map[string]interface{}{
+		"name": "SiteA", "apiBase": "https://a.example.com/api.php/provide/vod/", "maxPages": 5,
+	}); w.Code != http.StatusOK {
+		t.Fatalf("改名成自身应成功，实际 %d %s", w.Code, w.Body.String())
+	}
+	// 甲改名成仅大小写不同的 Sitea（指向自身）：200
+	if w := doJSON(r, http.MethodPut, "/api/sources/v1/1", map[string]interface{}{
+		"name": "Sitea", "apiBase": "https://a.example.com/api.php/provide/vod/",
+	}); w.Code != http.StatusOK {
+		t.Fatalf("大小写变体指向自身应成功，实际 %d %s", w.Code, w.Body.String())
+	}
+}

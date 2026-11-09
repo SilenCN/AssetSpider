@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/SilenCN/AssetSpider/internal/model"
@@ -13,6 +15,8 @@ type SourceRepository interface {
 	ListSources(visible ...[]uint) ([]model.Source, error)
 	ListEnabledSources(visible ...[]uint) ([]model.Source, error)
 	GetSource(id uint, visible ...[]uint) (*model.Source, error)
+	// GetSourceByName 按名称（忽略大小写与首尾空白）查找站点，找不到返回 ErrNotFound。
+	GetSourceByName(name string) (*model.Source, error)
 	CreateSource(src *model.Source) error
 	UpdateSource(id uint, in *model.Source) (*model.Source, error)
 	DeleteSource(id uint) error
@@ -63,6 +67,23 @@ func (r *sourceRepository) GetSource(id uint, visible ...[]uint) (*model.Source,
 // CreateSource 新增站点配置。
 func (r *sourceRepository) CreateSource(src *model.Source) error {
 	return r.db.Create(src).Error
+}
+
+// GetSourceByName 按名称（忽略大小写与首尾空白）查找站点；找不到返回 ErrNotFound。
+// 站点名称全系统唯一，因此这是去重与「重名即更新」的唯一判据来源。
+func (r *sourceRepository) GetSourceByName(name string) (*model.Source, error) {
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" {
+		return nil, ErrNotFound
+	}
+	var src model.Source
+	if err := r.db.Model(&model.Source{}).Where("lower(name) = ?", key).First(&src).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &src, nil
 }
 
 // UpdateSource 按 ID 全量更新站点配置的可编辑字段。
