@@ -1091,7 +1091,17 @@ func TestTaskAutoRetryOnFailure(t *testing.T) {
 
 	var mu sync.Mutex
 	hits := 0
-	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// 采集还会额外请求 ac=typelist 补全父级分类名称；它失败不影响采集，
+		// 这里直接返回空列表（不计入失败注入逻辑）。
+		if req.URL.Query().Get("ac") == "typelist" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": 1, "msg": "ok", "page": 1, "pagecount": 1, "limit": "1", "total": 0,
+				"list": []interface{}{},
+			})
+			return
+		}
 		mu.Lock()
 		hits++
 		n := hits
@@ -1165,6 +1175,14 @@ func TestTaskManualRetryAndRerun(t *testing.T) {
 	pages := []int{}
 	failFrom := 2 // 第 2 页起返回 500
 	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Query().Get("ac") == "typelist" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": 1, "msg": "ok", "page": 1, "pagecount": 1, "limit": "1", "total": 0,
+				"list": []interface{}{},
+			})
+			return
+		}
 		page, _ := strconv.Atoi(req.URL.Query().Get("pg"))
 		if page < 1 {
 			page = 1
@@ -1648,6 +1666,14 @@ func TestRecoverInterruptedOnRestart(t *testing.T) {
 	var mu sync.Mutex
 	var pages []int
 	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Query().Get("ac") == "typelist" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": 1, "msg": "ok", "page": 1, "pagecount": 1, "limit": "1", "total": 0,
+				"list": []interface{}{},
+			})
+			return
+		}
 		page, _ := strconv.Atoi(req.URL.Query().Get("pg"))
 		if page < 1 {
 			page = 1

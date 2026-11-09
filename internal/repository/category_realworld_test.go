@@ -88,3 +88,85 @@ func TestCategoryOrphanWhenParentMissing(t *testing.T) {
 		t.Fatalf("父级出现后孤儿应被兜底挂接: %+v", orphan)
 	}
 }
+
+// TestCategoryApplyTypeNames 验证：父级（纯容器）分类在 EnsureForVideos 里只能以
+// type_id 兜底展示，经苹果CMS typelist 拿到权威名称后，ApplyTypeNames 能把它补全，
+// 同时已带真实名称的二级分类不被 typelist 覆盖（保护既有数据）。
+func TestCategoryApplyTypeNames(t *testing.T) {
+	r := newTestRepos(t)
+	// 父级 type_id=1 没有影片、也没有名称 → EnsureForVideos 只能建出 type_id 兜底的分类。
+	if _, err := r.Categories.EnsureForVideos(1, []model.Video{
+		{TypeID: "6", TypeName: "动作", TypeID1: "1"},
+		{TypeID: "7", TypeName: "喜剧", TypeID1: "1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 找到父级（type_pid 为空、level=1、name 为 type_id 兜底）。
+	all, err := r.Categories.List(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parentID uint
+	for _, c := range all {
+		if c.TypeID == "1" {
+			parentID = c.ID
+		}
+	}
+	if parentID == 0 {
+		t.Fatal("未找到从 type_id_1 推断出的父级分类")
+	}
+	parent, err := r.Categories.Get(parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent.Name != "1" {
+		t.Fatalf("父级此前应为 type_id 兜底名称，实际 %q", parent.Name)
+	}
+
+	// typelist 给出权威名称：父级 1→电影，二级 6→动作、7→喜剧（与既有名称相同）。
+	if err := r.Categories.ApplyTypeNames(1, map[string]string{
+		"1": "电影",
+		"6": "动作",
+		"7": "喜剧",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	parent, _ = r.Categories.Get(parentID)
+	if parent.Name != "电影" {
+		t.Fatalf("父级名称应被 typelist 补全为「电影」，实际 %q", parent.Name)
+	}
+	// 找到二级分类 6 确认其名称未被覆盖。
+	var actionID uint
+	all, _ = r.Categories.List(1)
+	for _, c := range all {
+		if c.TypeID == "6" {
+			actionID = c.ID
+		}
+	}
+	action, err := r.Categories.Get(actionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Name != "动作" {
+		t.Fatalf("已带真实名称的二级分类不应被 typelist 覆盖，实际 %q", action.Name)
+	}
+
+	// 幂等：重复调用不报错、不重复创建，名称保持一致。
+	if err := r.Categories.ApplyTypeNames(1, map[string]string{
+		"1": "电影",
+		"6": "动作",
+		"7": "喜剧",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	parent, _ = r.Categories.Get(parentID)
+	if parent.Name != "电影" {
+		t.Fatalf("幂等调用后父级名称应为「电影」，实际 %q", parent.Name)
+	}
+
+	// 空 map 直接返回，不报错。
+	if err := r.Categories.ApplyTypeNames(1, nil); err != nil {
+		t.Fatalf("空 map 不应报错: %v", err)
+	}
+}

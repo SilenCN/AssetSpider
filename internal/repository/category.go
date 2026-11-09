@@ -14,6 +14,8 @@ type CategoryRepository interface {
 	// EnsureForVideos 按视频自带的分类信息幂等创建本站分类，
 	// 返回 utils.CategoryKey → 分类主键 的映射，供 service 回填 Video.CategoryID。
 	EnsureForVideos(sourceID uint, videos []model.Video) (map[string]uint, error)
+	// ApplyTypeNames 用苹果CMS typelist 返回的权威分类名称补全本源分类的名称。
+	ApplyTypeNames(sourceID uint, names map[string]string) error
 	// visible 为可选站点白名单，语义见 visibility.go。
 	List(sourceID uint, visible ...[]uint) ([]model.Category, error)
 	Get(id uint, visible ...[]uint) (*model.Category, error)
@@ -182,6 +184,43 @@ func (r *categoryRepository) EnsureForVideos(sourceID uint, videos []model.Video
 		return nil
 	})
 	return out, err
+}
+
+// ApplyTypeNames 用苹果CMS typelist 返回的权威分类名称补全本源分类的名称。
+//
+// videolist 不携带父级（纯容器）分类名称，这些分类在 EnsureForVideos 里只能以
+// type_id 兜底展示。typelist 一次性给出本站全部分类的真实名称，这里按 type_id
+// 回填：仅当分类「尚无名称」或「名称只是 type_id 兜底占位」时才更新，已带真实
+// 名称的分类不会被 typelist 覆盖。幂等，可重复调用；names 为空时直接返回。
+func (r *categoryRepository) ApplyTypeNames(sourceID uint, names map[string]string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	var items []model.Category
+	if err := r.db.Where("source_id = ?", sourceID).Find(&items).Error; err != nil {
+		return err
+	}
+	for _, cat := range items {
+		if cat.TypeID == "" {
+			continue
+		}
+		nm, ok := names[cat.TypeID]
+		if !ok {
+			continue
+		}
+		nm = strings.TrimSpace(nm)
+		if nm == "" {
+			continue
+		}
+		// 仅回填缺失/占位的名称，保护已存在的真实名称。
+		if cat.Name == "" || cat.Name == cat.TypeID {
+			if err := r.db.Model(&model.Category{}).Where("id = ?", cat.ID).
+				Update("name", nm).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // addCandidate 把候选分类并入收集表；键冲突时保留更有信息量的字段：

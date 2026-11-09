@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -105,4 +106,99 @@ func (f *Fetcher) FetchList(ctx context.Context, src model.Source, page, hours i
 		return nil, fmt.Errorf("%w（响应开头: %.120s）", err, string(body))
 	}
 	return r, nil
+}
+
+// ---------- 苹果CMS 分类定义接口（ac=typelist） ----------
+
+// TypeItem 对应苹果CMS ac=typelist 中 list[] 的一条分类定义。
+// videolist 只携带影片自身的 type_name、不携带父级分类名称，因此父级（纯容器）
+// 分类在 EnsureForVideos 里只能以 type_id 兜底展示；typelist 一次性给出本站全部
+// 分类的权威名称与父子关系（type_pid），是补全父级名称、校正层级最可靠的来源。
+type TypeItem struct {
+	TypeID   string `json:"type_id"`
+	TypeName string `json:"type_name"`
+	TypePID  string `json:"type_pid"`
+	TypeSort string `json:"type_sort"`
+}
+
+// TypeListResponse 对应 api.php/provide/vod/?ac=typelist 的 JSON 响应。
+type TypeListResponse struct {
+	Code flexInt    `json:"code"`
+	Msg  flexString `json:"msg"`
+	List []TypeItem `json:"list"`
+}
+
+// BuildTypeListURL 按苹果CMS V10 Provide 协议拼装分类定义请求地址。
+// 强制 ac=typelist（覆盖站点附加参数里可能写的 videolist），不带分页/时间参数。
+func BuildTypeListURL(src model.Source) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(src.APIBase))
+	if err != nil {
+		return "", fmt.Errorf("站点地址无效: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {
+		return "", fmt.Errorf("站点地址需为完整 http(s) URL: %q", src.APIBase)
+	}
+	q := u.Query()
+	if extra := strings.TrimPrefix(strings.TrimSpace(src.ExtraParams), "?"); extra != "" {
+		pairs, err := url.ParseQuery(extra)
+		if err != nil {
+			return "", fmt.Errorf("站点附加参数无效: %w", err)
+		}
+		for k, vs := range pairs {
+			q[k] = vs
+		}
+	}
+	q.Set("ac", "typelist") // 强制分类定义接口，覆盖附加参数里的其它 ac
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+// FetchTypeList 请求苹果CMS 的分类定义接口（ac=typelist）并解析。
+// 返回失败（网络错误、非 200、code != 1、JSON 解析失败）由调用方按「非致命」处理：
+// 拿不到分类定义时，分类名称退回由 videolist 提供或 type_id 兜底，采集不阻断。
+func (f *Fetcher) FetchTypeList(ctx context.Context, src model.Source) (*TypeListResponse, error) {
+	rawURL, err := BuildTypeListURL(src)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	ua := f.cfg.UserAgent
+	if ua == "" {
+		ua = "AssetSpider/1.0"
+	}
+	req.Header.Set("User-Agent", ua)
+	req.Header.Set("Accept", "application/json, */*")
+
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求分类接口失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("分类接口返回 HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return nil, fmt.Errorf("读取分类响应失败: %w", err)
+	}
+	r, err := ParseTypeList(body)
+	if err != nil {
+		return nil, fmt.Errorf("%w（响应开头: %.120s）", err, string(body))
+	}
+	return r, nil
+}
+
+// ParseTypeList 解析 ac=typelist 的 JSON 响应。
+func ParseTypeList(data []byte) (*TypeListResponse, error) {
+	var r TypeListResponse
+	if err := json.Unmarshal(data, &r); err != nil {
+		return nil, fmt.Errorf("解析分类接口 JSON 失败: %w", err)
+	}
+	if r.Code != 1 {
+		return nil, fmt.Errorf("分类接口返回非成功状态 code=%d msg=%s", r.Code, r.Msg.String())
+	}
+	return &r, nil
 }

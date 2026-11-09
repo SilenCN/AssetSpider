@@ -227,6 +227,22 @@ func (s *CrawlService) crawl(
 		startPage = 1
 	}
 
+	// 拉取苹果CMS 的分类定义（ac=typelist）补全父级（纯容器）分类名称。
+	// videolist 不携带父级名称，父级此前只能以 type_id 兜底展示；typelist 一次性
+	// 给出本站全部分类的权威名称。失败不致命：拿不到就沿用既有名称，不阻断采集。
+	typeNames := make(map[string]string)
+	if src.Format == "" || src.Format == model.FormatMacCMSJSON {
+		if tl, err := s.fetcher.FetchTypeList(ctx, *src); err == nil {
+			for _, it := range tl.List {
+				id := strings.TrimSpace(it.TypeID)
+				nm := strings.TrimSpace(it.TypeName)
+				if id != "" && nm != "" {
+					typeNames[id] = nm
+				}
+			}
+		}
+	}
+
 	pageCount := 0
 	maxCursor := src.LastCursor
 	// 无论正常结束还是中途暂停，已处理到的游标都要带回（暂停也要保存进度）。
@@ -339,5 +355,9 @@ func (s *CrawlService) crawl(
 	}
 	// 正常结束（或按 maxPages 上限结束）：下次从头开始。
 	res.ResumePage = 1
+	// 采集完成后用 typelist 补全父级/兜底分类名称（父级此前可能只是 type_id 占位）。
+	if err := s.categories.ApplyTypeNames(src.ID, typeNames); err != nil {
+		return fmt.Errorf("补全分类名称失败: %w", err)
+	}
 	return nil
 }
