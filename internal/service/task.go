@@ -822,6 +822,21 @@ func (s *CrawlService) RerunTask(jobID uint, p ...Principal) (*TaskView, error) 
 		startOptions{fromStart: true, reopen: job, reset: true})
 }
 
+// HasActiveTask 报告该站点是否还有排队中 / 运行中的采集任务。
+//
+// 运行时任务表只保留这两类状态（暂停与结束的任务在收尾时就被摘除），
+// 因此「存在记录」即等价于「仍在活动」。
+func (s *CrawlService) HasActiveTask(sourceID uint) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, task := range s.tasks {
+		if task.sourceID == sourceID {
+			return true
+		}
+	}
+	return false
+}
+
 // LiveTask 返回某条采集记录的实时进度视图；任务不在运行时返回 nil。
 func (s *CrawlService) LiveTask(jobID uint) *TaskView {
 	s.mu.Lock()

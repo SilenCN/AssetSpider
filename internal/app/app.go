@@ -41,8 +41,9 @@ func New(cfg *config.Config) (*App, error) {
 	// 第 3 层：业务服务，各自只注入需要的实体仓储
 	healthSvc := service.NewHealthService(repos.Sources, repos.Videos, repos.Path())
 	assetSvc := service.NewAssetService(repos.Assets)
-	sourceSvc := service.NewSourceService(repos.Sources)
+	// 采集调度先构造：站点服务在清空数据前要问它「该站点是否还在采集」。
 	crawlSvc := service.NewCrawlService(repos.Sources, repos.Videos, repos.Categories, repos.Tags, repos.Jobs, cfg.Collector)
+	sourceSvc := service.NewSourceService(repos.Sources, crawlSvc)
 	// 启动钩子：自动恢复因进程重启而中断的采集任务（用户手动暂停的任务不动）。
 	// 恢复是异步的，且失败只记日志、不阻断服务启动，避免单个坏记录拖垮整个服务。
 	if recovered, err := crawlSvc.RecoverInterrupted(); err != nil {

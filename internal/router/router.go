@@ -68,6 +68,8 @@ func registerV1(api *gin.RouterGroup, set controller.Set) {
 	adminSources.POST("/import", set.Source.Import)
 	adminSources.PUT("/:id", set.Source.Update)
 	adminSources.DELETE("/:id", set.Source.Delete)
+	// 只清空站点名下的数据（影片/分类/标签/采集记录），站点配置保留。
+	adminSources.DELETE("/:id/data", set.Source.Clear)
 
 	// 批量采集：POST 创建一次覆盖全部可见启用站点的采集任务
 	crawls := secured.Group("/crawls/" + APIVersion)

@@ -85,6 +85,143 @@ func TestSourceRepositoryCRUDAndCascade(t *testing.T) {
 	}
 }
 
+// TestSourceClearData 验证「清空站点数据、站点配置不变」：
+// 影片 / 分类 / 标签 / 采集记录（含 video_tags 关联）一并清空，采集状态与
+// 影片数快照复位，而站点自身的配置字段与其它站点的数据都不受影响。
+func TestSourceClearData(t *testing.T) {
+	r := newTestRepos(t)
+
+	a := &model.Source{
+		Name: "待清空站", APIBase: "https://a.example.com/api.php/provide/vod/",
+		Format: model.FormatMacCMSJSON, Enabled: true,
+		IncrementalHours: 6, MaxPages: 5,
+		ParseAPI: "https://jx.example.com/?url=", PlayDomain: "https://cdn.example.com",
+	}
+	b := &model.Source{Name: "保留站", APIBase: "https://b.example.com/api.php/provide/vod/", Enabled: true}
+	for _, src := range []*model.Source{a, b} {
+		if err := r.Sources.CreateSource(src); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 两个站点各写入影片、分类、标签、采集记录，用于同时验证清空范围与站点隔离。
+	for _, src := range []*model.Source{a, b} {
+		if _, err := r.Videos.UpsertVideos([]model.Video{
+			{SourceID: src.ID, VodID: "1", VodName: "片1", Hash: "h-" + src.Name + "-1", VodTag: "科幻,动作"},
+			{SourceID: src.ID, VodID: "2", VodName: "片2", Hash: "h-" + src.Name + "-2", VodTag: "动作"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Categories.EnsureForVideos(src.ID, []model.Video{
+			{TypeID: "6", TypeName: "动作"},
+			{TypeID: "7", TypeName: "喜剧"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		tagsByVod, err := r.Tags.EnsureForVideos(src.ID, []model.Video{
+			{SourceID: src.ID, VodID: "1", VodTag: "科幻,动作"},
+			{SourceID: src.ID, VodID: "2", VodTag: "动作"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		idByVod, err := r.Videos.MapVodIDs(src.ID, []string{"1", "2"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Tags.LinkVideos(idByVod, tagsByVod); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Jobs.CreateJob(&model.CrawlJob{
+			SourceID: src.ID, SourceName: src.Name, Mode: model.ModeFull,
+			Status: model.JobSuccess, StartedAt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 站 A 的采集状态与影片数快照先写成「已采集」。
+	now := time.Now()
+	if err := r.Sources.UpdateSourceResult(a.ID, model.ModeFull, model.JobSuccess,
+		"2026-11-08 10:00:00", "", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Sources.UpdateVideoCount(a.ID, 2); err != nil {
+		t.Fatal(err)
+	}
+	aVideoIDs, err := r.Videos.MapVodIDs(a.ID, []string{"1", "2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := r.Sources.ClearSourceData(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats != (ClearStats{Videos: 2, Categories: 2, Tags: 2, Jobs: 1}) {
+		t.Fatalf("清空回报条数异常: %+v", stats)
+	}
+
+	// 1) 数据被清空。
+	if _, total, err := r.Videos.ListVideos(NewVideoQuery(a.ID, "", 1, 20)); err != nil || total != 0 {
+		t.Fatalf("站 A 影片未清空: total=%d err=%v", total, err)
+	}
+	if cats, err := r.Categories.List(a.ID); err != nil || len(cats) != 0 {
+		t.Fatalf("站 A 分类未清空: %+v err=%v", cats, err)
+	}
+	if tags, err := r.Tags.List(a.ID); err != nil || len(tags) != 0 {
+		t.Fatalf("站 A 标签未清空: %+v err=%v", tags, err)
+	}
+	if jobs, err := r.Jobs.ListJobs(a.ID, 50); err != nil || len(jobs) != 0 {
+		t.Fatalf("站 A 采集记录未清空: %+v err=%v", jobs, err)
+	}
+	var links int64
+	for _, id := range aVideoIDs {
+		var n int64
+		if err := r.db.Model(&model.VideoTag{}).Where("video_id = ?", id).Count(&n).Error; err != nil {
+			t.Fatal(err)
+		}
+		links += n
+	}
+	if links != 0 {
+		t.Fatalf("站 A 的标签关联未清理，仍有 %d 条", links)
+	}
+
+	// 2) 站点配置不变，采集状态与影片数复位。
+	got, err := r.Sources.GetSource(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != a.Name || got.APIBase != a.APIBase || got.Format != a.Format ||
+		got.Enabled != a.Enabled || got.IncrementalHours != a.IncrementalHours ||
+		got.MaxPages != a.MaxPages || got.ParseAPI != a.ParseAPI || got.PlayDomain != a.PlayDomain {
+		t.Fatalf("站点配置不应被清空改动: %+v", got)
+	}
+	if got.LastStatus != "" || got.LastMode != "" || got.LastCursor != "" ||
+		got.LastSyncAt != nil || got.LastFullSyncAt != nil || got.VideoCount != 0 {
+		t.Fatalf("采集状态与影片数应复位: %+v", got)
+	}
+
+	// 3) 其它站点不受影响。
+	if _, total, err := r.Videos.ListVideos(NewVideoQuery(b.ID, "", 1, 20)); err != nil || total != 2 {
+		t.Fatalf("站 B 影片不应受影响: total=%d err=%v", total, err)
+	}
+	if cats, err := r.Categories.List(b.ID); err != nil || len(cats) != 2 {
+		t.Fatalf("站 B 分类不应受影响: %+v err=%v", cats, err)
+	}
+	if tags, err := r.Tags.List(b.ID); err != nil || len(tags) != 2 {
+		t.Fatalf("站 B 标签不应受影响: %+v err=%v", tags, err)
+	}
+	if jobs, err := r.Jobs.ListJobs(b.ID, 50); err != nil || len(jobs) != 1 {
+		t.Fatalf("站 B 采集记录不应受影响: %+v err=%v", jobs, err)
+	}
+
+	// 4) 不存在的站点按 ErrNotFound 处理。
+	if _, err := r.Sources.ClearSourceData(999999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("清空不存在的站点应返回 ErrNotFound，实际 %v", err)
+	}
+}
+
 func TestSourceRepositoryNotFound(t *testing.T) {
 	r := newTestRepos(t)
 	if _, err := r.Sources.GetSource(999999); !errors.Is(err, ErrNotFound) {

@@ -76,6 +76,21 @@ func (s *SourceController) Delete(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// Clear 清空站点数据（影片、分类、标签、采集记录），站点配置保留。
+func (s *SourceController) Clear(c *gin.Context) {
+	id, err := utils.ParseUintParam(c.Param("id"))
+	if err != nil {
+		badRequest(c, err.Error())
+		return
+	}
+	res, err := s.svc.Clear(id)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
 // Export 把当前主体可见的站点配置以 JSON 附件形式导出。
 func (s *SourceController) Export(c *gin.Context) {
 	bundle, err := s.svc.Export(principalOf(c))

@@ -35,7 +35,7 @@ router  →  controller  →  service  →  repository
 | 实体 | 文件 | 对象 / 对外接口 | 方法 |
 | --- | --- | --- | --- |
 | `Asset` | `repository/asset.go` | `AssetRepository` | `List` / `Create` / `Delete` |
-| `Source` | `repository/source.go` | `SourceRepository` | 站点 CRUD、`ListEnabledSources`、`UpdateSourceResult`、级联删除 |
+| `Source` | `repository/source.go` | `SourceRepository` | 站点 CRUD、`ListEnabledSources`、`UpdateSourceResult`、级联删除、清空站点数据 |
 | `Video` | `repository/video.go` | `VideoRepository` | `UpsertVideos`、`GetVideo`、`ListVideos`、`CountVideosBySource` / `ByCategory` |
 | `Category` | `repository/category.go` | `CategoryRepository` | `EnsureForVideos`、`List`、`Get` |
 | `CrawlJob` | `repository/job.go` | `JobRepository` | `CreateJob` / `FinishJob` / `ListJobs` |
@@ -339,6 +339,15 @@ auth:
 
 **站点名称全系统唯一**：手工「新增站点」（`POST /api/sources/v1`）与「编辑站点」（`PUT /api/sources/v1/:id`）都按名称（忽略大小写与首尾空白）查重。重名时新建返回 `409`、改名改成另一条已存在站点也返回 `409`；改名成「自身」（含仅大小写差异）则允许。导入的「重名即更新」是这条规定在批量场景下的互补——手工建站不允许重名，要改已有站点就走编辑或导入。
 
+### 清空站点数据（保留站点配置）
+
+站点列表每行（管理员）都有**清空数据**按钮，对应 `DELETE /api/sources/v1/:id/data`。它只清空该站点名下的数据，**站点配置本身（名称、接口地址、格式、附加参数、解析/播放/图片地址、启用状态、增量小时数、最大页数）原样保留**。
+
+- 删除内容：该站点的**影片**、**分类**、**标签**（含 `video_tags` 关联）与**采集记录**，其它站点的数据不受影响。
+- 同时**复位采集状态**：`last_cursor`、`last_mode`、`last_status`、`last_error` 清空，`last_sync_at` / `last_full_sync_at` 置空，`video_count` 归零。这一步很关键——影片都删了，若增量游标还停在上次采到的最大 `vod_time`，下次增量采集会认为「没有更新」而永远补不回数据；复位后下一次增量从零开始重新拉取。
+- 有**排队中 / 运行中**的采集任务时拒绝执行（`409`），避免清空与采集并发互相覆盖：先暂停采集或等任务结束再清空。
+- 响应返回本次删除的条数，例如 `{"videos":1234,"categories":12,"tags":37,"jobs":8}`；站点不存在返回 `404`，普通用户调用返回 `403`。
+
 ## API
 
 接口统一按 **`/api/{模块名}/{版本号}`** 组织，当前版本 `v1`（`internal/router.APIVersion`）。模块名一律是复数资源名词，操作由 HTTP 动词表达，路径中不含动词；升级时新增 `registerV2` 分组即可，旧版本保持可用。
@@ -367,6 +376,7 @@ auth:
 | sources | POST | `/api/sources/v1` | 新增站点（名称全系统唯一，重名返回 409） |
 | sources | PUT | `/api/sources/v1/:id` | 全量更新站点（改名成另一条已存在站点返回 409，改名成自身允许） |
 | sources | DELETE | `/api/sources/v1/:id` | 删除站点，级联清理其影片与采集记录 |
+| sources | DELETE | `/api/sources/v1/:id/data` | 清空站点数据（影片/分类/标签/采集记录）并复位采集状态，**站点配置保留**；返回各表删除条数 |
 | sources | POST | `/api/sources/v1/:id/crawls` | 为该站点执行一次采集，**同步**返回结果摘要（脚本/命令行用） |
 | sources | GET | `/api/sources/v1/export` | 导出当前主体可见站点的配置 JSON（管理员为全部），只含可编辑字段 |
 | sources | POST | `/api/sources/v1/import` | 导入配置 JSON（仅管理员）：按站点名称 upsert，返回新增 / 更新 / 失败统计与逐条错误 |

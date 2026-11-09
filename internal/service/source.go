@@ -97,13 +97,37 @@ type SourceView struct {
 	model.Source
 }
 
+// ClearResult 是一次「清空站点数据」实际删除的各表条数。
+type ClearResult struct {
+	Videos     int64 `json:"videos"`
+	Categories int64 `json:"categories"`
+	Tags       int64 `json:"tags"`
+	Jobs       int64 `json:"jobs"`
+}
+
+// ActiveTaskChecker 让站点服务在清空数据前询问调度层：该站点是否还有
+// 排队中 / 运行中的采集任务。
+//
+// 清空与采集并发执行会互相破坏数据（采集刚把影片与标签写回来，清空又按快照
+// 删掉分类），因此有任务在跑时必须拒绝，由用户先暂停或等待结束。
+type ActiveTaskChecker interface {
+	HasActiveTask(sourceID uint) bool
+}
+
 // SourceService 处理站点配置的校验、默认值与读写编排。
 type SourceService struct {
 	sources repository.SourceRepository
+	active  ActiveTaskChecker // 可选：未注入时不做采集冲突检查
 }
 
-func NewSourceService(sources repository.SourceRepository) *SourceService {
-	return &SourceService{sources: sources}
+// NewSourceService 构造站点服务；active 是可选依赖（采集调度层），
+// 只有需要「清空数据前检查在跑任务」时才有意义。
+func NewSourceService(sources repository.SourceRepository, active ...ActiveTaskChecker) *SourceService {
+	svc := &SourceService{sources: sources}
+	if len(active) > 0 {
+		svc.active = active[0]
+	}
+	return svc
 }
 
 // List 返回当前登录主体可见的站点配置；管理员不传主体时可见全部。
@@ -170,6 +194,25 @@ func (s *SourceService) nameTakenByOther(name string, exceptID uint) (bool, erro
 
 func (s *SourceService) Delete(id uint) error {
 	return wrapRepo(s.sources.DeleteSource(id))
+}
+
+// Clear 清空站点名下的数据（影片、分类、标签、采集记录），站点配置保持不变。
+//
+// 该站点还有排队中 / 运行中的采集任务时拒绝执行：二者并发会互相覆盖。
+func (s *SourceService) Clear(id uint) (ClearResult, error) {
+	if s.active != nil && s.active.HasActiveTask(id) {
+		return ClearResult{}, conflict("站点正在采集中，请先暂停采集或等待其结束再清空数据")
+	}
+	stats, err := s.sources.ClearSourceData(id)
+	if err != nil {
+		return ClearResult{}, wrapRepo(err)
+	}
+	return ClearResult{
+		Videos:     stats.Videos,
+		Categories: stats.Categories,
+		Tags:       stats.Tags,
+		Jobs:       stats.Jobs,
+	}, nil
 }
 
 // Get 供 CrawlService 判断站点是否存在（仍在 service 层内调用，不跨层）。

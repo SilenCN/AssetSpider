@@ -20,6 +20,9 @@ type SourceRepository interface {
 	CreateSource(src *model.Source) error
 	UpdateSource(id uint, in *model.Source) (*model.Source, error)
 	DeleteSource(id uint) error
+	// ClearSourceData 清空站点名下的全部数据（影片、分类、标签、采集记录）并复位
+	// 采集状态与影片数快照，站点配置本身保持不变。
+	ClearSourceData(id uint) (ClearStats, error)
 	UpdateSourceResult(id uint, mode, status, cursor, errMsg string, at time.Time) error
 	// UpdateVideoCount 回写站点已入库的影片总数（采集运行中定期 + 任务结束时调用）。
 	UpdateVideoCount(id uint, count int64) error
@@ -148,6 +151,81 @@ func (r *sourceRepository) DeleteSource(id uint) error {
 		}
 		return tx.Delete(&model.Source{}, id).Error
 	})
+}
+
+// ClearStats 是一次「清空站点数据」实际删除的各表条数，用于向前端回报清空规模。
+type ClearStats struct {
+	Videos     int64 `json:"videos"`
+	Categories int64 `json:"categories"`
+	Tags       int64 `json:"tags"`
+	Jobs       int64 `json:"jobs"`
+}
+
+// ClearSourceData 清空站点数据但保留站点配置。
+//
+// 同时复位采集状态（增量游标、上次采集结果、影片数快照）：影片都删了，
+// 游标若还停在上次采到的最大 vod_time，下次增量采集会认为「没有更新」而
+// 永远补不回来；复位后下一次增量会从零开始重新拉取。
+func (r *sourceRepository) ClearSourceData(id uint) (ClearStats, error) {
+	var stats ClearStats
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		var src model.Source
+		if err := tx.First(&src, id).Error; err != nil {
+			return notFound(err)
+		}
+		// 统计放在删除之前，回报的是「本次清掉了多少」。
+		if err := tx.Model(&model.Video{}).Where("source_id = ?", id).Count(&stats.Videos).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.Category{}).Where("source_id = ?", id).Count(&stats.Categories).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.Tag{}).Where("source_id = ?", id).Count(&stats.Tags).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.CrawlJob{}).Where("source_id = ?", id).Count(&stats.Jobs).Error; err != nil {
+			return err
+		}
+
+		// video_tags 没有 source_id，需先按本源影片主键清理连接表，且必须在删除影片之前完成。
+		var videoIDs []uint
+		if err := tx.Model(&model.Video{}).Where("source_id = ?", id).Pluck("id", &videoIDs).Error; err != nil {
+			return err
+		}
+		if len(videoIDs) > 0 {
+			if err := tx.Where("video_id IN ?", videoIDs).Delete(&model.VideoTag{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("source_id = ?", id).Delete(&model.Video{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("source_id = ?", id).Delete(&model.Category{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("source_id = ?", id).Delete(&model.Tag{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("source_id = ?", id).Delete(&model.CrawlJob{}).Error; err != nil {
+			return err
+		}
+
+		// 复位运行状态：用 UpdateColumns 而不是 Updates，避免把配置的 updated_at 也刷新
+		// （站点配置本身没有变化）。指向时间字段的 nil 会被写成 NULL。
+		return tx.Model(&model.Source{}).Where("id = ?", id).UpdateColumns(map[string]interface{}{
+			"last_mode":         "",
+			"last_status":       "",
+			"last_error":        "",
+			"last_cursor":       "",
+			"last_sync_at":      nil,
+			"last_full_sync_at": nil,
+			"video_count":       0,
+		}).Error
+	})
+	if err != nil {
+		return ClearStats{}, err
+	}
+	return stats, nil
 }
 
 // UpdateSourceResult 采集完成后回写站点状态与增量游标。
