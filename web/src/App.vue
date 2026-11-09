@@ -333,18 +333,61 @@ const currentGroup = computed(() => playGroups.value[activeGroup.value] || null)
 const currentEpisodes = computed(() => currentGroup.value?.episodes || [])
 const currentEpisode = computed(() => currentEpisodes.value[activeEp.value] || null)
 const currentUrl = computed(() => currentEpisode.value?.url || '')
-const isHls = computed(() => /\.m3u8(\?|#|$)/i.test(currentUrl.value))
-const isDirectVideo = computed(() => /\.(mp4|webm|ogg|mov)(\?|#|$)/i.test(currentUrl.value))
-const canPlay = computed(() => isHls.value || isDirectVideo.value)
 
-// 站点配置了「视频解析地址」时，播放地址已被后端拼接成解析服务的网页地址，
-// <video> 无法直链播放（地址里常带 ?url=...m3u8，不能按后缀判断为媒体流），
-// 因此统一改用 iframe 承载解析页面；未配置解析地址时仍按后缀走 hls.js / 直链。
+// 站点配置了「视频解析地址」时，后端把播放地址拼成解析服务网页地址并打上
+// frame 标记；此时必须用 iframe 承载，<video> 无法直链播放（地址里常带
+// ?url=...m3u8，容易被后缀判断误认成媒体流）。parseEnabled 作为旧数据兜底。
 const detailSource = computed(() => sources.value.find(s => s.id === detail.value?.sourceId) || null)
 const parseEnabled = computed(() => !!detailSource.value?.parseApi)
-const useFrame = computed(() => !!currentUrl.value && parseEnabled.value)
+const useFrame = computed(() => !!currentUrl.value && (currentEpisode.value?.frame === true || parseEnabled.value))
+
+// 含 m3u8 即按 HLS 处理（很多站点地址是 ...?url=xxx.m3u8，不能只匹配结尾）。
+const isHls = computed(() => !!currentUrl.value && /m3u8/i.test(currentUrl.value))
+const isDirectVideo = computed(() => !!currentUrl.value && /\.(mp4|webm|ogg|mov|m4v)(\?|#|$)/i.test(currentUrl.value))
+// 苹果CMS 不少站点的播放地址不带后缀（如 /play/abc123），不能按后缀判死。
+// 这类地址先交给 hls.js 试播（多数实际是 m3u8），失败再回退 <video> 直链。
+const isUnknownStream = computed(() => !!currentUrl.value && !useFrame.value && !isHls.value && !isDirectVideo.value)
+const canPlay = computed(() => !!currentUrl.value && (isHls.value || isDirectVideo.value || isUnknownStream.value))
+
+const playError = ref('')
+let playErrorTimer = null
+
+function onVideoLoaded() {
+  playError.value = ''
+  if (playErrorTimer) { clearTimeout(playErrorTimer); playErrorTimer = null }
+}
+
+function hlsErrorText(data) {
+  const map = {
+    manifestLoadError: '播放列表加载失败（地址不可达、跨域或被拦截）',
+    manifestLoadTimeOut: '播放列表加载超时',
+    manifestParsingError: '播放列表格式错误（不是合法 m3u8）',
+    levelLoadError: '线路加载失败',
+    fragLoadError: '视频分片加载失败',
+    fragLoadTimeOut: '视频分片加载超时',
+    manifestIncompatibleCodecsError: '浏览器不支持该视频编码',
+    bufferAppendError: '视频缓冲写入失败',
+  }
+  return map[data?.details] || data?.details || '未知错误'
+}
+
+function videoErrorText(code) {
+  return ({
+    1: '加载被中止',
+    2: '网络错误（地址不可达或被拦截）',
+    3: '视频解码失败（浏览器不支持该编码）',
+    4: '媒体地址不支持或格式不匹配',
+  })[code] || '未知错误'
+}
+
+function onVideoError(e) {
+  // destroyPlayer 里的 removeAttribute('src') + load() 也会触发 error，忽略空 src 的情况。
+  if (!e.target?.getAttribute('src')) return
+  playError.value = '播放失败：' + videoErrorText(e.target?.error?.code) + '。可在新窗口打开原地址确认，或为站点配置视频解析地址。'
+}
 
 function destroyPlayer() {
+  if (playErrorTimer) { clearTimeout(playErrorTimer); playErrorTimer = null }
   if (hlsInstance) {
     try { hlsInstance.destroy() } catch (e) { /* 忽略销毁异常 */ }
     hlsInstance = null
@@ -356,29 +399,67 @@ function destroyPlayer() {
   }
 }
 
-// 按地址类型挂载播放器：HLS 用 hls.js（Safari 可直接播），mp4 等直接给 src。
+// 按地址类型挂载播放器。
+//
+// 关键：Linux/Chrome 的 canPlayType('application/vnd.apple.mpegurl') 会返回 'maybe'，
+// 但原生 <video> 实际解不了 m3u8（只有 Safari 能），直接赋 src 必然
+// MEDIA_ERR_SRC_NOT_SUPPORTED。因此只要 MediaSource 可用就一律优先用 hls.js，
+// 原生播放仅作为 hls.js 不可用且浏览器明确返回 'probably' 时的兜底。
 async function mountPlayer() {
   destroyPlayer()
+  playError.value = ''
   await nextTick()
   if (useFrame.value) return // 解析地址走 iframe，无需挂载 <video>
   const el = playerEl.value
   const url = currentUrl.value
   if (!el || !url || !canPlay.value) return
-  if (isHls.value) {
-    if (el.canPlayType('application/vnd.apple.mpegurl')) {
-      el.src = url
-    } else {
+  if (isHls.value || isUnknownStream.value) {
+    try {
       const Hls = await loadHls()
-      if (!Hls.isSupported()) return
-      hlsInstance = new Hls({ enableWorker: true })
-      hlsInstance.loadSource(url)
-      hlsInstance.attachMedia(el)
-      hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => { el.play().catch(() => {}) })
+      if (!Hls.isSupported()) throw new Error('浏览器不支持 MediaSource，无法播放 HLS')
+      const inst = new Hls({ enableWorker: true })
+      hlsInstance = inst
+      let recovered = false
+      inst.on(Hls.Events.MANIFEST_PARSED, () => { el.play().catch(() => {}) })
+      inst.on(Hls.Events.ERROR, (_evt, data) => {
+        if (!data?.fatal) return
+        // 无后缀地址可能其实是直链视频：hls.js 试播失败后回退 <video> 再试一次。
+        if (isUnknownStream.value) {
+          try { inst.destroy() } catch (e) { /* 忽略 */ }
+          hlsInstance = null
+          el.src = url
+          el.play().catch(() => {})
+          return
+        }
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR && !recovered) {
+          recovered = true
+          playError.value = 'HLS ' + hlsErrorText(data) + '，正在重试…'
+          try { inst.startLoad() } catch (e) { /* 忽略 */ }
+          // 重试迟迟不成功时给出明确结论，避免一直停在「正在重试」。
+          playErrorTimer = setTimeout(() => {
+            if (playError.value.includes('正在重试')) {
+              playError.value = 'HLS 播放失败：' + hlsErrorText(data) + '。请检查站点的播放域名 / 解析地址配置，或在新窗口打开原地址确认。'
+            }
+          }, 8000)
+          return
+        }
+        playError.value = 'HLS 播放失败：' + hlsErrorText(data) + '。可在新窗口打开原地址确认，或为站点配置视频解析地址。'
+      })
+      inst.loadSource(url)
+      inst.attachMedia(el)
+      return
+    } catch (e) {
+      // 只有明确支持原生 HLS（Safari 返回 'probably'）时才回退，'maybe' 不可信。
+      if (el.canPlayType('application/vnd.apple.mpegurl') === 'probably') {
+        el.src = url
+        el.play().catch(() => {})
+        return
+      }
+      playError.value = '无法播放该地址：' + (e?.message || String(e))
       return
     }
-  } else {
-    el.src = url
   }
+  el.src = url
   el.play().catch(() => { /* 自动播放被浏览器拦截时由用户点播放键 */ })
 }
 
@@ -1276,7 +1357,8 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
         <div class="modal-body">
           <template v-if="detailTab === 'play'">
             <div class="player-wrap">
-              <video v-show="!useFrame" ref="playerEl" class="player" controls playsinline preload="metadata"></video>
+              <video v-show="!useFrame" ref="playerEl" class="player" controls playsinline preload="metadata"
+                     @error="onVideoError" @loadeddata="onVideoLoaded"></video>
               <iframe v-if="useFrame" :key="currentUrl" class="player-frame" :src="currentUrl"
                       allow="autoplay; fullscreen; encrypted-media" allowfullscreen
                       referrerpolicy="no-referrer"></iframe>
@@ -1286,11 +1368,14 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
                 可在<strong>解析页面内</strong>点击播放。
                 <a v-if="currentUrl" :href="currentUrl" target="_blank" rel="noopener" class="ep-url">在新窗口打开</a>
               </p>
-              <p v-else-if="!canPlay" class="hint">
-                当前集不是可直链播放的视频地址：<code>{{ currentUrl || '（空地址）' }}</code>
+              <p v-else-if="!currentUrl" class="hint">
+                当前线路这一集没有播放地址。
+              </p>
+              <p v-else class="hint">m3u8 优先用 hls.js 播放，mp4 / webm 走直链；无后缀地址会先按 HLS 试播再回退直链。切换线路或集数即时切换。</p>
+              <p v-if="playError" class="play-error">
+                {{ playError }}
                 <a v-if="currentUrl" :href="currentUrl" target="_blank" rel="noopener" class="ep-url">在新窗口打开</a>
               </p>
-              <p v-else class="hint">支持 m3u8（自动用 hls.js 播放）与 mp4 / webm 直链；切换线路或集数即时切换。</p>
             </div>
             <template v-if="playGroups.length">
               <div class="group-tabs">
@@ -1496,6 +1581,7 @@ th { color: #86909c; font-weight: 500; }
 .group-tabs, .ep-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .ep-chips { max-height: 168px; overflow-y: auto; padding: 2px; }
 .play-url { margin: 10px 0 0; font-size: 11px; color: #86909c; word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.play-error { margin: 10px 0 0; padding: 9px 12px; border: 1px solid #ffb3b3; background: #fff2f0; border-radius: 6px; font-size: 12px; color: #cb2634; line-height: 1.7; word-break: break-all; }
 /* 分类树：资源站点 → 一级分类 → 二级分类 */
 .tree { display: flex; flex-direction: column; gap: 12px; }
 .tree-site { border: 1px solid #e5e6eb; border-radius: 8px; overflow: hidden; }

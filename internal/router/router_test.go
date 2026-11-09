@@ -1590,6 +1590,9 @@ func TestSourcePlayRewriteAPI(t *testing.T) {
 	if got := groups[0].Episodes[0].Url; got != want {
 		t.Fatalf("列表播放地址改写异常: %q，期望 %q", got, want)
 	}
+	if !groups[0].Episodes[0].Frame {
+		t.Error("列表播放组应带 frame=true，供前端用 iframe 承载解析页面")
+	}
 
 	// 3. 播放组子资源同样改写
 	w = httptest.NewRecorder()
@@ -1601,6 +1604,9 @@ func TestSourcePlayRewriteAPI(t *testing.T) {
 	}
 	if got[0].Episodes[0].Url != want {
 		t.Fatalf("播放组地址改写异常: %q", got[0].Episodes[0].Url)
+	}
+	if !got[0].Episodes[0].Frame {
+		t.Error("播放组接口应带 frame=true")
 	}
 
 	// 4. 清空配置后恢复原始地址（数据库里始终是原始值）

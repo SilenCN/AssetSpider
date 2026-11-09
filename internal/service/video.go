@@ -81,10 +81,18 @@ func applyPlayRewrite(v *model.Video, r URLRewriter) {
 		return // 播放组数据损坏时保持原样，交由详情页提示
 	}
 	changed := false
+	frame := r.UsesFrame()
 	for i := range groups {
 		for j := range groups[i].Episodes {
-			if next := r.Rewrite(groups[i].Episodes[j].Url); next != groups[i].Episodes[j].Url {
-				groups[i].Episodes[j].Url = next
+			ep := &groups[i].Episodes[j]
+			if next := r.Rewrite(ep.Url); next != ep.Url {
+				ep.Url = next
+				changed = true
+			}
+			// 拼了解析地址后得到的是解析页面 URL，前端必须走 iframe，
+			// 不能按 .m3u8 / .mp4 后缀交给 <video> 播放。
+			if frame && ep.Url != "" && !ep.Frame {
+				ep.Frame = true
 				changed = true
 			}
 		}
