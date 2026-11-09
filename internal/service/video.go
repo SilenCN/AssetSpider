@@ -21,6 +21,7 @@ type VideoList struct {
 type VideoListQuery struct {
 	SourceID   uint
 	CategoryID uint
+	TagID      uint
 	Keyword    string
 	Area       string
 	Sort       string
@@ -156,6 +157,7 @@ func (s *VideoService) List(query VideoListQuery, p ...Principal) (VideoList, er
 	items, total, err := s.videos.ListVideos(repository.VideoQuery{
 		SourceID:         query.SourceID,
 		CategoryID:       query.CategoryID,
+		TagID:            query.TagID,
 		Keyword:          strings.TrimSpace(query.Keyword),
 		Area:             strings.TrimSpace(query.Area),
 		Sort:             strings.TrimSpace(query.Sort),

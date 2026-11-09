@@ -33,6 +33,7 @@ const sources = ref([])
 const videos = ref([])
 const categories = ref([])
 const categoryTree = ref([])
+const tags = ref([])
 const jobs = ref([])
 const tasks = ref([])
 const users = ref([])
@@ -45,6 +46,7 @@ const notice = ref(null)
 const videoQuery = ref('')
 const videoSource = ref('')
 const videoCategory = ref('')
+const videoTag = ref('')
 const videoArea = ref('')
 const videoSort = ref('time_desc')
 const areas = ref([])
@@ -93,6 +95,7 @@ async function loadVideos() {
   if (videoQuery.value.trim()) p.set('q', videoQuery.value.trim())
   if (videoSource.value) p.set('source_id', String(videoSource.value))
   if (videoCategory.value) p.set('category_id', String(videoCategory.value))
+  if (videoTag.value) p.set('tag_id', String(videoTag.value))
   if (videoArea.value) p.set('area', videoArea.value)
   if (videoSort.value) p.set('sort', videoSort.value)
   const d = await request('/api/videos/v1?' + p.toString())
@@ -121,6 +124,9 @@ async function loadCategories() {
 async function loadCategoryTree() {
   categoryTree.value = (await request('/api/categories/v1/tree')) || []
 }
+async function loadTags() {
+  tags.value = (await request('/api/tags/v1')) || []
+}
 
 async function loadUsers() {
   if (!isAdmin.value) { users.value = []; return }
@@ -132,7 +138,7 @@ async function refresh() {
   try {
     const pending = [
       loadHealth(), loadSources(), loadVideos(), loadJobs(),
-      loadCategories(), loadCategoryTree(), loadAreas(), loadTasks(),
+      loadCategories(), loadCategoryTree(), loadTags(), loadAreas(), loadTasks(),
     ]
     if (isAdmin.value) pending.push(loadUsers())
     await Promise.all(pending)
@@ -151,6 +157,15 @@ function activeTaskOf(sourceId) {
 }
 function showCategoryVideos(c) {
   videoCategory.value = String(c.id)
+  videoPage.value = 1
+  tab.value = 'videos'
+  loadVideos().catch(e => { error.value = e.message })
+}
+// 点击卡片上的标签：按该标签筛选资源库（标签名大小写不敏感匹配）。
+function filterByTag(name) {
+  const t = tags.value.find(x => (x.name || '').toLowerCase() === String(name).toLowerCase())
+  if (!t) return
+  videoTag.value = String(t.id)
   videoPage.value = 1
   tab.value = 'videos'
   loadVideos().catch(e => { error.value = e.message })
@@ -321,6 +336,24 @@ function scoreOf(v) {
 function metaLine(v) {
   const cn = v?.categoryId ? (categories.value.find(c => c.id === v.categoryId)?.name || '') : ''
   return [v?.vodArea, v?.vodYear, cn].filter(Boolean).join(' · ')
+}
+// 把 vod_tag 拆成标签数组用于展示（与后端 ParseTags 保持同样的分隔符语义）。
+function tagListOf(v) {
+  const raw = (v?.vodTag || '').trim()
+  if (!raw) return []
+  const seen = new Set()
+  const out = []
+  for (const seg of raw.split(/[,，/、|;；\t]+/)) {
+    for (const part of seg.trim().split(/\s+/)) {
+      const t = part.trim()
+      if (!t) continue
+      const k = t.toLowerCase()
+      if (seen.has(k)) continue
+      seen.add(k)
+      out.push(t)
+    }
+  }
+  return out
 }
 
 // ---------- 详情与播放 ----------
@@ -1221,6 +1254,10 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
             <option value="">全部分类</option>
             <option v-for="c in categories" :key="c.id" :value="c.id">{{ catLabel(c) }}</option>
           </select>
+          <select v-model="videoTag" @change="searchVideos" title="按标签筛选">
+            <option value="">全部标签</option>
+            <option v-for="t in tags" :key="t.id" :value="t.id">{{ siteNameOf(t.sourceId) }} · {{ t.name }}</option>
+          </select>
           <select v-model="videoArea" @change="searchVideos" title="按地域筛选">
             <option value="">全部地域</option>
             <option v-for="a in areas" :key="a" :value="a">{{ a }}</option>
@@ -1250,6 +1287,9 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
             <div class="res-info">
               <h4 :title="v.vodName">{{ v.vodName || v.vodId }}</h4>
               <p v-if="metaLine(v)" class="res-meta">{{ metaLine(v) }}</p>
+              <div v-if="tagListOf(v).length" class="res-tags">
+                <span v-for="t in tagListOf(v).slice(0, 4)" :key="t" class="res-tag" :title="`按标签「${t}」筛选`" @click.stop="filterByTag(t)">{{ t }}</span>
+              </div>
               <p class="res-time">{{ v.vodTime || formatTime(v.firstSeenAt) }}</p>
             </div>
           </article>
@@ -1485,6 +1525,9 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
               <span v-if="scoreOf(detail)"> · 评分 {{ scoreOf(detail) }}</span>
               <span v-if="detail.vodRemarks && detail.vodRemarks !== episodeLabel(detail)"> · {{ detail.vodRemarks }}</span>
             </p>
+            <div v-if="tagListOf(detail).length" class="res-tags detail-tags">
+              <span v-for="t in tagListOf(detail)" :key="t" class="res-tag" :title="`按标签「${t}」筛选`" @click="closeDetail(); filterByTag(t)">{{ t }}</span>
+            </div>
           </div>
           <button class="ghost" @click="closeDetail">关闭</button>
         </div>
@@ -1721,7 +1764,11 @@ th { color: #86909c; font-weight: 500; }
 .res-info { padding: 8px 10px 10px; }
 .res-info h4 { margin: 0 0 4px; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .res-meta { margin: 0 0 3px; font-size: 11px; color: #86909c; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.res-tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 3px; }
+.res-tag { font-size: 10px; line-height: 1; padding: 3px 6px; border-radius: 999px; background: #eef4ff; color: #2f6df6; cursor: pointer; white-space: nowrap; }
+.res-tag:hover { background: #dde9ff; }
 .res-time { margin: 0; font-size: 11px; color: #a9aeb8; }
+.detail-tags { margin-top: 6px; }
 /* 详情播放器与线路 / 剧集选择 */
 .player-wrap { margin-top: 4px; }
 .player { width: 100%; max-height: 420px; background: #000; border-radius: 8px; display: block; }

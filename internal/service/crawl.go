@@ -99,6 +99,7 @@ type CrawlService struct {
 	sources    repository.SourceRepository
 	videos     repository.VideoRepository
 	categories repository.CategoryRepository
+	tags       repository.TagRepository
 	jobs       repository.JobRepository
 	fetcher    *collector.Fetcher
 	cfg        config.CollectorConfig
@@ -114,6 +115,7 @@ func NewCrawlService(
 	sources repository.SourceRepository,
 	videos repository.VideoRepository,
 	categories repository.CategoryRepository,
+	tags repository.TagRepository,
 	jobs repository.JobRepository,
 	cfg config.CollectorConfig,
 ) *CrawlService {
@@ -121,6 +123,7 @@ func NewCrawlService(
 		sources:    sources,
 		videos:     videos,
 		categories: categories,
+		tags:       tags,
 		jobs:       jobs,
 		fetcher:    collector.NewFetcher(cfg),
 		cfg:        cfg,
@@ -338,10 +341,35 @@ func (s *CrawlService) crawl(
 			}
 		}
 
+		// 按视频自带的 vod_tag 幂等创建本站标签（仅建标签实体，关联回填在影片入库后）。
+		tagIDsByVod, err := s.tags.EnsureForVideos(src.ID, videos)
+		if err != nil {
+			res.ResumePage = page
+			return fmt.Errorf("第 %d 页标签归档失败: %w", page, err)
+		}
+
 		stats, err := s.videos.UpsertVideos(videos)
 		if err != nil {
 			res.ResumePage = page
 			return fmt.Errorf("第 %d 页入库失败: %w", page, err)
+		}
+		// 影片主键现已确定，把本批次标签关联回填到 video_tags（先删后插，幂等）。
+		// 注意要解析「本批全部影片」的主键而非只有标签的：无标签影片也要清空历史关联，
+		// 否则标签被移除后旧关联会残留。
+		if len(videos) > 0 {
+			allVodIDs := make([]string, 0, len(videos))
+			for i := range videos {
+				allVodIDs = append(allVodIDs, videos[i].VodID)
+			}
+			idByVod, err := s.videos.MapVodIDs(src.ID, allVodIDs)
+			if err != nil {
+				res.ResumePage = page
+				return fmt.Errorf("第 %d 页解析影片主键失败: %w", page, err)
+			}
+			if err := s.tags.LinkVideos(idByVod, tagIDsByVod); err != nil {
+				res.ResumePage = page
+				return fmt.Errorf("第 %d 页标签关联失败: %w", page, err)
+			}
 		}
 		res.Fetched += len(videos)
 		res.New += stats.New

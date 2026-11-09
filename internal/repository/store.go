@@ -6,6 +6,7 @@
 //	source.go   → SourceRepository    （model.Source）
 //	video.go    → VideoRepository     （model.Video）
 //	category.go → CategoryRepository  （model.Category）
+//	tag.go      → TagRepository       （model.Tag / model.VideoTag）
 //	job.go      → JobRepository       （model.CrawlJob）
 //	user.go     → UserRepository      （model.User / model.Session / model.UserSource）
 //
@@ -31,6 +32,7 @@ type Repositories struct {
 	Sources    SourceRepository
 	Videos     VideoRepository
 	Categories CategoryRepository
+	Tags       TagRepository
 	Jobs       JobRepository
 	Users      UserRepository
 
@@ -61,6 +63,8 @@ func Open(path string) (*Repositories, error) {
 		&model.Source{},
 		&model.Video{},
 		&model.Category{},
+		&model.Tag{},
+		&model.VideoTag{},
 		&model.CrawlJob{},
 		&model.User{},
 		&model.Session{},
@@ -73,6 +77,7 @@ func Open(path string) (*Repositories, error) {
 		Sources:    NewSourceRepository(db),
 		Videos:     NewVideoRepository(db),
 		Categories: NewCategoryRepository(db),
+		Tags:       NewTagRepository(db),
 		Jobs:       NewJobRepository(db),
 		Users:      NewUserRepository(db),
 		db:         db,

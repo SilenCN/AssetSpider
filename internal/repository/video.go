@@ -21,6 +21,7 @@ type UpsertStats struct {
 type VideoQuery struct {
 	SourceID   uint
 	CategoryID uint
+	TagID      uint   // 按标签过滤（经 video_tags 关联表）
 	Keyword    string
 	Area       string // 地域（vod_area 模糊匹配）
 	Sort       string // 排序标识，见 videoOrder；空则按 id 倒序
@@ -42,6 +43,8 @@ type VideoRepository interface {
 	// 读取类方法都接受可选的站点白名单，语义见 visibility.go。
 	GetVideo(id uint, visible ...[]uint) (*model.Video, error)
 	ListVideos(query VideoQuery) ([]model.Video, int64, error)
+	// MapVodIDs 把一批 vod_id 解析为库内影片主键，供标签关联回填等场景使用。
+	MapVodIDs(sourceID uint, vodIDs []string) (map[string]uint, error)
 	ListVideoAreas(visible ...[]uint) ([]string, error)
 	CountVideosBySource(visible ...[]uint) (map[uint]int64, error)
 	CountVideosByCategory(visible ...[]uint) (map[uint]int64, error)
@@ -137,6 +140,29 @@ func (r *videoRepository) GetVideo(id uint, visible ...[]uint) (*model.Video, er
 	return &v, nil
 }
 
+// MapVodIDs 把一批 vod_id 解析为库内影片主键。
+// 仅查指定站点，返回 vod_id → 主键 的映射（查不到的 vod_id 不出现在结果里）。
+func (r *videoRepository) MapVodIDs(sourceID uint, vodIDs []string) (map[string]uint, error) {
+	out := make(map[string]uint, len(vodIDs))
+	if len(vodIDs) == 0 {
+		return out, nil
+	}
+	type kv struct {
+		VodID string
+		ID    uint
+	}
+	var rows []kv
+	if err := r.db.Model(&model.Video{}).
+		Where("source_id = ? AND vod_id IN ?", sourceID, vodIDs).
+		Select("vod_id, id").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.VodID] = row.ID
+	}
+	return out, nil
+}
+
 // videoOrder 把排序标识映射为白名单内的 ORDER BY 片段。
 // 只允许固定几组排序，避免把外部输入直接拼进 SQL。
 func videoOrder(sort string) string {
@@ -179,6 +205,11 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, int64, er
 			ids = []uint{query.CategoryID}
 		}
 		q = q.Where("category_id IN ?", ids)
+	}
+	if query.TagID > 0 {
+		// 标签与影片是多对多：命中该标签的影片即通过 video_tags 内连接筛选。
+		q = q.Joins("JOIN video_tags ON video_tags.video_id = videos.id").
+			Where("video_tags.tag_id = ?", query.TagID)
 	}
 	if area := strings.TrimSpace(query.Area); area != "" {
 		// 各站点对地域的叫法不完全一致（大陆 / 中国大陆），用模糊匹配更宽容。

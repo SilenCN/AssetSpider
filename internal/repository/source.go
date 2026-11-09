@@ -114,6 +114,18 @@ func (r *sourceRepository) UpdateSource(id uint, in *model.Source) (*model.Sourc
 // 跨表只是引用完整性约束，仍归属站点仓储的删除语义。
 func (r *sourceRepository) DeleteSource(id uint) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		// video_tags 没有 source_id，需先按本源影片主键清理连接表，且必须在删除影片之前完成，
+		// 否则影片删掉后就再也定位不到这些关联。
+		var videoIDs []uint
+		if err := tx.Model(&model.Video{}).Where("source_id = ?", id).
+			Pluck("id", &videoIDs).Error; err != nil {
+			return err
+		}
+		if len(videoIDs) > 0 {
+			if err := tx.Where("video_id IN ?", videoIDs).Delete(&model.VideoTag{}).Error; err != nil {
+				return err
+			}
+		}
 		if err := tx.Where("source_id = ?", id).Delete(&model.Video{}).Error; err != nil {
 			return err
 		}
@@ -121,6 +133,9 @@ func (r *sourceRepository) DeleteSource(id uint) error {
 			return err
 		}
 		if err := tx.Where("source_id = ?", id).Delete(&model.Category{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("source_id = ?", id).Delete(&model.Tag{}).Error; err != nil {
 			return err
 		}
 		// 站点删除后同步撤掉所有用户对该站点的授权，避免 user_sources 悬挂。

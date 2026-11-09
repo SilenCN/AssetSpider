@@ -166,6 +166,17 @@ go build -o bin/assetspider .
 - **父级暂未采集到也安全**：若某批只采到二级（其 `type_pid` 指向的一级分类尚未出现），该分类先记为二级、父级留空；待该一级分类（经由 `type_id_1` 推断或后续直接出现）到位后，会自动回挂到正确父级，不会丢层级。
 - `categories` 表新增 `type_pid` / `parent_id` / `level` 三列（由 GORM 自动迁移），现有单级分类升级后默认 `level=1`、无父级，向后兼容。
 
+### 标签（按 vod_tag 自动归档）
+
+采集到视频时，还会按其自带的 `vod_tag` **自动拆分标签并建立关联**，与分类一样无需手工维护：
+
+- `vod_tag` 的多个标签用半角/全角逗号、斜杠、竖线、顿号或空格分隔，采集时统一拆分为独立标签（去空格、去重、大小写不敏感）。
+- **每个资源站一套标签**：`tags` 表用 `(source_id, name)` 复合唯一索引，不同站点即使标签同名也各建各的，互不串扰。
+- 标签与影片是**多对多**关系，经 `video_tags(video_id, tag_id)` 连接表关联。每批入库后按「先删后插」回填：影片标签变化会联动更新，标签被移除时历史关联一并清除。
+- 对内容指纹未变的历史影片，跑一次全量采集即可补齐标签与关联。
+- 删除站点时，其 `video_tags` 关联与 `tags` 随影片和采集记录一起级联清理。
+- 资源库支持**按标签筛选**：`GET /api/videos/v1?tag_id=` 命中带该标签的影片；标签列表与影片数见 `GET /api/tags/v1`。
+
 ### 播放组解析（苹果CMS 字段）
 
 苹果CMS 用「播放组」表达同一影片在多个线路上的播放地址，靠三个字段按固定分隔符拼接：
@@ -366,13 +377,14 @@ auth:
 | tasks | POST | `/api/tasks/v1/:id/rerun` | **重新运行**已结束的任务：**复用原记录**忽略断点从第 1 页重来，统计与尝试次数清零，返回 `202` 与任务视图（运行中返回 409） |
 | tasks | GET | `/api/tasks/v1/capacity` | 读取并发容量 |
 | tasks | PUT | `/api/tasks/v1/capacity` | 调整同时运行的任务数：`{"maxConcurrent":2}`（1..64） |
-| videos | GET | `/api/videos/v1?source_id=&category_id=&area=&q=&sort=&page=&size=` | 分页查询入库影片（返回全部字段、extra、categoryId）。`q` 匹配名称/别名/演员/导演/分类/地域；`category_id` 按自动归档的分类过滤（含子分类）；`area` 按地域模糊筛选；`sort` 取值 `time_desc`（更新时间↓）/`time_asc`/`score_desc`（评分↓）/`score_asc`，空则为 id 倒序 |
+| videos | GET | `/api/videos/v1?source_id=&category_id=&tag_id=&area=&q=&sort=&page=&size=` | 分页查询入库影片（返回全部字段、extra、categoryId）。`q` 匹配名称/别名/演员/导演/分类/地域；`category_id` 按自动归档的分类过滤（含子分类）；`tag_id` 按自动归档的标签过滤；`area` 按地域模糊筛选；`sort` 取值 `time_desc`（更新时间↓）/`time_asc`/`score_desc`（评分↓）/`score_asc`，空则为 id 倒序 |
 | videos | GET | `/api/videos/v1/areas` | 库中出现过的地域去重列表，供前端筛选下拉 |
 | videos | GET | `/api/videos/v1/:id` | 单条影片完整记录 |
 | videos | GET | `/api/videos/v1/:id/play-groups` | 该影片的播放组数组（来自苹果CMS 播放组字段，已解析为结构化 JSON） |
 | categories | GET | `/api/categories/v1?source_id=` | 视频分类列表，含 `videoCount`；`source_id` 只看该资源站的一套分类 |
 | categories | GET | `/api/categories/v1/tree?source_id=` | 视频分类二级树（父分类在前、子分类嵌套），按苹果CMS type_pid 模型 |
 | categories | GET | `/api/categories/v1/:id` | 单个分类详情 |
+| tags | GET | `/api/tags/v1?source_id=` | 视频标签列表，含 `videoCount`；`source_id` 只看该资源站的一套标签 |
 | meta | GET | `/api/meta/v1/fields` | 全字段元数据：`total`、`groups`、`fields[]`（`key` 原始键、`json` 前端键、`desc` 中文含义、`group`、`label`、`long`） |
 | jobs | GET | `/api/jobs/v1?source_id=&limit=` | 采集记录（含 `queued` / `running` / `paused` / `success` / `failed` 与续采页码 `resumePage`） |
 
@@ -474,12 +486,14 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 │   │   ├── source.go             # SourceRepository     → model.Source
 │   │   ├── video.go              # VideoRepository      → model.Video（全字段 upsert）
 │   │   ├── category.go           # CategoryRepository   → model.Category（自动归档）
+│   │   ├── tag.go                # TagRepository        → model.Tag / VideoTag（自动归档、多对多）
 │   │   ├── job.go                # JobRepository        → model.CrawlJob
 │   │   └── *_test.go             # 每个实体各一份测试 + store_test.go
 │   ├── model/                    # 横切：GORM 模型
 │   │   ├── video.go              # 全字段 Video 实体（含 CategoryID）
 │   │   ├── user.go               # User / Session / UserSource（认证与站点授权）
 │   │   ├── category.go           # Category 实体（按站点隔离）
+│   │   ├── tag.go                # Tag 实体 + VideoTag 多对多连接表
 │   │   └── video_fields.go       # VodFields 字段清单（唯一数据源）
 │   ├── config/                   # 横切：配置加载与校验
 │   ├── utils/                    # 横切 utils 层：纯工具（不依赖任何 internal 业务包）

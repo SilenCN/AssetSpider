@@ -20,6 +20,7 @@ func (v *VideoController) List(c *gin.Context) {
 	out, err := v.svc.List(service.VideoListQuery{
 		SourceID:   utils.ParseUintQuery(c.Query("source_id")),
 		CategoryID: utils.ParseUintQuery(c.Query("category_id")),
+		TagID:      utils.ParseUintQuery(c.Query("tag_id")),
 		Keyword:    c.Query("q"),
 		Area:       c.Query("area"),
 		Sort:       c.Query("sort"),

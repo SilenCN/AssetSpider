@@ -27,6 +27,7 @@ type mockItem struct {
 	NumericID bool
 	PlayURL   string
 	From      string // 覆盖默认 vod_play_from（苹果CMS 播放组名）
+	Tag       string // vod_tag 标签串（为空则不设置标签，避免其它用例误建标签）
 }
 
 type mockSite struct {
@@ -53,6 +54,9 @@ func fullFieldRecord(it mockItem) map[string]interface{} {
 	// 上面的循环会把 type_id_1 等也填上序号值，这里只保留测试关心的字段，
 	// 避免意外制造出二级分类（本用例验证的是单级自动归档）。
 	m["type_id_1"] = ""
+	// vod_tag 默认清空，避免每条影片都被解析出「序号」标签干扰其它用例；
+	// 需要验证标签的用例显式通过 mockItem.Tag 指定。
+	m["vod_tag"] = it.Tag
 	var id interface{} = it.ID
 	if it.NumericID {
 		n, _ := strconv.Atoi(it.ID)
@@ -152,7 +156,7 @@ func newCrawlService(t *testing.T) (*repository.Repositories, *CrawlService) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return st, NewCrawlService(st.Sources, st.Videos, st.Categories, st.Jobs, config.Default().Collector)
+	return st, NewCrawlService(st.Sources, st.Videos, st.Categories, st.Tags, st.Jobs, config.Default().Collector)
 }
 
 func addSource(t *testing.T, st *repository.Repositories, apiBase string, enabled bool) uint {
