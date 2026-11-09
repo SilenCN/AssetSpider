@@ -67,6 +67,119 @@ func TestNormalizePlayConfig(t *testing.T) {
 	}
 }
 
+// TestNormalizePicConfig 验证图片解析地址与图片域名的校验与规范化。
+func TestNormalizePicConfig(t *testing.T) {
+	if v, err := NormalizePicDomain(" img.example.com/ "); err != nil || v != "https://img.example.com" {
+		t.Errorf("图片域名规范化异常: %q %v", v, err)
+	}
+	if v, err := NormalizePicDomain(""); err != nil || v != "" {
+		t.Errorf("空图片域名应允许: %q %v", v, err)
+	}
+	if _, err := NormalizePicDomain("javascript:alert(1)"); err == nil {
+		t.Errorf("非 http(s) 图片域名应校验失败")
+	}
+	if v, err := NormalizePicAPI("https://img.example.com/p?url={url}"); err != nil || !strings.Contains(v, "{url}") {
+		t.Errorf("图片解析地址应允许占位符: %q %v", v, err)
+	}
+	if _, err := NormalizePicAPI("img.example.com/p"); err == nil {
+		t.Errorf("缺少协议的图片解析地址应校验失败")
+	}
+}
+
+// TestSourcePlayAndPicConfigRoundTrip 验证站点配置的两个新字段能保存并回读。
+func TestSourcePlayAndPicConfigRoundTrip(t *testing.T) {
+	st, err := repository.Open(filepath.Join(t.TempDir(), "source.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	svc := NewSourceService(st.Sources, st.Videos)
+	enabled := true
+	created, err := svc.Create(SourceInput{
+		Name: "图片改写", APIBase: "https://site.example.com/api.php/provide/vod/",
+		Enabled: &enabled, IncrementalHours: 24,
+		PicAPI: "https://img.example.com/proxy?url=", PicDomain: "img.example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 保存时已规范化：域名补协议、去尾斜杠
+	if created.PicDomain != "https://img.example.com" || created.PicAPI != "https://img.example.com/proxy?url=" {
+		t.Fatalf("图片配置规范化异常: %+v", created)
+	}
+
+	got, err := svc.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PicAPI != created.PicAPI || got.PicDomain != created.PicDomain {
+		t.Fatalf("图片配置回读异常: %+v", got)
+	}
+
+	// 非法配置必须被拒绝
+	bad := *created
+	bad.PicDomain = "ftp://img.example.com"
+	in := SourceInput{
+		Name: bad.Name, APIBase: bad.APIBase, Format: bad.Format,
+		PicDomain: bad.PicDomain,
+	}
+	if _, err := svc.Update(created.ID, in); err == nil {
+		t.Errorf("非法图片域名应校验失败")
+	}
+}
+
+// TestVideoServiceAppliesPicRewrite 验证封面图片按站点配置改写，且原始地址不被污染。
+func TestVideoServiceAppliesPicRewrite(t *testing.T) {
+	st, err := repository.Open(filepath.Join(t.TempDir(), "pic.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	src := &model.Source{
+		Name: "图片改写站点", APIBase: "https://site.example.com/api.php/provide/vod/",
+		Format: model.FormatMacCMSJSON, Enabled: true, IncrementalHours: 24,
+		PicAPI: "https://img.example.com/proxy?url=", PicDomain: "https://img2.example.com",
+	}
+	if err := st.Sources.CreateSource(src); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := st.Videos.UpsertVideos([]model.Video{{
+		SourceID: src.ID, VodID: "9", VodName: "封面改写",
+		VodPic:           "https://dead.example.net/p/1.jpg",
+		VodPicScreenshot: "https://dead.example.net/s/1.jpg#https://dead.example.net/s/2.jpg",
+	}})
+	if err != nil || stats.New != 1 {
+		t.Fatalf("入库失败: %+v %v", stats, err)
+	}
+
+	svc := NewVideoService(st.Videos, st.Sources)
+	list, err := svc.List(VideoListQuery{Page: 1, Size: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := list.Items[0]
+	// 先换域名，再拼代理地址
+	want := "https://img.example.com/proxy?url=https://img2.example.com/p/1.jpg"
+	if v.VodPic != want {
+		t.Errorf("封面改写异常: %q，期望 %q", v.VodPic, want)
+	}
+	// 截图是 # 连接的集合，逐段改写后拼回
+	if strings.Count(v.VodPicScreenshot, "#") != 1 || strings.Count(v.VodPicScreenshot, "img.example.com/proxy") != 2 {
+		t.Errorf("截图集合改写异常: %q", v.VodPicScreenshot)
+	}
+
+	// 数据库里仍是原始地址
+	stored, err := st.Videos.GetVideo(v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.VodPic != "https://dead.example.net/p/1.jpg" {
+		t.Errorf("原始封面地址不应被改写: %q", stored.VodPic)
+	}
+}
+
 // TestVideoServiceAppliesPlayRewrite 验证影片列表/播放组会按站点配置改写地址，
 // 且数据库中的原始播放地址保持不变（配置只影响读取）。
 func TestVideoServiceAppliesPlayRewrite(t *testing.T) {

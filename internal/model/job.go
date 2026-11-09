@@ -44,8 +44,9 @@ type CrawlJob struct {
 	// 1 表示首次尝试就结束。用于在记录里区分「重试后成功」与「一次成功」。
 	Attempt int `json:"attempt"`
 
-	// RetryOf 记录这条任务是手动「重试 / 重新运行」哪条记录产生的，
-	// 0 表示原始任务。仅用于展示来源，不参与调度。
+	// RetryOf 是历史字段：旧版本「重新运行」会新开一条记录并在这里记下来源任务。
+	// 现在继续 / 重试 / 重新运行都复用原记录，新记录不再产生该值（0）。
+	// 仅用于展示来源，不参与调度。
 	RetryOf uint `gorm:"index" json:"retryOf"`
 
 	Message    string     `gorm:"size:1024" json:"message"`

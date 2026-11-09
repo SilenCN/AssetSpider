@@ -945,12 +945,23 @@ func TestTaskPauseResumeAndCapacity(t *testing.T) {
 	if w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &resumed) != nil || resumed.JobID == 0 {
 		t.Fatalf("继续任务失败: %d %s", w.Code, w.Body.String())
 	}
-	if resumed.JobID == firstPaused.ID {
-		t.Fatalf("继续任务应创建新的采集记录")
+	if resumed.JobID != firstPaused.ID {
+		t.Fatalf("继续任务应复用原记录 %d，实际新开了 %d", firstPaused.ID, resumed.JobID)
 	}
-	waitFor("续采任务进入运行态且有进度", func() bool {
+	// 复用原记录后续采视图一开始就带着上一轮的累计统计，不能只看 Pages>=1，
+	// 否则会在还没真正采到新页面时就暂停（resume_page 不会前进）。
+	var resumedView struct {
+		Pages   int `json:"pages"`
+		Fetched int `json:"fetched"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &resumedView)
+	if resumedView.Pages < firstPaused.Pages || resumedView.Fetched < firstPaused.Fetched {
+		t.Fatalf("继续采集中应沿用原记录的累计统计：记录 %d 页/%d 条，视图 %d 页/%d 条",
+			firstPaused.Pages, firstPaused.Fetched, resumedView.Pages, resumedView.Fetched)
+	}
+	waitFor("续采任务进入运行态并采到新页面", func() bool {
 		it, ok := find(listTasks(), resumed.JobID)
-		return ok && it.Status == model.JobRunning && it.Pages >= 1
+		return ok && it.Status == model.JobRunning && it.Pages > firstPaused.Pages
 	})
 	if w := doJSON(r, http.MethodPut, "/api/tasks/v1/"+strconv.Itoa(int(resumed.JobID)),
 		map[string]string{"status": "paused"}); w.Code != http.StatusOK {
@@ -962,6 +973,9 @@ func TestTaskPauseResumeAndCapacity(t *testing.T) {
 	})
 
 	secondPaused := lastJob(t, r)
+	if secondPaused.ID != firstPaused.ID {
+		t.Fatalf("继续采集不应新开记录：期望 #%d，实际 #%d", firstPaused.ID, secondPaused.ID)
+	}
 	if secondPaused.Status != model.JobPaused {
 		t.Fatalf("续采后暂停状态异常: %+v", secondPaused)
 	}
@@ -1271,6 +1285,9 @@ func TestTaskManualRetryAndRerun(t *testing.T) {
 	if w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &rerun) != nil || rerun.JobID == 0 {
 		t.Fatalf("重新运行失败: %d %s", w.Code, w.Body.String())
 	}
+	if rerun.JobID != retried.JobID {
+		t.Fatalf("重新运行应复用原记录 %d，实际新开了 %d", retried.JobID, rerun.JobID)
+	}
 	rerunJob := waitJobStatus(t, r, rerun.JobID, model.JobSuccess)
 	mu.Lock()
 	rerunFirstPage := -1
@@ -1281,11 +1298,18 @@ func TestTaskManualRetryAndRerun(t *testing.T) {
 	if rerunFirstPage != 1 {
 		t.Fatalf("重新运行应从第 1 页开始，实际首请求页 %d", rerunFirstPage)
 	}
-	if rerunJob.RetryOf != retried.JobID {
-		t.Fatalf("重新运行记录应指出来源任务 %d，实际 %d", retried.JobID, rerunJob.RetryOf)
+	if rerunJob.RetryOf != 0 {
+		t.Fatalf("复用原记录时不应标记来源任务，实际 %d", rerunJob.RetryOf)
 	}
-	if rerunJob.Pages != 3 {
-		t.Fatalf("重新运行应完整采集 3 页，实际 %d", rerunJob.Pages)
+	// 统计在重新运行前被清零，最后只剩这一轮的 3 页 3 条。
+	if rerunJob.Pages != 3 || rerunJob.Fetched != 3 {
+		t.Fatalf("重新运行应完整采集 3 页 3 条，实际 %d 页 / %d 条", rerunJob.Pages, rerunJob.Fetched)
+	}
+	if rerunJob.Attempt != 1 {
+		t.Fatalf("重新运行应把尝试次数重新计数（1），实际 %d", rerunJob.Attempt)
+	}
+	if jobs := listJobs(t, r); len(jobs) != 1 {
+		t.Fatalf("重新运行不应新开任务，期望 1 条记录，实际 %d 条", len(jobs))
 	}
 
 	// 未知任务的各动作都返回 404

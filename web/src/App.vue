@@ -148,14 +148,108 @@ function activeTaskOf(sourceId) {
   return tasks.value.find(t =>
     t.sourceId === sourceId && (t.status === 'running' || t.status === 'queued')) || null
 }
-function sourceName(id) {
-  return sources.value.find(s => s.id === id)?.name || id
-}
 function showCategoryVideos(c) {
   videoCategory.value = String(c.id)
   videoPage.value = 1
   tab.value = 'videos'
   loadVideos().catch(e => { error.value = e.message })
+}
+
+// ---------- 分类树（站点 → 一级分类 → 二级分类）----------
+// 分类按站点隔离（source_id + cat_key 唯一），因此顶层用资源站点名分组，
+// 站点下再挂一级分类，一级分类下挂二级分类，构成最多三层的树。
+const catCollapsed = reactive(new Set())
+
+function isCatCollapsed(key) { return catCollapsed.has(key) }
+function toggleCat(key) {
+  if (catCollapsed.has(key)) catCollapsed.delete(key)
+  else catCollapsed.add(key)
+}
+// 虚拟分组节点没有分类 ID，用自身的 key 作为折叠标识
+function catKey(node) { return node.virtual ? node.key : `cat-${node.id}` }
+
+function siteNameOf(id) {
+  return sources.value.find(s => s.id === id)?.name || `站点 #${id}`
+}
+
+const categoryForest = computed(() => {
+  const sites = new Map()
+  for (const node of categoryTree.value) {
+    const sid = node.sourceId || 0
+    if (!sites.has(sid)) {
+      sites.set(sid, {
+        key: `site-${sid}`, sourceId: sid, name: siteNameOf(sid),
+        children: [], catCount: 0, videoCount: 0,
+      })
+    }
+    sites.get(sid).children.push(node)
+  }
+  const order = new Map(sources.value.map((s, i) => [s.id, i]))
+  return [...sites.values()]
+    .map(site => {
+      // 后端把「找不到父分类」的二级分类当成根节点一并返回（父分类可能没被采到，
+      // 例如站点只返回了二级分类的影片）。这类节点不直接铺在站点下，否则看起来
+      // 像是站点的一级分类，统一收进「未归类」分组。
+      const roots = []
+      const orphans = []
+      for (const node of site.children) {
+        if (node.level === 2) orphans.push(node)
+        else roots.push(node)
+      }
+      let catCount = 0
+      let videoCount = 0
+      const walk = n => {
+        catCount++
+        videoCount += n.videoCount || 0
+        for (const ch of n.children || []) walk(ch)
+      }
+      roots.forEach(walk)
+      orphans.forEach(walk)
+      if (orphans.length) {
+        roots.push({
+          key: `orphan-${site.sourceId}`, virtual: true, name: '未归类',
+          hint: '父分类未采集到，暂挂在此', videoCount: orphans.reduce((n, c) => n + (c.videoCount || 0), 0),
+          children: orphans,
+        })
+      }
+      site.children = roots
+      site.catCount = catCount
+      site.videoCount = videoCount
+      return site
+    })
+    .sort((a, b) => (order.get(a.sourceId) ?? 1e6) - (order.get(b.sourceId) ?? 1e6))
+})
+
+const catTotal = computed(() => categoryForest.value.reduce(
+  (n, s) => n + s.catCount, 0))
+
+// 分类下拉里带上层级路径（一级 / 二级），避免不同站点的同名分类难以区分
+const catPath = computed(() => {
+  const m = new Map()
+  const walk = (n, prefix) => {
+    const path = prefix ? `${prefix} / ${n.name}` : n.name
+    m.set(n.id, path)
+    for (const ch of n.children || []) walk(ch, path)
+  }
+  categoryTree.value.forEach(n => walk(n, ''))
+  return m
+})
+
+function catLabel(c) {
+  return `${siteNameOf(c.sourceId)} · ${catPath.value.get(c.id) || c.name}`
+}
+
+function toggleAllCats() {
+  const allOpen = categoryForest.value.every(s => !isCatCollapsed(s.key))
+  for (const site of categoryForest.value) {
+    const keys = [site.key]
+    const walk = n => { if (n.children?.length) keys.push(catKey(n)); (n.children || []).forEach(walk) }
+    site.children.forEach(walk)
+    for (const k of keys) {
+      if (allOpen) catCollapsed.add(k)
+      else catCollapsed.delete(k)
+    }
+  }
 }
 
 // ---------- 全字段详情 ----------
@@ -330,7 +424,7 @@ onBeforeUnmount(destroyPlayer)
 const emptyForm = () => ({
   id: null, name: '', apiBase: '', format: 'seacms_json', extraParams: '',
   incrementalHours: 24, maxPages: 0, enabled: true,
-  parseApi: '', playDomain: '',
+  parseApi: '', playDomain: '', picApi: '', picDomain: '',
 })
 const form = reactive(emptyForm())
 const editing = computed(() => !!form.id)
@@ -344,6 +438,7 @@ function sourcePayload(s) {
     incrementalHours: Number(s.incrementalHours) || 0,
     maxPages: Number(s.maxPages) || 0,
     parseApi: s.parseApi || '', playDomain: s.playDomain || '',
+    picApi: s.picApi || '', picDomain: s.picDomain || '',
   }
 }
 
@@ -353,6 +448,7 @@ function editSource(s) {
     extraParams: s.extraParams, incrementalHours: s.incrementalHours,
     maxPages: s.maxPages, enabled: s.enabled,
     parseApi: s.parseApi || '', playDomain: s.playDomain || '',
+    picApi: s.picApi || '', picDomain: s.picDomain || '',
   })
   tab.value = 'sources'
   window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -433,25 +529,25 @@ async function pauseTask(jobId) {
 async function resumeTask(jobId) {
   try {
     const t = await request(`/api/tasks/v1/${jobId}`, jsonOptions('PUT', { status: 'running' }))
-    notify(`已继续采集（新任务 #${t.jobId}）`, 'ok')
+    notify(`任务 #${t.jobId} 已继续，从暂停页接着采（同一记录，统计累加）`, 'ok')
     await Promise.all([loadTasks(), loadJobs()])
   } catch (e) { notify(e.message, 'err') }
 }
 
-// 失败任务：在原任务记录上从失败页续采（不新开任务，统计继续累加）
+// 失败任务：复用原记录，从失败页续采（统计与尝试次数继续累加）
 async function retryTask(jobId) {
   try {
     const t = await request(`/api/tasks/v1/${jobId}/retry`, { method: 'POST' })
-    notify(`任务 #${t.jobId} 已重新入队，将从上次失败的页面继续（统计累加）`, 'ok')
+    notify(`任务 #${t.jobId} 已重新入队，从失败页继续（同一记录，统计累加）`, 'ok')
     await Promise.all([loadTasks(), loadJobs()])
   } catch (e) { notify(e.message, 'err') }
 }
 
-// 已结束任务：忽略断点，从第 1 页重新采集
+// 已结束任务：复用原记录，忽略断点从第 1 页重采，统计清零
 async function rerunTask(jobId) {
   try {
     const t = await request(`/api/tasks/v1/${jobId}/rerun`, { method: 'POST' })
-    notify(`已重新运行任务 #${jobId}（新任务 #${t.jobId}），从第 1 页开始`, 'ok')
+    notify(`任务 #${t.jobId} 已重新运行，从第 1 页开始（同一记录，统计已清零）`, 'ok')
     await Promise.all([loadTasks(), loadJobs()])
   } catch (e) { notify(e.message, 'err') }
 }
@@ -740,7 +836,8 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
           采集为异步任务：发起后立即入队，同时运行的任务数不超过上面的上限，其余排队等待。
           运行中的任务可随时<b>暂停</b>——已完成分页的数据已经入库，全量采集的续采页码与增量采集的游标都会保存，
           点「继续」即可从断点接着采。抓取失败会<b>自动退避重试</b>（次数由 <code>collector.retry_times</code> 配置），
-          仍然失败的任务可在「采集记录」里<b>手动重试</b>（从失败页续采）或<b>重新运行</b>（从第 1 页重来）。
+          仍然失败的任务可在「采集记录」里<b>手动重试</b>（从失败页续采）或<b>重新运行</b>（从第 1 页重来）——
+          <b>继续 / 重试 / 重新运行都复用原任务记录</b>，不会多出一条历史；重新运行时统计与尝试次数清零。
         </p>
         <p v-if="!tasks.length" class="empty">当前没有排队或运行中的采集任务。</p>
         <div v-else class="table-wrap">
@@ -797,6 +894,8 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
           <input v-model="form.extraParams" placeholder="附加参数，如 t=1&amp;wd=电影" />
           <input v-model="form.parseApi" class="wide" placeholder="视频解析地址（可选）例：https://jx.example.com/?url= 或含 {url} 占位符" />
           <input v-model="form.playDomain" class="wide" placeholder="视频播放域名（可选）例：https://cdn.example.com —— 播放时替换原地址域名" />
+          <input v-model="form.picApi" class="wide" placeholder="图片解析/代理地址（可选）例：https://img.example.com/proxy?url= 或含 {url} 占位符" />
+          <input v-model="form.picDomain" class="wide" placeholder="图片域名（可选）例：https://img.example.com —— 封面等图片展示时替换原域名" />
           <label class="field">增量小时数
             <input v-model.number="form.incrementalHours" type="number" min="0" />
           </label>
@@ -808,7 +907,7 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
           <button v-if="editing" type="button" class="ghost" @click="resetForm">取消</button>
         </form>
         <p class="hint">采集协议：苹果CMS V10 Provide <code>api.php/provide/vod/?ac=videolist</code>，返回 JSON 的 <code>page / pagecount / total / list[]</code>（含 <code>vod_play_url</code> 播放地址）。增量采集附加 <code>h=&lt;小时数&gt;</code> 并按 <code>vod_time</code> 游标去重。接口返回的<strong>全部标准字段</strong>结构化入库，站点自定义字段存入 <code>extra</code>，不丢字段。</p>
-        <p class="hint">播放增强（都只影响播放时的地址，<strong>不改动入库的原始地址</strong>）：填了<strong>视频解析地址</strong>，播放地址变成「解析地址 + 原地址」（解析地址含 <code>{url}</code> 时按占位符拼接），此时详情页用解析页面播放；填了<strong>视频播放域名</strong>，播放时用该域名替换原地址的协议与域名，保留路径与参数。两者同时配置时先换域名、再拼解析地址。</p>
+        <p class="hint">地址改写（都只在读取时生效，<strong>不改动入库的原始地址</strong>）：填了<strong>视频解析地址</strong>，播放地址变成「解析地址 + 原地址」（解析地址含 <code>{url}</code> 时按占位符拼接），此时详情页用解析页面播放；填了<strong>视频播放域名</strong>，播放时用该域名替换原地址的协议与域名，保留路径与参数，两者同时配置时先换域名、再拼解析地址。<strong>图片解析地址 / 图片域名</strong>同理作用于封面、缩略图、幻灯片、原图与截图集合（<code>#</code> 分隔逐段改写），与播放地址互不影响。</p>
       </section>
 
       <section class="card">
@@ -827,10 +926,8 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
                 <td class="mono hide-sm">{{ s.id }}</td>
                 <td class="host">
                   {{ s.name }}
-                  <div v-if="s.parseApi || s.playDomain" class="tiny muted" :title="[s.parseApi && ('解析：' + s.parseApi), s.playDomain && ('播放域名：' + s.playDomain)].filter(Boolean).join(' / ')">
-                    <span v-if="s.parseApi">解析播放</span>
-                    <span v-if="s.parseApi && s.playDomain"> · </span>
-                    <span v-if="s.playDomain">域名替换</span>
+                  <div v-if="s.parseApi || s.playDomain || s.picApi || s.picDomain" class="tiny muted" :title="[s.parseApi && ('解析：' + s.parseApi), s.playDomain && ('播放域名：' + s.playDomain), s.picApi && ('图片代理：' + s.picApi), s.picDomain && ('图片域名：' + s.picDomain)].filter(Boolean).join(' / ')">
+                    {{ [s.parseApi && '解析播放', s.playDomain && '播放域名替换', (s.picApi || s.picDomain) && '图片改写'].filter(Boolean).join(' · ') }}
                   </div>
                 </td>
                 <td class="url hide-sm" :title="s.apiBase">{{ short(s.apiBase, 38) }}</td>
@@ -870,26 +967,47 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
       <section class="card">
         <div class="list-head">
           <h2>视频分类</h2>
-          <span class="muted">按资源站自动归档，共 {{ categories.length }} 个分类（支持二级）</span>
+          <span class="muted">
+            {{ categoryForest.length }} 个站点 · {{ catTotal }} 个分类（支持二级）
+            <button class="mini ghost" @click="toggleAllCats">展开 / 收起</button>
+          </span>
         </div>
         <p class="hint">采集时按接口返回的 type_id / type_name 自动创建分类并关联影片，每个资源站各自一套；依据苹果CMS 的 type_pid 模型支持二级分类：视频的 <code>type_id_1</code> 即所属一级分类 ID，二级分类会挂到对应一级分类之下。点「查看影片」可按分类（含其子分类）筛选影片。</p>
-        <p v-if="!categoryTree.length" class="empty">还没有分类，执行一次采集后会自动生成。</p>
-        <div v-else class="cat-tree">
-          <div v-for="node in categoryTree" :key="node.id" class="cat-node">
-            <div class="cat-row">
-              <span class="badge" :class="node.level === 1 ? 'on' : 'off'">{{ node.level === 1 ? '一级' : '二级' }}</span>
-              <b>{{ node.name }}</b>
-              <span class="muted">站点ID {{ node.typeId || '-' }}</span>
-              <span class="muted">{{ node.videoCount }} 部</span>
-              <button class="mini ghost" @click="showCategoryVideos(node)">查看影片</button>
+        <p v-if="!categoryForest.length" class="empty">还没有分类，执行一次采集后会自动生成。</p>
+        <div v-else class="tree">
+          <div v-for="site in categoryForest" :key="site.key" class="tree-site">
+            <div class="tree-row site" @click="toggleCat(site.key)">
+              <span class="twisty" :class="{ open: !isCatCollapsed(site.key) }">▶</span>
+              <b class="tree-title">{{ site.name }}</b>
+              <span class="muted">{{ site.catCount }} 个分类 · {{ site.videoCount }} 部影片</span>
             </div>
-            <div v-if="node.children && node.children.length" class="cat-children">
-              <div v-for="ch in node.children" :key="ch.id" class="cat-row child">
-                <span class="badge off">二级</span>
-                <b>{{ ch.name }}</b>
-                <span class="muted">站点ID {{ ch.typeId || '-' }}</span>
-                <span class="muted">{{ ch.videoCount }} 部</span>
-                <button class="mini ghost" @click="showCategoryVideos(ch)">查看影片</button>
+            <div v-show="!isCatCollapsed(site.key)" class="tree-kids">
+              <div v-for="node in site.children" :key="node.key || node.id" class="tree-branch">
+                <div class="tree-row" :class="{ group: node.virtual }">
+                  <span
+                    class="twisty"
+                    :class="{ open: !isCatCollapsed(catKey(node)), empty: !(node.children && node.children.length) }"
+                    @click.stop="node.children && node.children.length && toggleCat(catKey(node))"
+                  >▶</span>
+                  <span class="badge" :class="node.virtual ? 'queued' : (node.level === 1 ? 'on' : 'off')">{{ node.virtual ? '分组' : (node.level === 1 ? '一级' : '二级') }}</span>
+                  <b class="tree-title">{{ node.name }}</b>
+                  <span v-if="!node.virtual" class="muted hide-sm">站点ID {{ node.typeId || '-' }}</span>
+                  <span v-if="node.virtual" class="muted">{{ node.hint }}</span>
+                  <span class="muted">{{ node.videoCount }} 部</span>
+                  <span class="tree-gap"></span>
+                  <button v-if="!node.virtual" class="mini ghost" @click="showCategoryVideos(node)">查看影片</button>
+                </div>
+                <div v-if="node.children && node.children.length" v-show="!isCatCollapsed(catKey(node))" class="tree-kids">
+                  <div v-for="ch in node.children" :key="ch.id" class="tree-row leaf">
+                    <span class="twisty empty"></span>
+                    <span class="badge off">二级</span>
+                    <b class="tree-title">{{ ch.name }}</b>
+                    <span class="muted hide-sm">站点ID {{ ch.typeId || '-' }}</span>
+                    <span class="muted">{{ ch.videoCount }} 部</span>
+                    <span class="tree-gap"></span>
+                    <button class="mini ghost" @click="showCategoryVideos(ch)">查看影片</button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -904,7 +1022,7 @@ onBeforeUnmount(() => { clearInterval(taskTimer) })
           <input v-model="videoQuery" placeholder="按视频名称 / 别名 / 演员 / 导演搜索" @keyup.enter="searchVideos" />
           <select v-model="videoCategory" @change="searchVideos" title="按分类筛选">
             <option value="">全部分类</option>
-            <option v-for="c in categories" :key="c.id" :value="c.id">{{ sourceName(c.sourceId) }} · {{ c.name }}</option>
+            <option v-for="c in categories" :key="c.id" :value="c.id">{{ catLabel(c) }}</option>
           </select>
           <select v-model="videoArea" @change="searchVideos" title="按地域筛选">
             <option value="">全部地域</option>
@@ -1291,12 +1409,27 @@ th { color: #86909c; font-weight: 500; }
 .group-tabs, .ep-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .ep-chips { max-height: 168px; overflow-y: auto; padding: 2px; }
 .play-url { margin: 10px 0 0; font-size: 11px; color: #86909c; word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.cat-tree { display: flex; flex-direction: column; gap: 10px; }
-.cat-node { border: 1px solid #e5e6eb; border-radius: 8px; overflow: hidden; }
-.cat-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; flex-wrap: wrap; }
-.cat-row.child { background: #fafbfc; border-top: 1px solid #f0f1f3; padding-left: 34px; }
-.cat-row b { font-size: 14px; }
-.cat-children { }
+/* 分类树：资源站点 → 一级分类 → 二级分类 */
+.tree { display: flex; flex-direction: column; gap: 12px; }
+.tree-site { border: 1px solid #e5e6eb; border-radius: 8px; overflow: hidden; }
+.tree-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; flex-wrap: wrap; }
+.tree-row.site { background: #f7f8fa; cursor: pointer; user-select: none; }
+.tree-row.site:hover { background: #eef1f6; }
+.tree-row.group { background: #fbfbfe; }
+.tree-row.group b.tree-title { color: #4e5969; font-weight: 600; }
+.tree-row b.tree-title { font-size: 14px; }
+.tree-gap { flex: 1 1 0; min-width: 0; }
+.twisty {
+  width: 12px; flex: none; font-size: 10px; line-height: 1; color: #86909c;
+  display: inline-block; transition: transform .15s ease; transform: rotate(0deg);
+}
+.twisty.open { transform: rotate(90deg); }
+.twisty.empty { visibility: hidden; }
+.tree-kids { border-top: 1px solid #f0f1f3; }
+.tree-kids .tree-row { padding-left: 28px; }
+.tree-kids .tree-kids { border-top: 1px dashed #eef1f5; }
+.tree-kids .tree-kids .tree-row { padding-left: 46px; background: #fafbfc; }
+.tree-kids .tree-kids .tree-row:hover { background: #f5f7fa; }
 
 /* ---------- 手机端适配（≤760px） ---------- */
 /* 策略：表格保留横滚、隐藏次要列；表单与工具栏单列；弹窗与播放器铺满宽度。 */
@@ -1372,9 +1505,11 @@ th { color: #86909c; font-weight: 500; }
   .res-info h4 { font-size: 12px; }
   .res-meta, .res-time { font-size: 10px; }
 
-  .cat-row { padding: 9px 10px; gap: 6px; }
-  .cat-row.child { padding-left: 18px; }
-  .cat-row b { font-size: 13px; }
+  /* 分类树：收窄缩进，标题行允许换行不挤压按钮 */
+  .tree-row { padding: 9px 10px; gap: 6px; }
+  .tree-row b.tree-title { font-size: 13px; }
+  .tree-kids .tree-row { padding-left: 20px; }
+  .tree-kids .tree-kids .tree-row { padding-left: 34px; }
   .ep-name { min-width: 0; }
   .ep-list { padding-left: 16px; }
   .pager { gap: 10px; font-size: 12px; }
