@@ -105,11 +105,12 @@ jobs:
           echo "服务器架构 $RAW → 编译目标 linux/$GOARCH"
 
       # 纯 Go SQLite 驱动（modernc.org/sqlite），无需 CGO，可静态交叉编译。
+      # 即使没有部署密钥也照常构建，作为每次 push 的编译校验。
       - name: 构建自包含发布包
-        if: steps.precheck.outputs.ready == 'true'
         run: |
           set -euo pipefail
-          GOARCH="${TARGET_GOARCH}"
+          # 未探测到架构时（未配置部署密钥）默认 amd64，仅用于本地校验产物。
+          GOARCH="${TARGET_GOARCH:-amd64}"
           echo "::group::编译 Go 二进制"
           CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" GOARM="${TARGET_GOARM:-}" \
             go build -trimpath -ldflags='-s -w' -o "$RUNNER_TEMP/assetspider" .
