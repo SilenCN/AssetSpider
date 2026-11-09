@@ -19,7 +19,7 @@ web:
 collector:
   # 视频站点 JSON 采集器（苹果CMS V10 Provide api.php/provide/vod/?ac=videolist）
   timeout_seconds: 20           # 单次接口请求超时（秒）
-  max_pages: 5000              # 单次采集最多遍历页数，防止失控
+  max_pages: 4500              # 单次采集最多遍历页数，防止失控
   page_size: 0                 # 0 = 由站点返回决定；>0 时附加苹果CMS 的 pagesize 参数
   user_agent: "AssetSpider/1.0 (+maccms-json-collector)"
   default_incremental_hours: 24 # 站点未单独配置时的增量时间窗（对应接口 h 参数）
