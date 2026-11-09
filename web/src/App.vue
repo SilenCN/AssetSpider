@@ -53,7 +53,13 @@ const areas = ref([])
 const videoPage = ref(1)
 const videoSize = ref(24)
 const videoTotal = ref(0)
-const videoPages = computed(() => Math.max(1, Math.ceil(videoTotal.value / videoSize.value)))
+// 资源库改成「底部无限滚动」：列表是累计的，这里记已经加载到第几页、是否还有下一页。
+const videoLoading = ref(false)     // 首屏 / 搜索 / 切筛选：整表重载
+const videoLoadingMore = ref(false) // 滚到底加载下一页
+const videoEnd = computed(() => videos.value.length >= videoTotal.value)
+// 请求序号：搜索词或筛选条件连续变化时，只认最后一次请求的结果，
+// 避免先发后到的旧响应把新结果覆盖掉。
+let videoSeq = 0
 
 // 页面头部的「可见影片」直接累加站点表上的影片数快照（videoCount），
 // 不再依赖资源库列表接口返回的 total——那样每次刷新都要对 videos 表做一次 COUNT。
@@ -97,19 +103,61 @@ async function loadHealth() {
 async function loadSources() {
   sources.value = (await request('/api/sources/v1')) || []
 }
-async function loadVideos() {
-  const p = new URLSearchParams({ page: String(videoPage.value), size: String(videoSize.value) })
-  if (videoQuery.value.trim()) p.set('q', videoQuery.value.trim())
-  if (videoSource.value) p.set('source_id', String(videoSource.value))
-  if (videoCategory.value) p.set('category_id', String(videoCategory.value))
-  if (videoTag.value) p.set('tag_id', String(videoTag.value))
-  if (videoArea.value) p.set('area', videoArea.value)
-  if (videoSort.value) p.set('sort', videoSort.value)
-  const d = await request('/api/videos/v1?' + p.toString())
-  videos.value = d.items || []
-  videoTotal.value = d.total || 0
-  videoPage.value = d.page || 1
-  videoSize.value = d.size || 24
+// 拉取一页影片。append=true 时追加到现有列表（无限滚动），否则整表替换（搜索/筛选/刷新）。
+// 计数沿用后端语义：第一页没取满时 total 就是本页条数，省一次 COUNT。
+async function fetchVideos(page, append) {
+  const seq = ++videoSeq
+  if (append) {
+    videoLoadingMore.value = true
+  } else {
+    videoLoading.value = true
+    // 新的搜索/筛选从第一页开始，顺带回到顶部，否则还停在上一次的滚动位置
+    if (tab.value === 'videos') window.scrollTo(0, 0)
+  }
+  try {
+    const p = new URLSearchParams({ page: String(page), size: String(videoSize.value) })
+    if (videoQuery.value.trim()) p.set('q', videoQuery.value.trim())
+    if (videoSource.value) p.set('source_id', String(videoSource.value))
+    if (videoCategory.value) p.set('category_id', String(videoCategory.value))
+    if (videoTag.value) p.set('tag_id', String(videoTag.value))
+    if (videoArea.value) p.set('area', videoArea.value)
+    if (videoSort.value) p.set('sort', videoSort.value)
+    const d = await request('/api/videos/v1?' + p.toString())
+    if (seq !== videoSeq) return // 已经有更新的请求在跑，丢弃这次结果
+    const items = d.items || []
+    videos.value = append ? videos.value.concat(items) : items
+    videoTotal.value = d.total || 0
+    // 兜底：追加到空页说明确实到底了，防止 total 口径偏差导致反复请求
+    if (append && !items.length) videoTotal.value = videos.value.length
+    videoPage.value = d.page || page
+    videoSize.value = d.size || 24
+  } finally {
+    if (seq === videoSeq) {
+      videoLoading.value = false
+      videoLoadingMore.value = false
+      // 列表追加后哨兵可能仍在视口内（IntersectionObserver 不会重复触发），
+      // 等 DOM 更新完再重新 observe 一次强制按当前状态回调，
+      // 否则会卡在「还有下一页但不加载」。
+      nextTick(kickSentinel)
+    }
+  }
+}
+function kickSentinel() {
+  const el = videoSentinel.value
+  if (!videoObserver || !el) return
+  videoObserver.unobserve(el)
+  videoObserver.observe(el)
+}
+// 整表重载：搜索、切换筛选、刷新、从别的页签切回来都走这里，回到第一页。
+function loadVideos() {
+  videoPage.value = 1
+  return fetchVideos(1, false)
+}
+// 底部哨兵进入视口时加载下一页（已加载完或正在加载则忽略）。
+function loadMoreVideos() {
+  if (videoLoading.value || videoLoadingMore.value) return Promise.resolve()
+  if (videos.value.length >= videoTotal.value) return Promise.resolve()
+  return fetchVideos(videoPage.value + 1, true)
 }
 async function loadAreas() {
   try { areas.value = (await request('/api/videos/v1/areas')) || [] } catch (e) { areas.value = [] }
@@ -832,12 +880,23 @@ async function saveCapacity() {
   } catch (e) { notify(e.message, 'err') }
 }
 
-function searchVideos() { videoPage.value = 1; loadVideos().catch(e => { error.value = e.message }) }
-function gotoPage(p) {
-  if (p < 1 || p > videoPages.value) return
-  videoPage.value = p
-  loadVideos().catch(e => { error.value = e.message })
-}
+function searchVideos() { loadVideos().catch(e => { error.value = e.message }) }
+
+// ---------- 资源库底部无限滚动 ----------
+// 用一个空哨兵元素 + IntersectionObserver：哨兵进入视口就加载下一页。
+// rootMargin 提前 600px 触发，滚动时基本感觉不到等待。
+const videoSentinel = ref(null)
+let videoObserver = null
+
+watch(videoSentinel, (el) => {
+  if (videoObserver) { videoObserver.disconnect(); videoObserver = null }
+  if (!el) return
+  videoObserver = new IntersectionObserver((entries) => {
+    if (entries.some(e => e.isIntersecting)) loadMoreVideos().catch(e => { error.value = e.message })
+  }, { rootMargin: '600px 0px' })
+  videoObserver.observe(el)
+})
+onBeforeUnmount(() => { if (videoObserver) videoObserver.disconnect() })
 
 function formatTime(value) {
   if (!value) return '-'
@@ -1351,29 +1410,40 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
           </div>
           <span class="muted res-total">共 <b>{{ videoTotal }}</b> 条</span>
         </div>
-        <p v-if="!videos.length" class="empty">{{ isAdmin ? '暂无采集数据，可到「站点配置」执行一次全量采集。' : '暂无可见的采集数据。' }}</p>
-        <div v-else class="res-grid">
-          <article v-for="v in videos" :key="v.id" class="res-card" @click="openDetail(v)">
-            <div class="res-poster">
-              <img v-if="posterOf(v)" :src="posterOf(v)" :alt="v.vodName" loading="lazy" @error="markPicFailed(v)" />
-              <div v-else class="res-poster-ph">{{ (v.vodName || '#').slice(0, 1) }}</div>
-              <span v-if="scoreOf(v)" class="res-score">{{ scoreOf(v) }}</span>
-              <span v-if="episodeLabel(v) !== '-'" class="res-eps">{{ episodeLabel(v) }}</span>
-            </div>
-            <div class="res-info">
-              <h4 :title="v.vodName">{{ v.vodName || v.vodId }}</h4>
-              <p v-if="metaLine(v)" class="res-meta">{{ metaLine(v) }}</p>
-              <div v-if="tagListOf(v).length" class="res-tags">
-                <span v-for="t in tagListOf(v).slice(0, 4)" :key="t" class="res-tag" :title="`按标签「${t}」筛选`" @click.stop="filterByTag(t)">{{ t }}</span>
+        <div class="res-body">
+          <p v-if="!videos.length && !videoLoading" class="empty">{{ isAdmin ? '暂无采集数据，可到「站点配置」执行一次全量采集。' : '暂无可见的采集数据。' }}</p>
+          <div v-if="videos.length || videoLoading" class="res-grid">
+            <article v-for="v in videos" :key="v.id" class="res-card" @click="openDetail(v)">
+              <div class="res-poster">
+                <img v-if="posterOf(v)" :src="posterOf(v)" :alt="v.vodName" loading="lazy" @error="markPicFailed(v)" />
+                <div v-else class="res-poster-ph">{{ (v.vodName || '#').slice(0, 1) }}</div>
+                <span v-if="scoreOf(v)" class="res-score">{{ scoreOf(v) }}</span>
+                <span v-if="episodeLabel(v) !== '-'" class="res-eps">{{ episodeLabel(v) }}</span>
               </div>
-              <p class="res-time">{{ v.vodTime || formatTime(v.firstSeenAt) }}</p>
+              <div class="res-info">
+                <h4 :title="v.vodName">{{ v.vodName || v.vodId }}</h4>
+                <p v-if="metaLine(v)" class="res-meta">{{ metaLine(v) }}</p>
+                <div v-if="tagListOf(v).length" class="res-tags">
+                  <span v-for="t in tagListOf(v).slice(0, 4)" :key="t" class="res-tag" :title="`按标签「${t}」筛选`" @click.stop="filterByTag(t)">{{ t }}</span>
+                </div>
+                <p class="res-time">{{ v.vodTime || formatTime(v.firstSeenAt) }}</p>
+              </div>
+            </article>
+          </div>
+          <!-- 整表重载（搜索 / 切筛选）时的遮罩：固定在视口中央，旧卡片留在下面打底 -->
+          <div v-if="videoLoading" class="res-mask">
+            <div class="res-mask-inner">
+              <span class="spinner"></span>
+              <span class="res-mask-text">{{ videoQuery.trim() ? '搜索中…' : '加载中…' }}</span>
             </div>
-          </article>
-        </div>
-        <div v-if="videoPages > 1" class="pager">
-          <button class="ghost" :disabled="videoPage <= 1" @click="gotoPage(videoPage - 1)">上一页</button>
-          <span>{{ videoPage }} / {{ videoPages }}</span>
-          <button class="ghost" :disabled="videoPage >= videoPages" @click="gotoPage(videoPage + 1)">下一页</button>
+          </div>
+          <!-- 无限滚动哨兵：进入视口即加载下一页 -->
+          <div ref="videoSentinel" class="res-more">
+            <template v-if="videoLoadingMore">
+              <span class="spinner"></span><span>加载更多…</span>
+            </template>
+            <span v-else-if="videos.length && videoEnd" class="res-more-end">已经到底了 · 共 {{ videoTotal }} 条</span>
+          </div>
         </div>
       </section>
     </template>
@@ -1911,8 +1981,43 @@ tbody tr:hover td { background: #f8faff; }
 .prog-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin-top: 5px; font-size: 11px; color: var(--muted); }
 .prog-meta b { color: var(--text); font-size: 12px; }
 .tiny.msg { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 18px; font-size: 13px; color: var(--text-2); }
-.pager button { padding: 6px 14px; }
+/* ---------- 资源库：加载态与底部无限滚动 ---------- */
+.spinner {
+  width: 18px; height: 18px; flex: none; display: inline-block;
+  border-radius: 50%; border: 2px solid #dfe4ef; border-top-color: var(--brand);
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 1.6s; } }
+
+.res-body { position: relative; }
+/* 搜索/切筛选时盖住视口：固定在视口中央，避免列表很长时转圈落到屏幕外 */
+.res-mask {
+  position: fixed; inset: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(243, 245, 249, .45);
+  backdrop-filter: blur(1px);
+  animation: mask-in .12s ease-out;
+}
+@keyframes mask-in { from { opacity: 0; } to { opacity: 1; } }
+.res-mask-inner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 24px; border-radius: 999px;
+  background: #fff; box-shadow: 0 12px 34px rgba(16, 24, 40, .14);
+  color: var(--text-2); font-size: 13px; font-weight: 500;
+}
+.res-mask-text { letter-spacing: .3px; }
+
+.res-more {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 56px; padding: 12px 0 4px;
+  font-size: 12.5px; color: var(--muted);
+}
+.res-more-end { display: inline-flex; align-items: center; }
+.res-more-end::before, .res-more-end::after {
+  content: ''; display: inline-block; width: 26px; height: 1px; vertical-align: middle;
+  margin: 0 8px; background: var(--border-strong);
+}
 .empty {
   margin: 10px 0 0; padding: 30px 16px;
   border: 1px dashed var(--border-strong); border-radius: 12px;
@@ -2167,7 +2272,7 @@ tbody tr:hover td { background: #f8faff; }
   .tree-kids .tree-kids .tree-row { padding-left: 34px; }
   .ep-name { min-width: 0; }
   .ep-list { padding-left: 16px; }
-  .pager { gap: 10px; font-size: 12px; }
+  .res-more { min-height: 48px; font-size: 12px; }
   .notice, .error { font-size: 12px; padding: 8px 10px; }
 }
 
