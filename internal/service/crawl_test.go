@@ -50,6 +50,9 @@ func fullFieldRecord(it mockItem) map[string]interface{} {
 	for i, f := range model.VodFields {
 		m[f.Key] = i + 1
 	}
+	// 上面的循环会把 type_id_1 等也填上序号值，这里只保留测试关心的字段，
+	// 避免意外制造出二级分类（本用例验证的是单级自动归档）。
+	m["type_id_1"] = ""
 	var id interface{} = it.ID
 	if it.NumericID {
 		n, _ := strconv.Atoi(it.ID)

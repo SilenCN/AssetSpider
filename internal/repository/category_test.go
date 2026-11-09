@@ -105,31 +105,35 @@ func TestCategoryRepositoryTwoLevel(t *testing.T) {
 		t.Fatalf("二级分类未挂到父级: %+v (parent=%d)", child, parent.ID)
 	}
 
-	// 父级未在本批出现时：二级分类先记为 level=2、parent_id=0，父级 ID 暂存于 type_pid。
+	// 父级（type_id=2）未作为影片自身 type_id 出现、只被子分类的 type_id_1 引用时，
+	// 现在应被从 type_id_1 推断并立即建出，子分类随之挂接（不再暂存为孤儿）。
 	ids2, err := r.Categories.EnsureForVideos(1, []model.Video{
 		{TypeID: "8", TypeName: "悬疑", TypeID1: "2"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	orphanID := ids2["id:8"]
-	orphan, err := r.Categories.Get(orphanID)
-	if err != nil || orphan.Level != 2 || orphan.ParentID != 0 || orphan.TypePID != "2" {
-		t.Fatalf("父级缺失时应暂存为二级孤儿: %+v", orphan)
+	childID := ids2["id:8"]
+	child, err = r.Categories.Get(childID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// 父级 2 出现后，孤儿应被自动挂接。
+	if child.Level != 2 || child.ParentID == 0 || child.TypePID != "2" {
+		t.Fatalf("子分类应被挂到从 type_id_1 推断出的父级: %+v", child)
+	}
+	// 父级 2 随后以真实名称「电视剧」出现，应补名且不破坏已建立的挂接。
 	if _, err := r.Categories.EnsureForVideos(1, []model.Video{
 		{TypeID: "2", TypeName: "电视剧", TypeID1: ""},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	orphan, err = r.Categories.Get(orphanID)
+	child, err = r.Categories.Get(childID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	parentOfOrphan, err := r.Categories.Get(orphan.ParentID)
-	if err != nil || parentOfOrphan.TypeID != "2" {
-		t.Fatalf("父级出现后孤儿未挂接: orphan=%+v parent=%+v", orphan, parentOfOrphan)
+	parentOfChild, err := r.Categories.Get(child.ParentID)
+	if err != nil || parentOfChild.TypeID != "2" || parentOfChild.Name != "电视剧" {
+		t.Fatalf("父级补名或挂接异常: child=%+v parent=%+v", child, parentOfChild)
 	}
 }
 

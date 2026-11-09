@@ -33,6 +33,11 @@ var _ CategoryRepository = (*categoryRepository)(nil)
 // EnsureForVideos 在单个事务里为本批次出现的全部分类做「有则复用、无则创建」，
 // 并按苹果CMS 的 type_pid 模型建立二级分类层级：视频的 type_id_1 即所属一级分类 ID。
 // 分类键带 sourceID 限定，因此每个资源站拥有独立的一套分类，不会跨站串分类。
+//
+// 关键点：真实苹果CMS 二级结构里，一级分类常是纯容器（自身没有影片），其 type_id
+// 只会出现在子分类的 type_id_1 中，永远不会作为某条影片的 type_id 出现。因此本函数
+// 除了影片自身的 type_id，还会从每条影片的 type_id_1 推断并预建父级分类，否则父级
+// 永远无从创建，二级分类会沦为永久孤儿。
 func (r *categoryRepository) EnsureForVideos(sourceID uint, videos []model.Video) (map[string]uint, error) {
 	// 第一遍：去重收集候选分类，并记录每个分类的父级 type_id（来自 type_id_1）。
 	candidates := make(map[string]model.Category)
@@ -51,20 +56,25 @@ func (r *categoryRepository) EnsureForVideos(sourceID uint, videos []model.Video
 		if name == "" {
 			name = strings.TrimSpace(v.TypeID) // 站点只给了 ID 时用 ID 兜底展示
 		}
-		if c, ok := candidates[key]; ok {
-			// 同批多次出现：若之前没拿到父级而现在有，补上父级信息。
-			if c.TypePID == "" && pid != "" {
-				c.TypePID = pid
-				candidates[key] = c
-			}
-			continue
-		}
-		candidates[key] = model.Category{
+		// 注册本视频自身的分类（可能是二级，也可能是一级）。
+		addCandidate(candidates, key, model.Category{
 			SourceID: sourceID,
 			Key:      key,
 			TypeID:   strings.TrimSpace(v.TypeID),
 			Name:     name,
 			TypePID:  pid,
+		})
+		// 从 type_id_1 推断并预建父级（一级）分类：父级可能是纯容器，
+		// type_id 只经此途径出现，不预建则二级分类永远挂不上父级。
+		if pid != "" {
+			pkey := utils.CategoryKey(pid, "")
+			addCandidate(candidates, pkey, model.Category{
+				SourceID: sourceID,
+				Key:      pkey,
+				TypeID:   pid,
+				Name:     "", // 视频未携带父级名称，留空待下方补 type_id 兜底 / 后续同名影片补名
+				TypePID:  "",
+			})
 		}
 	}
 	out := make(map[string]uint, len(candidates))
@@ -102,6 +112,9 @@ func (r *categoryRepository) EnsureForVideos(sourceID uint, videos []model.Video
 				}
 				created = append(created, existing)
 				continue
+			}
+			if cat.Name == "" {
+				cat.Name = cat.TypeID // 父级无名称时以 type_id 兜底展示
 			}
 			if err := tx.Create(&cat).Error; err != nil {
 				return fmt.Errorf("创建分类 %s/%s: %w", cat.TypeID, cat.Name, err)
@@ -142,18 +155,54 @@ func (r *categoryRepository) EnsureForVideos(sourceID uint, videos []model.Video
 				}
 			}
 		}
-		// 兜底：本批之外、之前孤立（父级未到）的二级分类，若其父级 type_pid 已在
-		// 本批到位，则一并挂接，保证「父级后到」也能正确归树。
-		for pid, parentID := range typeIDToID {
-			if err := tx.Model(&model.Category{}).
-				Where("source_id = ? AND type_pid = ? AND parent_id = 0 AND id <> ?", sourceID, pid, parentID).
-				Updates(map[string]interface{}{"parent_id": parentID, "level": 2}).Error; err != nil {
+		// 兜底归树：把本源内所有「父级 ID 已知（type_pid 非空）但尚未挂接
+		// （parent_id=0）」的二级分类，按其 type_pid 挂到已存在的父级上。
+		// 覆盖两类情况：① 父级在本批由子分类的 type_id_1 推断创建；
+		// ② 父级在更早批次已存在、但本批未直接出现——原逻辑只认本批父级，
+		// 会导致这类子树永远归不上父级。
+		var orphans []model.Category
+		if err := tx.Where("source_id = ? AND type_pid <> '' AND parent_id = 0", sourceID).
+			Find(&orphans).Error; err != nil {
+			return err
+		}
+		for _, o := range orphans {
+			var parent model.Category
+			if err := tx.Where("source_id = ? AND type_id = ?", sourceID, o.TypePID).
+				Limit(1).Find(&parent).Error; err != nil {
+				return err
+			}
+			if parent.ID == 0 || parent.ID == o.ID {
+				continue
+			}
+			if err := tx.Model(&model.Category{}).Where("id = ?", o.ID).
+				Updates(map[string]interface{}{"parent_id": parent.ID, "level": 2}).Error; err != nil {
 				return err
 			}
 		}
 		return nil
 	})
 	return out, err
+}
+
+// addCandidate 把候选分类并入收集表；键冲突时保留更有信息量的字段：
+// 名称 / 父级 ID / 自身 type_id 均优先取非空值（父级兜底名不能覆盖真实名称）。
+// 分类键相同但分别来自「影片自身 type_id」与「其它影片的 type_id_1」时，
+// 非空字段的合并能保证父级容器被创建、且真实分类名不丢失。
+func addCandidate(m map[string]model.Category, key string, c model.Category) {
+	if old, ok := m[key]; ok {
+		if old.Name == "" && c.Name != "" {
+			old.Name = c.Name
+		}
+		if old.TypePID == "" && c.TypePID != "" {
+			old.TypePID = c.TypePID
+		}
+		if old.TypeID == "" && c.TypeID != "" {
+			old.TypeID = c.TypeID
+		}
+		m[key] = old
+		return
+	}
+	m[key] = c
 }
 
 // List 返回分类，按站点与 ID 正序；sourceID 为 0 时返回全部站点的分类。
