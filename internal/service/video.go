@@ -22,8 +22,8 @@ type VideoListQuery struct {
 	SourceID   uint
 	CategoryID uint
 	TagID      uint
+	AreaID     uint
 	Keyword    string
-	Area       string
 	Sort       string
 	Page       int
 	Size       int
@@ -158,8 +158,8 @@ func (s *VideoService) List(query VideoListQuery, p ...Principal) (VideoList, er
 		SourceID:         query.SourceID,
 		CategoryID:       query.CategoryID,
 		TagID:            query.TagID,
+		AreaID:           query.AreaID,
 		Keyword:          strings.TrimSpace(query.Keyword),
-		Area:             strings.TrimSpace(query.Area),
 		Sort:             strings.TrimSpace(query.Sort),
 		Page:             page,
 		Size:             size,
@@ -173,18 +173,6 @@ func (s *VideoService) List(query VideoListQuery, p ...Principal) (VideoList, er
 		return VideoList{}, err
 	}
 	return VideoList{Items: items, Total: total, Page: page, Size: size}, nil
-}
-
-// Areas 返回库中出现过的地域列表，供前端筛选下拉使用。
-func (s *VideoService) Areas(p ...Principal) ([]string, error) {
-	areas, err := s.videos.ListVideoAreas(principalOf(p...).Visible())
-	if err != nil {
-		return nil, err
-	}
-	if areas == nil {
-		areas = []string{}
-	}
-	return areas, nil
 }
 
 // Get 返回单条影片完整记录（含原始 JSON 与扩展字段）；不可见站点按不存在处理。

@@ -21,7 +21,8 @@ type Video struct {
 	//                          不再「先按站点过滤再全量排序」；SQLite 的索引末尾隐含 rowid
 	//                          （即 id），所以 vod_time 相同时的 id 次序也能一并满足；
 	//   idx_videos_source_id    (source_id, id)：单站点 + 默认 id 倒序；
-	//   idx_videos_area       vod_area：地域下拉的 DISTINCT + ORDER BY；
+	//   （vod_area 不再单独建索引：地域已拆成 areas + video_areas，筛选项与筛选都走连接表；
+	//    关键词检索里的 vod_area LIKE '%x%' 本来也用不上索引）
 	//   idx_videos_category_id 分类筛选与按分类聚合影片数。
 	ID       uint `gorm:"primaryKey;index:idx_videos_source_id,priority:2" json:"id"`
 	SourceID uint `gorm:"column:source_id;not null;uniqueIndex:idx_source_vod,priority:1;index:idx_videos_source_time,priority:1;index:idx_videos_source_id,priority:1" json:"sourceId"`
@@ -73,7 +74,7 @@ type Video struct {
 	VodWeekday     string `gorm:"column:vod_weekday" json:"vodWeekday"`
 
 	// ---- 属性 ----
-	VodArea     string `gorm:"column:vod_area;index" json:"vodArea"`
+	VodArea     string `gorm:"column:vod_area" json:"vodArea"` // 原始文本保留用于展示；筛选走 video_areas
 	VodLang     string `gorm:"column:vod_lang" json:"vodLang"`
 	VodYear     string `gorm:"column:vod_year" json:"vodYear"`
 	VodVersion  string `gorm:"column:vod_version" json:"vodVersion"`

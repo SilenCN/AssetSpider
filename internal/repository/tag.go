@@ -37,10 +37,17 @@ var _ TagRepository = (*tagRepository)(nil)
 // 苹果CMS / 海洋CMS 的 vod_tag 通常用半角或全角逗号分隔，也有用斜杠、竖线、
 // 顿号或空格分隔的情况；这里统一按这些分隔符拆分，逐条去空格、去空项。
 func ParseTags(raw string) []string {
+	return splitMultiValues(raw)
+}
+
+// splitMultiValues 是标签与地域共用的多值拆分规则。
+//
+// 先按常见分隔符切分，再对每一段按空白二次拆分，兼容「科幻 动作」「喜剧/爱情」
+// 与「美国/英国」等写法；同一串内重复出现的名称只保留第一次的写法。
+func splitMultiValues(raw string) []string {
 	if strings.TrimSpace(raw) == "" {
 		return nil
 	}
-	// 先按常见分隔符切分，再对每一段按空白二次拆分，兼容「科幻 动作」「喜剧/爱情」等写法。
 	fields := strings.FieldsFunc(raw, func(r rune) bool {
 		switch r {
 		case ',', '，', '/', '、', '|', ';', '；', '\t':

@@ -23,6 +23,7 @@ type Set struct {
 	Video    *VideoController
 	Category *CategoryController
 	Tag      *TagController
+	Area     *AreaController
 	Meta     *MetaController
 	Job      *JobController
 	Auth     *AuthController

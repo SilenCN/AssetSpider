@@ -21,8 +21,8 @@ func (v *VideoController) List(c *gin.Context) {
 		SourceID:   utils.ParseUintQuery(c.Query("source_id")),
 		CategoryID: utils.ParseUintQuery(c.Query("category_id")),
 		TagID:      utils.ParseUintQuery(c.Query("tag_id")),
+		AreaID:     utils.ParseUintQuery(c.Query("area_id")),
 		Keyword:    c.Query("q"),
-		Area:       c.Query("area"),
 		Sort:       c.Query("sort"),
 		Page:       utils.ParseIntQuery(c.Query("page")),
 		Size:       utils.ParseIntQuery(c.Query("size")),
@@ -32,16 +32,6 @@ func (v *VideoController) List(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, out)
-}
-
-// Areas 返回库中出现过的地域列表，供前端筛选下拉使用。
-func (v *VideoController) Areas(c *gin.Context) {
-	areas, err := v.svc.Areas(principalOf(c))
-	if err != nil {
-		writeError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, areas)
 }
 
 // Get 返回单条影片的完整记录（含扩展字段与播放组）。

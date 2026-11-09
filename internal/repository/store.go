@@ -7,6 +7,7 @@
 //	video.go    → VideoRepository     （model.Video）
 //	category.go → CategoryRepository  （model.Category）
 //	tag.go      → TagRepository       （model.Tag / model.VideoTag）
+//	area.go     → AreaRepository      （model.Area / model.VideoArea）
 //	job.go      → JobRepository       （model.CrawlJob）
 //	user.go     → UserRepository      （model.User / model.Session / model.UserSource）
 //
@@ -28,13 +29,19 @@ import (
 
 // schemaVersion 是库结构的「检索层」版本号，记在 SQLite 的 PRAGMA user_version 里。
 //
-// 版本号只用于判断「是否需要重算统计信息」：索引与全文索引都由 AutoMigrate /
-// ensureVideoSearch 幂等创建，但 SQLite 的查询计划器要靠 ANALYZE 得到的
-// sqlite_stat1 才能选对索引（例如「多站点 + 时间倒序」在没有统计信息时会退化成
-// 「先按站点过滤再全量排序」）。升级后统计信息必然过期，故版本号提升时重跑一次。
+// 版本号只用于判断「是否需要重算统计信息」以及是否要跑一次性数据迁移：
+// 索引与全文索引都由 AutoMigrate / ensureVideoSearch 幂等创建，但 SQLite 的
+// 查询计划器要靠 ANALYZE 得到的 sqlite_stat1 才能选对索引（例如「多站点 +
+// 时间倒序」在没有统计信息时会退化成「先按站点过滤再全量排序」）。
+// 升级后统计信息必然过期，故版本号提升时重跑一次。
 //
-// 新增索引 / 改变索引列时把它 +1。
-const schemaVersion = 2
+// 版本历史：
+//
+//	2 → 新增检索复合索引与全文索引
+//	3 → 地域拆成 areas + video_areas（升级时按 videos.vod_area 回灌一次）
+//
+// 新增索引 / 改变索引列 / 增加需要回灌的数据迁移时把它 +1。
+const schemaVersion = 3
 
 // Repositories 是各实体仓储的容器。
 // 它只是装配结果，不是「大杂烩仓储」：任何实体读写都必须走对应的那个对象。
@@ -44,6 +51,7 @@ type Repositories struct {
 	Videos     VideoRepository
 	Categories CategoryRepository
 	Tags       TagRepository
+	Areas      AreaRepository
 	Jobs       JobRepository
 	Users      UserRepository
 
@@ -76,6 +84,8 @@ func Open(path string) (*Repositories, error) {
 		&model.Category{},
 		&model.Tag{},
 		&model.VideoTag{},
+		&model.Area{},
+		&model.VideoArea{},
 		&model.CrawlJob{},
 		&model.User{},
 		&model.Session{},
@@ -95,6 +105,7 @@ func Open(path string) (*Repositories, error) {
 		Videos:     NewVideoRepository(db),
 		Categories: NewCategoryRepository(db),
 		Tags:       NewTagRepository(db),
+		Areas:      NewAreaRepository(db),
 		Jobs:       NewJobRepository(db),
 		Users:      NewUserRepository(db),
 		db:         db,
@@ -105,12 +116,13 @@ func Open(path string) (*Repositories, error) {
 // Path 返回数据库文件路径。
 func (r *Repositories) Path() string { return r.path }
 
-// prepareDatabase 维护查询计划器依赖的统计信息。
+// prepareDatabase 执行一次性数据迁移，并维护查询计划器依赖的统计信息。
 //
-//   - 首次升级到当前 schemaVersion：整库 ANALYZE 一次（大表约几百毫秒，仅发生一次）；
+//   - 首次升级到当前 schemaVersion：先跑该版本引入的数据回灌（如地域拆表），
+//     再整库 ANALYZE 一次（大表约几百毫秒，仅发生一次）；
 //   - 之后每次启动：PRAGMA optimize，由 SQLite 自行判断哪些索引需要补统计信息，代价极低。
 //
-// 不做这一步的话，新建的复合索引在 sqlite_stat1 里没有记录，计划器仍会按旧索引
+// 不做 ANALYZE 的话，新建的复合索引在 sqlite_stat1 里没有记录，计划器仍会按旧索引
 // 估算行数，出现「有索引却仍全量排序」的情况。
 func prepareDatabase(db *gorm.DB) {
 	var version int
@@ -118,6 +130,15 @@ func prepareDatabase(db *gorm.DB) {
 		return
 	}
 	if version < schemaVersion {
+		// v3：地域从 videos.vod_area 拆成独立实体，老库需要按现有文本回灌一次。
+		// 函数内部会判断 video_areas 是否已有数据，重复执行是空转。
+		if err := backfillAreas(db); err != nil {
+			log.Printf("回灌地域数据失败（不影响启动，重新采集会补齐）: %v", err)
+		}
+		// 地域拆表后 vod_area 的单列索引失去用途（筛选走 video_areas，LIKE 用不上索引），
+		// 老库上把它删掉；新库本来就没有。
+		db.Exec("DROP INDEX IF EXISTS idx_videos_vod_area")
+		db.Exec("DROP INDEX IF EXISTS idx_videos_area")
 		if err := db.Exec("ANALYZE").Error; err != nil {
 			log.Printf("重建统计信息失败（不影响数据，仅影响查询计划选择）: %v", err)
 			return

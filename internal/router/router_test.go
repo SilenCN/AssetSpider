@@ -427,7 +427,7 @@ func TestAPIRoutesFollowModuleVersionConvention(t *testing.T) {
 	r, _ := newTestRouter(t)
 	modules := map[string]bool{
 		"system": true, "assets": true, "sources": true,
-		"crawls": true, "videos": true, "categories": true, "tags": true,
+		"crawls": true, "videos": true, "categories": true, "tags": true, "areas": true,
 		"meta": true, "jobs": true, "tasks": true,
 		"auth": true, "users": true,
 	}
@@ -744,15 +744,30 @@ func TestVideoAreasAndSortEndpoint(t *testing.T) {
 		t.Fatalf("采集失败: %d %s", w.Code, w.Body.String())
 	}
 
-	// 地域枚举去重
+	// 地域枚举：地域已从 vod_area 字符串拆成独立实体（与标签同构），
+	// 接口返回带主键与影片数，筛选按 area_id。
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1/areas", nil))
-	var areas []string
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/areas/v1", nil))
+	var areas []struct {
+		ID         uint   `json:"id"`
+		Name       string `json:"name"`
+		VideoCount int64  `json:"videoCount"`
+	}
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &areas) != nil {
 		t.Fatalf("地域接口异常: %d %s", w.Code, w.Body.String())
 	}
 	if len(areas) != 2 {
 		t.Fatalf("应有 2 个地域，实际 %v", areas)
+	}
+	areaID := map[string]uint{}
+	for _, a := range areas {
+		areaID[a.Name] = a.ID
+		if a.VideoCount != 1 {
+			t.Errorf("地域 %s 的影片数应为 1，实际 %d", a.Name, a.VideoCount)
+		}
+	}
+	if areaID["大陆"] == 0 || areaID["美国"] == 0 {
+		t.Fatalf("地域名称缺失: %v", areas)
 	}
 
 	type listResp struct {
@@ -769,8 +784,8 @@ func TestVideoAreasAndSortEndpoint(t *testing.T) {
 		return out
 	}
 
-	// 地域筛选
-	if got := get("area=大陆"); got.Total != 1 || got.Items[0].VodName != "测试影片A" {
+	// 地域筛选（按 area_id，走 video_areas 连接表）
+	if got := get("area_id=" + strconv.Itoa(int(areaID["大陆"]))); got.Total != 1 || got.Items[0].VodName != "测试影片A" {
 		t.Errorf("按地域筛选异常: %+v", got)
 	}
 	// 按更新时间倒序：B 的 vod_time 更晚

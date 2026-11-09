@@ -132,6 +132,9 @@ func (r *sourceRepository) DeleteSource(id uint) error {
 			if err := tx.Where("video_id IN ?", videoIDs).Delete(&model.VideoTag{}).Error; err != nil {
 				return err
 			}
+			if err := tx.Where("video_id IN ?", videoIDs).Delete(&model.VideoArea{}).Error; err != nil {
+				return err
+			}
 		}
 		if err := tx.Where("source_id = ?", id).Delete(&model.Video{}).Error; err != nil {
 			return err
@@ -143,6 +146,9 @@ func (r *sourceRepository) DeleteSource(id uint) error {
 			return err
 		}
 		if err := tx.Where("source_id = ?", id).Delete(&model.Tag{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("source_id = ?", id).Delete(&model.Area{}).Error; err != nil {
 			return err
 		}
 		// 站点删除后同步撤掉所有用户对该站点的授权，避免 user_sources 悬挂。
@@ -158,6 +164,7 @@ type ClearStats struct {
 	Videos     int64 `json:"videos"`
 	Categories int64 `json:"categories"`
 	Tags       int64 `json:"tags"`
+	Areas      int64 `json:"areas"`
 	Jobs       int64 `json:"jobs"`
 }
 
@@ -183,17 +190,24 @@ func (r *sourceRepository) ClearSourceData(id uint) (ClearStats, error) {
 		if err := tx.Model(&model.Tag{}).Where("source_id = ?", id).Count(&stats.Tags).Error; err != nil {
 			return err
 		}
+		if err := tx.Model(&model.Area{}).Where("source_id = ?", id).Count(&stats.Areas).Error; err != nil {
+			return err
+		}
 		if err := tx.Model(&model.CrawlJob{}).Where("source_id = ?", id).Count(&stats.Jobs).Error; err != nil {
 			return err
 		}
 
-		// video_tags 没有 source_id，需先按本源影片主键清理连接表，且必须在删除影片之前完成。
+		// video_tags / video_areas 没有 source_id，需先按本源影片主键清理连接表，
+		// 且必须在删除影片之前完成。
 		var videoIDs []uint
 		if err := tx.Model(&model.Video{}).Where("source_id = ?", id).Pluck("id", &videoIDs).Error; err != nil {
 			return err
 		}
 		if len(videoIDs) > 0 {
 			if err := tx.Where("video_id IN ?", videoIDs).Delete(&model.VideoTag{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("video_id IN ?", videoIDs).Delete(&model.VideoArea{}).Error; err != nil {
 				return err
 			}
 		}
@@ -204,6 +218,9 @@ func (r *sourceRepository) ClearSourceData(id uint) (ClearStats, error) {
 			return err
 		}
 		if err := tx.Where("source_id = ?", id).Delete(&model.Tag{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("source_id = ?", id).Delete(&model.Area{}).Error; err != nil {
 			return err
 		}
 		if err := tx.Where("source_id = ?", id).Delete(&model.CrawlJob{}).Error; err != nil {

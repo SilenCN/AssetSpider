@@ -163,7 +163,7 @@ func newCrawlService(t *testing.T) (*repository.Repositories, *CrawlService) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return st, NewCrawlService(st.Sources, st.Videos, st.Categories, st.Tags, st.Jobs, config.Default().Collector)
+	return st, NewCrawlService(st.Sources, st.Videos, st.Categories, st.Tags, st.Areas, st.Jobs, config.Default().Collector)
 }
 
 func addSource(t *testing.T, st *repository.Repositories, apiBase string, enabled bool) uint {

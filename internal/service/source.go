@@ -102,6 +102,7 @@ type ClearResult struct {
 	Videos     int64 `json:"videos"`
 	Categories int64 `json:"categories"`
 	Tags       int64 `json:"tags"`
+	Areas      int64 `json:"areas"`
 	Jobs       int64 `json:"jobs"`
 }
 
@@ -211,6 +212,7 @@ func (s *SourceService) Clear(id uint) (ClearResult, error) {
 		Videos:     stats.Videos,
 		Categories: stats.Categories,
 		Tags:       stats.Tags,
+		Areas:      stats.Areas,
 		Jobs:       stats.Jobs,
 	}, nil
 }

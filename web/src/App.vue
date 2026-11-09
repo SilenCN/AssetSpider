@@ -47,9 +47,21 @@ const videoQuery = ref('')
 const videoSource = ref('')
 const videoCategory = ref('')
 const videoTag = ref('')
-const videoArea = ref('')
+const videoAreaId = ref('')
 const videoSort = ref('time_desc')
 const areas = ref([])
+// 地域与标签同构：每个资源站一套，因此下拉按站点分组（optgroup），
+// 避免「美国」在多站点各出现一次时看起来像重复项。
+const areaGroups = computed(() => {
+  const groups = new Map()
+  for (const a of areas.value) {
+    if (!groups.has(a.sourceId)) {
+      groups.set(a.sourceId, { sourceId: a.sourceId, name: siteNameOf(a.sourceId), items: [] })
+    }
+    groups.get(a.sourceId).items.push(a)
+  }
+  return [...groups.values()]
+})
 const videoPage = ref(1)
 const videoSize = ref(24)
 const videoTotal = ref(0)
@@ -120,7 +132,7 @@ async function fetchVideos(page, append) {
     if (videoSource.value) p.set('source_id', String(videoSource.value))
     if (videoCategory.value) p.set('category_id', String(videoCategory.value))
     if (videoTag.value) p.set('tag_id', String(videoTag.value))
-    if (videoArea.value) p.set('area', videoArea.value)
+    if (videoAreaId.value) p.set('area_id', String(videoAreaId.value))
     if (videoSort.value) p.set('sort', videoSort.value)
     const d = await request('/api/videos/v1?' + p.toString())
     if (seq !== videoSeq) return // 已经有更新的请求在跑，丢弃这次结果
@@ -160,7 +172,7 @@ function loadMoreVideos() {
   return fetchVideos(videoPage.value + 1, true)
 }
 async function loadAreas() {
-  try { areas.value = (await request('/api/videos/v1/areas')) || [] } catch (e) { areas.value = [] }
+  try { areas.value = (await request('/api/areas/v1')) || [] } catch (e) { areas.value = [] }
 }
 async function loadJobs() {
   jobs.value = (await request('/api/jobs/v1?limit=50')) || []
@@ -1393,9 +1405,11 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
               <option value="">全部标签</option>
               <option v-for="t in tags" :key="t.id" :value="t.id">{{ siteNameOf(t.sourceId) }} · {{ t.name }}</option>
             </select>
-            <select v-model="videoArea" @change="searchVideos" title="按地域筛选">
+            <select v-model="videoAreaId" @change="searchVideos" title="按地域筛选">
               <option value="">全部地域</option>
-              <option v-for="a in areas" :key="a" :value="a">{{ a }}</option>
+              <optgroup v-for="g in areaGroups" :key="g.sourceId" :label="g.name">
+                <option v-for="a in g.items" :key="a.id" :value="a.id">{{ a.name }}（{{ a.videoCount }}）</option>
+              </optgroup>
             </select>
             <select v-model="videoSource" @change="searchVideos" title="按站点筛选">
               <option value="">全部站点</option>

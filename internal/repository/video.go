@@ -3,7 +3,6 @@ package repository
 import (
 	"fmt"
 	"reflect"
-	"strings"
 	"time"
 
 	"github.com/SilenCN/AssetSpider/internal/model"
@@ -22,8 +21,8 @@ type VideoQuery struct {
 	SourceID   uint
 	CategoryID uint
 	TagID      uint // 按标签过滤（经 video_tags 关联表）
+	AreaID     uint // 按地域过滤（经 video_areas 关联表）
 	Keyword    string
-	Area       string // 地域（vod_area 模糊匹配）
 	Sort       string // 排序标识，见 videoOrder；空则按 id 倒序
 	Page       int
 	Size       int
@@ -47,7 +46,6 @@ type VideoRepository interface {
 	MapVodIDs(sourceID uint, vodIDs []string) (map[string]uint, error)
 	// CountVideos 返回某站点已入库的影片总数，供站点表的 video_count 快照回写。
 	CountVideos(sourceID uint) (int64, error)
-	ListVideoAreas(visible ...[]uint) ([]string, error)
 	CountVideosBySource(visible ...[]uint) (map[uint]int64, error)
 	CountVideosByCategory(visible ...[]uint) (map[uint]int64, error)
 }
@@ -215,9 +213,10 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, int64, er
 		q = q.Joins("JOIN video_tags ON video_tags.video_id = videos.id").
 			Where("video_tags.tag_id = ?", query.TagID)
 	}
-	if area := strings.TrimSpace(query.Area); area != "" {
-		// 各站点对地域的叫法不完全一致（大陆 / 中国大陆），用模糊匹配更宽容。
-		q = q.Where("vod_area LIKE ?", "%"+area+"%")
+	if query.AreaID > 0 {
+		// 地域与影片同样是多对多：命中该地域的影片经 video_areas 内连接筛选。
+		q = q.Joins("JOIN video_areas ON video_areas.video_id = videos.id").
+			Where("video_areas.area_id = ?", query.AreaID)
 	}
 	if query.Keyword != "" {
 		q = applyVideoKeyword(q, query.Keyword, r.search)
@@ -241,17 +240,6 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, int64, er
 		return nil, 0, err
 	}
 	return items, total, nil
-}
-
-// ListVideoAreas 返回库中已出现过的地域，供前端筛选下拉使用。
-func (r *videoRepository) ListVideoAreas(visible ...[]uint) ([]string, error) {
-	var areas []string
-	q := applyVisibility(r.db.Model(&model.Video{}), "source_id", firstVisible(visible...))
-	if err := q.Where("vod_area IS NOT NULL AND vod_area <> ''").
-		Distinct().Order("vod_area ASC").Pluck("vod_area", &areas).Error; err != nil {
-		return nil, err
-	}
-	return areas, nil
 }
 
 // CountVideos 返回某站点已入库的影片总数。

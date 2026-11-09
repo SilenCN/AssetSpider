@@ -42,7 +42,7 @@ func New(cfg *config.Config) (*App, error) {
 	healthSvc := service.NewHealthService(repos.Sources, repos.Videos, repos.Path())
 	assetSvc := service.NewAssetService(repos.Assets)
 	// 采集调度先构造：站点服务在清空数据前要问它「该站点是否还在采集」。
-	crawlSvc := service.NewCrawlService(repos.Sources, repos.Videos, repos.Categories, repos.Tags, repos.Jobs, cfg.Collector)
+	crawlSvc := service.NewCrawlService(repos.Sources, repos.Videos, repos.Categories, repos.Tags, repos.Areas, repos.Jobs, cfg.Collector)
 	sourceSvc := service.NewSourceService(repos.Sources, crawlSvc)
 	// 启动钩子：自动恢复因进程重启而中断的采集任务（用户手动暂停的任务不动）。
 	// 恢复是异步的，且失败只记日志、不阻断服务启动，避免单个坏记录拖垮整个服务。
@@ -54,6 +54,7 @@ func New(cfg *config.Config) (*App, error) {
 	videoSvc := service.NewVideoService(repos.Videos, repos.Sources)
 	categorySvc := service.NewCategoryService(repos.Categories, repos.Videos)
 	tagSvc := service.NewTagService(repos.Tags)
+	areaSvc := service.NewAreaService(repos.Areas)
 	metaSvc := service.NewMetaService()
 	jobSvc := service.NewJobService(repos.Jobs)
 	// 采集记录页要显示运行中任务的实时进度，这里把调度层注入为进度来源。
@@ -71,6 +72,7 @@ func New(cfg *config.Config) (*App, error) {
 		Video:    controller.NewVideoController(videoSvc),
 		Category: controller.NewCategoryController(categorySvc),
 		Tag:      controller.NewTagController(tagSvc),
+		Area:     controller.NewAreaController(areaSvc),
 		Meta:     controller.NewMetaController(metaSvc),
 		Job:      controller.NewJobController(jobSvc),
 		Auth:     controller.NewAuthController(authSvc),

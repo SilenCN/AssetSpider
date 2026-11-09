@@ -178,6 +178,16 @@ go build -o bin/assetspider .
 - 删除站点时，其 `video_tags` 关联与 `tags` 随影片和采集记录一起级联清理。
 - 资源库支持**按标签筛选**：`GET /api/videos/v1?tag_id=` 命中带该标签的影片；标签列表与影片数见 `GET /api/tags/v1`。
 
+### 地域（按 vod_area 自动归档）
+
+地域与标签**完全同构**——原先它是 `videos.vod_area` 上的一个字符串列，筛选只能 `LIKE '%大陆%'`、下拉只能对整个影片表做 `DISTINCT`。现在拆成独立实体：
+
+- `areas` 表 `(source_id, name)` 复合唯一，每个资源站一套；`video_areas(video_id, area_id)` 连接表承载多对多关系。
+- 采集时按 `vod_area` 拆分（多值写法如「美国/英国」会拆成两个地域），与标签共用同一套分隔符规则；入库后「先删后插」回填关联。
+- 资源库**按地域筛选**改为 `GET /api/videos/v1?area_id=`（走连接表，不再模糊匹配）；下拉选项与各选项影片数见 `GET /api/areas/v1`，前端按站点分组展示。
+- 老库升级（`PRAGMA user_version` < 3）时按现有 `videos.vod_area` **回灌一次** `areas` + `video_areas`，不用重新采集；回灌以 `video_areas` 为空为前置条件，重复启动是空转。
+- `videos.vod_area` 原文本保留（卡片与详情仍直接展示），但其单列索引在拆表后失去用途，升级时会一并 `DROP`。
+
 ### 播放组解析（苹果CMS 字段）
 
 苹果CMS 用「播放组」表达同一影片在多个线路上的播放地址，靠三个字段按固定分隔符拼接：
@@ -350,7 +360,6 @@ auth:
 | `idx_source_vod` | (source_id, vod_id) 唯一 | 采集 upsert、vod_id 反查主键 |
 | `idx_videos_source_time` | (source_id, vod_time) | 单站点按更新时间排序 / 翻页 |
 | `idx_videos_source_id` | (source_id, id) | 单站点 + 默认 id 倒序 |
-| `idx_videos_vod_area` | (vod_area) | 地域下拉的 `DISTINCT … ORDER BY` |
 | `idx_videos_category_id` | (category_id) | 分类筛选、按分类聚合影片数 |
 | `idx_video_tags_tag` | (tag_id, video_id) | 按标签筛选（主键反向查询会全表扫描） |
 | `idx_categories_source_type` | (source_id, type_id) | 采集时按 `type_pid` 归树找父分类 |
@@ -378,7 +387,7 @@ SQLite 的索引末尾隐含 rowid（即 `id`），所以 `(source_id, vod_time)
 | 可见性（3 站点）+ 时间倒序 | 138 ms | **3.0 ms** |
 | 站点 + 时间倒序 | 46 ms | **1.0 ms** |
 | 地域 + 时间倒序 | 54 ms | **12 ms** |
-| 地域下拉（DISTINCT） | 99 ms | **<1 ms** |
+| 地域下拉（原 `DISTINCT vod_area`） | 99 ms | **<1 ms**（改读 `areas` 表） |
 | 标签筛选 | 25 ms | **5.7 ms** |
 | 关键词 4 字「流浪地球」 | 87 ms | **2.0 ms** |
 | 关键词 2 字（回退 LIKE） | 83 ms | 80 ms |
@@ -392,7 +401,7 @@ SQLite 的索引末尾隐含 rowid（即 `id`），所以 `(source_id, vod_time)
 
 站点列表每行（管理员）都有**清空数据**按钮，对应 `DELETE /api/sources/v1/:id/data`。它只清空该站点名下的数据，**站点配置本身（名称、接口地址、格式、附加参数、解析/播放/图片地址、启用状态、增量小时数、最大页数）原样保留**。
 
-- 删除内容：该站点的**影片**、**分类**、**标签**（含 `video_tags` 关联）与**采集记录**，其它站点的数据不受影响。
+- 删除内容：该站点的**影片**、**分类**、**标签**（含 `video_tags` 关联）、**地域**（含 `video_areas` 关联）与**采集记录**，其它站点的数据不受影响。
 - 同时**复位采集状态**：`last_cursor`、`last_mode`、`last_status`、`last_error` 清空，`last_sync_at` / `last_full_sync_at` 置空，`video_count` 归零。这一步很关键——影片都删了，若增量游标还停在上次采到的最大 `vod_time`，下次增量采集会认为「没有更新」而永远补不回数据；复位后下一次增量从零开始重新拉取。
 - 有**排队中 / 运行中**的采集任务时拒绝执行（`409`），避免清空与采集并发互相覆盖：先暂停采集或等任务结束再清空。
 - 响应返回本次删除的条数，例如 `{"videos":1234,"categories":12,"tags":37,"jobs":8}`；站点不存在返回 `404`，普通用户调用返回 `403`。
@@ -437,14 +446,14 @@ SQLite 的索引末尾隐含 rowid（即 `id`），所以 `(source_id, vod_time)
 | tasks | POST | `/api/tasks/v1/:id/rerun` | **重新运行**已结束的任务：**复用原记录**忽略断点从第 1 页重来，统计与尝试次数清零，返回 `202` 与任务视图（运行中返回 409） |
 | tasks | GET | `/api/tasks/v1/capacity` | 读取并发容量 |
 | tasks | PUT | `/api/tasks/v1/capacity` | 调整同时运行的任务数：`{"maxConcurrent":2}`（1..64） |
-| videos | GET | `/api/videos/v1?source_id=&category_id=&tag_id=&area=&q=&sort=&page=&size=` | 分页查询入库影片（返回全部字段、extra、categoryId）。`q` 匹配名称/别名/演员/导演/分类/地域；`category_id` 按自动归档的分类过滤（含子分类）；`tag_id` 按自动归档的标签过滤；`area` 按地域模糊筛选；`sort` 取值 `time_desc`（更新时间↓）/`time_asc`/`score_desc`（评分↓）/`score_asc`，空则为 id 倒序 |
-| videos | GET | `/api/videos/v1/areas` | 库中出现过的地域去重列表，供前端筛选下拉 |
+| videos | GET | `/api/videos/v1?source_id=&category_id=&tag_id=&area_id=&q=&sort=&page=&size=` | 分页查询入库影片（返回全部字段、extra、categoryId）。`q` 匹配名称/别名/演员/导演/分类/地域；`category_id` 按自动归档的分类过滤（含子分类）；`tag_id` 按自动归档的标签过滤；`area_id` 按自动归档的地域过滤（走 `video_areas` 连接表）；`sort` 取值 `time_desc`（更新时间↓）/`time_asc`/`score_desc`（评分↓）/`score_asc`，空则为 id 倒序 |
 | videos | GET | `/api/videos/v1/:id` | 单条影片完整记录 |
 | videos | GET | `/api/videos/v1/:id/play-groups` | 该影片的播放组数组（来自苹果CMS 播放组字段，已解析为结构化 JSON） |
 | categories | GET | `/api/categories/v1?source_id=` | 视频分类列表，含 `videoCount`；`source_id` 只看该资源站的一套分类 |
 | categories | GET | `/api/categories/v1/tree?source_id=` | 视频分类二级树（父分类在前、子分类嵌套），按苹果CMS type_pid 模型 |
 | categories | GET | `/api/categories/v1/:id` | 单个分类详情 |
 | tags | GET | `/api/tags/v1?source_id=` | 视频标签列表，含 `videoCount`；`source_id` 只看该资源站的一套标签 |
+| areas | GET | `/api/areas/v1?source_id=` | 视频地域列表（与标签同构，每个资源站一套），含 `videoCount`；`source_id` 只看该资源站的一套地域 |
 | meta | GET | `/api/meta/v1/fields` | 全字段元数据：`total`、`groups`、`fields[]`（`key` 原始键、`json` 前端键、`desc` 中文含义、`group`、`label`、`long`） |
 | jobs | GET | `/api/jobs/v1?source_id=&limit=` | 采集记录（含 `queued` / `running` / `paused` / `success` / `failed` 与续采页码 `resumePage`） |
 
@@ -577,7 +586,7 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 
 ## 测试
 
-`go test ./...` 覆盖**登录认证与站点权限端到端**（首用户自动管理员、401/403、A/B 站隔离、授权即时生效、停用/删除/改密后会话失效、越权采集 404、bcrypt 与令牌摘要落库、三张认证表自动迁移）、**四层依赖方向守卫**、**utils 横切纯洁性守卫**、**仓储层一实体一对象守卫**、**`/api/{模块}/{版本}` 路由规范守卫**、配置加载、工具函数、站点/影片/任务/**分类** CRUD、分类自动创建与按站点隔离、分类幂等与改名、分类影片数与按分类筛选、**站点配置 JSON 导入导出（导出只含可编辑字段、三种 JSON 形态、按名称 upsert 不产生重复、部分失败逐条上报、非法 JSON / 超大文件 / 普通用户越权）**、**站点名称全系统唯一（手工新增 / 编辑重名返回 409，忽略大小写与首尾空白、改名成自身允许）**、**二级分类（苹果CMS type_pid / type_id_1 父子关联、纯容器父级从 type_id_1 推断预建（修复真实站点二级分类沦为永久孤儿）、父级缺失暂存孤儿、父级出现后自动挂接）**、去重 upsert、**字段清单与实体一致性**、**全字段零丢失解析（数字/字符串/null/对象/数组/自定义字段）**、**播放组解析（多线路 `$$$`/`#`/`$` 分隔符、默认/线路N 命名、无 `$` 回退）**、**播放字段兼容（别名键 `vod_playurl`/`v_playdata` 等、结构化 JSON 数组、无 `vod_id` 稳定伪 ID）与播放地址诊断（自动切换 `ac=detail` 补齐播放数据、显式 `ac=list` 的排查提示、`noPlayUrl` 统计）**、**全字段指纹与全字段写回**、URL 拼装、**`code != 1` 拒绝解析**、全量/增量/游标/去重/失败回写，**资源检索（名称 / 地域筛选、按更新时间与评分升降序排列、地域枚举去重）**、**采集任务调度（异步入队、并发上限运行时调整、运行中暂停、按续采页码继续、同站点互斥）**、**失败自动重试（退避等待、失败页续采、等待期间可暂停）**、**继续 / 重试 / 重新运行（三者均复用原记录、不新开任务；继续与重试的统计和尝试次数累加，重新运行清零后从第 1 页重来）**、**实时进度与统计（当前页/总页数、百分比、速率、剩余时间、重试倒计时、拉取/新增/更新/未变逐页刷新、运行中记录带 live 进度）**、**运行中定期落库（进度与续采页滚动写库、只写进度不动终态、结束后续采页归 1）**、**重启自动恢复（模拟进程重启后自动复用原记录从续采页继续、统计与尝试次数累加、手动暂停的任务不动、不新开记录）**、**地址改写（解析地址前缀拼接与 `{url}` 占位符、播放域名替换保留路径与查询串、先换域名再拼解析、列表与播放组一致改写、拼接解析地址后给分集打 frame 标记、未配置解析地址时不打标记、封面/缩略图/幻灯片/原图与 `#` 截图集合逐段图片改写、原始地址不被污染、配置校验与规范化回读）**，以及通过 HTTP 接口触发采集与字段元数据/详情/分类（含二级树）/播放组/地域与排序检索/任务管理接口的完整链路。采集测试用本地 HTTP 模拟站点，不依赖外网。
+`go test ./...` 覆盖**登录认证与站点权限端到端**（首用户自动管理员、401/403、A/B 站隔离、授权即时生效、停用/删除/改密后会话失效、越权采集 404、bcrypt 与令牌摘要落库、三张认证表自动迁移）、**四层依赖方向守卫**、**utils 横切纯洁性守卫**、**仓储层一实体一对象守卫**、**`/api/{模块}/{版本}` 路由规范守卫**、配置加载、工具函数、站点/影片/任务/**分类** CRUD、分类自动创建与按站点隔离、分类幂等与改名、分类影片数与按分类筛选、**站点配置 JSON 导入导出（导出只含可编辑字段、三种 JSON 形态、按名称 upsert 不产生重复、部分失败逐条上报、非法 JSON / 超大文件 / 普通用户越权）**、**站点名称全系统唯一（手工新增 / 编辑重名返回 409，忽略大小写与首尾空白、改名成自身允许）**、**二级分类（苹果CMS type_pid / type_id_1 父子关联、纯容器父级从 type_id_1 推断预建（修复真实站点二级分类沦为永久孤儿）、父级缺失暂存孤儿、父级出现后自动挂接）**、去重 upsert、**字段清单与实体一致性**、**全字段零丢失解析（数字/字符串/null/对象/数组/自定义字段）**、**播放组解析（多线路 `$$$`/`#`/`$` 分隔符、默认/线路N 命名、无 `$` 回退）**、**播放字段兼容（别名键 `vod_playurl`/`v_playdata` 等、结构化 JSON 数组、无 `vod_id` 稳定伪 ID）与播放地址诊断（自动切换 `ac=detail` 补齐播放数据、显式 `ac=list` 的排查提示、`noPlayUrl` 统计）**、**全字段指纹与全字段写回**、URL 拼装、**`code != 1` 拒绝解析**、全量/增量/游标/去重/失败回写，**资源检索（名称 / 地域筛选、按更新时间与评分升降序排列、地域枚举与影片数）**、**地域自动归档（按 vod_area 拆分、按站点隔离、幂等与关联替换、老库升级回灌）**、**采集任务调度（异步入队、并发上限运行时调整、运行中暂停、按续采页码继续、同站点互斥）**、**失败自动重试（退避等待、失败页续采、等待期间可暂停）**、**继续 / 重试 / 重新运行（三者均复用原记录、不新开任务；继续与重试的统计和尝试次数累加，重新运行清零后从第 1 页重来）**、**实时进度与统计（当前页/总页数、百分比、速率、剩余时间、重试倒计时、拉取/新增/更新/未变逐页刷新、运行中记录带 live 进度）**、**运行中定期落库（进度与续采页滚动写库、只写进度不动终态、结束后续采页归 1）**、**重启自动恢复（模拟进程重启后自动复用原记录从续采页继续、统计与尝试次数累加、手动暂停的任务不动、不新开记录）**、**地址改写（解析地址前缀拼接与 `{url}` 占位符、播放域名替换保留路径与查询串、先换域名再拼解析、列表与播放组一致改写、拼接解析地址后给分集打 frame 标记、未配置解析地址时不打标记、封面/缩略图/幻灯片/原图与 `#` 截图集合逐段图片改写、原始地址不被污染、配置校验与规范化回读）**，以及通过 HTTP 接口触发采集与字段元数据/详情/分类（含二级树）/播放组/地域与排序检索/任务管理接口的完整链路。采集测试用本地 HTTP 模拟站点，不依赖外网。
 
 HTTP 链路测试位于 `internal/router`（装配后打真实请求，同时校验新路由结构与旧路由已下线），采集编排测试位于 `internal/service`，协议解析测试位于 `internal/service/collector`，纯工具测试位于 `internal/utils`；`internal/repository` 下按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go` / `user_test.go`，另有 `store_test.go` 校验连接与各对象装配。HTTP 链路测试会自动注册首个管理员并让所有请求携带令牌，真实模拟登录后访问。SQLite 使用纯 Go 的 modernc.org/sqlite 驱动（经 github.com/glebarez/sqlite 接入 GORM），无需本机 gcc，测试直接运行即可（`CGO_ENABLED=0`）。
 
