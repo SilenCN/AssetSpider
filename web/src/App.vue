@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
 import { linkedFilters, scopeOptions } from './filterLinkage.js'
+import { evaluateCron, formatCronTime } from './cron.js'
 import {
   NAV_ITEMS, DEFAULT_TAB, normalizeTab, tabToHash, navItemsFor,
   detailHash, detailIdFromHash,
@@ -781,6 +782,14 @@ const form = reactive(emptyForm())
 const editing = computed(() => !!form.id)
 const sourceOpen = ref(false)
 
+// cron 输入时实时校验：给出合法/非法原因、这条规则的中文含义与接下来几次触发时刻。
+// 纯前端计算（web/src/cron.js），与后端 utils/cron.go 语义一致，输入即反馈、无需请求。
+const cronFeedback = computed(() => {
+  if (!form.scheduleEnabled) return { state: 'off', error: '', meaning: '', next: [] }
+  return evaluateCron(form.scheduleCron, { count: 3 })
+})
+const cronNextText = computed(() => cronFeedback.value.next.map(d => formatCronTime(d)).join('、'))
+
 function resetForm() { Object.assign(form, emptyForm()) }
 
 function sourcePayload(s) {
@@ -910,6 +919,12 @@ async function confirmImport() {
 
 async function saveSource() {
   error.value = ''
+  // 定时开启时前端先拦一道，避免带着明显非法的表达式白跑一次请求。
+  if (form.scheduleEnabled && cronFeedback.value.state === 'invalid') {
+    error.value = `定时配置有误：${cronFeedback.value.error}`
+    notify(error.value, 'err')
+    return
+  }
   try {
     const payload = sourcePayload(form)
     if (form.id) await request(`/api/sources/v1/${form.id}`, jsonOptions('PUT', payload))
@@ -1599,6 +1614,21 @@ provide('app', {
             </datalist>
             <span class="hint">支持 <code>*</code>、<code>*/n</code>、<code>a-b</code>、逗号列表；停服期间错过的时刻不补跑，同一分钟只触发一次。</span>
           </label>
+          <div class="cron-feedback full" :class="cronFeedback.state" aria-live="polite">
+            <template v-if="cronFeedback.state === 'off'">
+              <span class="cron-icon">○</span>未启用定时增量采集，表达式不会生效。
+            </template>
+            <template v-else-if="cronFeedback.state === 'empty'">
+              <span class="cron-icon">○</span>填写 cron 表达式后这里会实时显示校验结果与含义；也可以点输入框选一个常用预设。
+            </template>
+            <template v-else-if="cronFeedback.state === 'invalid'">
+              <span class="cron-icon">✕</span>表达式无效：{{ cronFeedback.error }}
+            </template>
+            <template v-else>
+              <div><span class="cron-icon">✓</span>表达式有效 · {{ cronFeedback.meaning }}</div>
+              <div v-if="cronNextText" class="cron-next">接下来 {{ cronFeedback.next.length }} 次：{{ cronNextText }}</div>
+            </template>
+          </div>
 
           <label class="check full"><input v-model="form.enabled" type="checkbox" /> 启用该站点</label>
 
@@ -1895,6 +1925,17 @@ tbody tr:hover td { background: #f8faff; }
 .sf-group .muted { font-weight: 400; font-size: 12px; }
 .sf-actions { display: flex; gap: 10px; justify-content: flex-end; }
 .sf-form .hint { margin: 2px 0 0; }
+/* cron 实时校验反馈：合法绿、非法红、未启用/未填写灰 */
+.cron-feedback {
+  margin-top: -4px; padding: 9px 11px; border-radius: 9px;
+  border: 1px solid var(--border); background: #f6f8fc;
+  font-size: 12px; line-height: 1.7; color: var(--text-2);
+}
+.cron-feedback.ok { background: #eefaf2; border-color: #c8ead4; color: #12713e; }
+.cron-feedback.invalid { background: #fdf0f1; border-color: #f4cccc; color: #b4232c; }
+.cron-feedback.off, .cron-feedback.empty { color: var(--muted); }
+.cron-icon { display: inline-block; width: 16px; font-weight: 700; }
+.cron-next { margin-top: 3px; padding-left: 16px; color: var(--text-2); }
 .field-group { margin-top: 18px; }
 .field-group h4 { margin: 0 0 10px; font-size: 14px; color: var(--brand); }
 .field-group h4 span { font-weight: 400; font-size: 12px; }
