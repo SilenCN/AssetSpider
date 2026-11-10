@@ -36,6 +36,51 @@ func TestParseTypeList(t *testing.T) {
 	}
 }
 
+// TestParseListClassNumericTypeIDs 验证真实站点把分类定义放在影片响应的
+// class[] 里、且 type_id / type_pid 是数字时也能解析出来。
+func TestParseListClassNumericTypeIDs(t *testing.T) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"code": 1, "msg": "数据列表", "page": 1, "pagecount": 1, "limit": "20", "total": 1,
+		"list": []map[string]interface{}{
+			{"vod_id": 1, "vod_name": "剧集A", "type_id": 26, "type_name": "国产剧"},
+		},
+		"class": []map[string]interface{}{
+			{"type_id": 8, "type_pid": 0, "type_name": "连续剧"},
+			{"type_id": 26, "type_pid": 8, "type_name": "国产剧"},
+		},
+	})
+	r, err := ParseList(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Class) != 2 {
+		t.Fatalf("应解析出 2 条 class 分类定义，实际 %d", len(r.Class))
+	}
+	if r.Class[0].TypeID.String() != "8" || r.Class[0].TypePID.String() != "0" || r.Class[0].TypeName.String() != "连续剧" {
+		t.Fatalf("数字 type_id/type_pid 解析异常: %+v", r.Class[0])
+	}
+	if r.Class[1].TypePID.String() != "8" {
+		t.Fatalf("class 父子关系解析异常: %+v", r.Class[1])
+	}
+}
+
+// TestParseTypeListClassFallback 验证 ac=typelist 返回影片列表 + class[] 时，
+// class[] 仍能被取到（TypeItem 兼容数字字段，不会解析失败）。
+func TestParseTypeListClassFallback(t *testing.T) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"code": 1, "msg": "数据列表",
+		"list":  []map[string]interface{}{{"vod_id": 1, "type_id": 26, "type_name": "国产剧"}},
+		"class": []map[string]interface{}{{"type_id": 8, "type_pid": 0, "type_name": "连续剧"}},
+	})
+	r, err := ParseTypeList(body)
+	if err != nil {
+		t.Fatalf("数字 type_id 不应导致解析失败: %v", err)
+	}
+	if len(r.Class) != 1 || r.Class[0].TypeName.String() != "连续剧" {
+		t.Fatalf("class[] 未被解析: %+v", r)
+	}
+}
+
 // TestParseTypeListNonSuccess 验证非成功状态被识别为错误。
 func TestParseTypeListNonSuccess(t *testing.T) {
 	body, _ := json.Marshal(map[string]interface{}{

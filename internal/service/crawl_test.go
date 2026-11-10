@@ -471,7 +471,14 @@ func TestCrawlPlayURLCompatAndAutoDetect(t *testing.T) {
 		t.Fatalf("播放地址未入库: %+v", vids)
 	}
 	mu.Lock()
-	got := append([]string(nil), acs...)
+	// ac=typelist 是每轮采集开始时的分类定义探测，与播放地址自动切换无关，
+	// 这里只断言 videolist / detail 的顺序。
+	got := make([]string, 0, len(acs))
+	for _, ac := range acs {
+		if ac != "typelist" {
+			got = append(got, ac)
+		}
+	}
 	mu.Unlock()
 	if len(got) != 2 || got[0] != "videolist" || got[1] != "detail" {
 		t.Fatalf("应先按默认动作(videolist)探测、再按 detail 采集，实际 %v", got)

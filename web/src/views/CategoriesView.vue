@@ -3,7 +3,7 @@
 // 解构出的仍是原始 ref / computed / 函数，模板写法与拆分前一致。
 import { inject } from 'vue'
 const {
-  catKey, catTotal, categoryForest, isCatCollapsed, showCategoryVideos, toggleAllCats,
+  catKey, catTotal, catVideoCount, categoryForest, isCatCollapsed, showCategoryVideos, toggleAllCats,
   toggleCat
 } = inject('app')
 </script>
@@ -41,7 +41,7 @@ const {
                   <b class="tree-title">{{ node.name }}</b>
                   <span v-if="!node.virtual" class="muted hide-sm">站点ID {{ node.typeId || '-' }}</span>
                   <span v-if="node.virtual" class="muted">{{ node.hint }}</span>
-                  <span class="muted">{{ node.videoCount }} 部</span>
+                  <span class="muted">{{ catVideoCount(node) }} 部</span>
                   <span class="tree-gap"></span>
                   <button v-if="!node.virtual" class="mini ghost" @click="showCategoryVideos(node)">查看影片</button>
                 </div>

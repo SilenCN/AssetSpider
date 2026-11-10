@@ -40,9 +40,10 @@ import (
 //	2 → 新增检索复合索引与全文索引
 //	3 → 地域拆成 areas + video_areas（升级时按 videos.vod_area 回灌一次）
 //	4 → 年份筛选新增 idx_videos_vod_year
+//	5 → 补建缺失的一级分类（按 videos.type_id_1 / categories.type_pid 重建父子关系）
 //
 // 新增索引 / 改变索引列 / 增加需要回灌的数据迁移时把它 +1。
-const schemaVersion = 4
+const schemaVersion = 5
 
 // Repositories 是各实体仓储的容器。
 // 它只是装配结果，不是「大杂烩仓储」：任何实体读写都必须走对应的那个对象。
@@ -135,6 +136,11 @@ func prepareDatabase(db *gorm.DB) {
 		// 函数内部会判断 video_areas 是否已有数据，重复执行是空转。
 		if err := backfillAreas(db); err != nil {
 			log.Printf("回灌地域数据失败（不影响启动，重新采集会补齐）: %v", err)
+		}
+		// v5：老库只存了二级分类、父级分类从未建出，导致分类树全挤进「未归类」。
+		// 按库内已有的 type_id_1 / type_pid 补建一级分类并重挂子树，无需重新采集。
+		if err := backfillCategoryParents(db); err != nil {
+			log.Printf("重建分类层级失败（不影响启动，重新采集会补齐）: %v", err)
 		}
 		// 地域拆表后 vod_area 的单列索引失去用途（筛选走 video_areas，LIKE 用不上索引），
 		// 老库上把它删掉；新库本来就没有。

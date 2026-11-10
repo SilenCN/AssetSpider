@@ -311,6 +311,14 @@ function siteNameOf(id) {
   return sources.value.find(s => s.id === id)?.name || `站点 #${id}`
 }
 
+// 一级分类通常自身没有影片（纯容器），直接显示 videoCount 会是「0 部」。
+// 这里把子分类的影片数累加进来，作为该分类及其子树的展示数量。
+function catVideoCount(node) {
+  if (!node) return 0
+  return (Number(node.videoCount) || 0) +
+    (node.children || []).reduce((n, ch) => n + catVideoCount(ch), 0)
+}
+
 const categoryForest = computed(() => {
   const sites = new Map()
   for (const node of categoryTree.value) {
@@ -336,18 +344,20 @@ const categoryForest = computed(() => {
         else roots.push(node)
       }
       let catCount = 0
-      let videoCount = 0
       const walk = n => {
         catCount++
-        videoCount += n.videoCount || 0
         for (const ch of n.children || []) walk(ch)
       }
       roots.forEach(walk)
       orphans.forEach(walk)
+      // 父节点的 videoCount 已含子树，站点总数只累加根节点与孤儿，避免重复计数
+      let videoCount = 0
+      for (const n of roots) videoCount += catVideoCount(n)
+      for (const n of orphans) videoCount += catVideoCount(n)
       if (orphans.length) {
         roots.push({
           key: `orphan-${site.sourceId}`, virtual: true, name: '未归类',
-          hint: '父分类未采集到，暂挂在此', videoCount: orphans.reduce((n, c) => n + (c.videoCount || 0), 0),
+          hint: '父分类未采集到，暂挂在此', videoCount: 0, // 只作为容器，数量由子节点累加
           children: orphans,
         })
       }
@@ -1339,7 +1349,7 @@ provide('app', {
   request, jsonOptions, loadHealth, loadSources, fetchVideos, kickSentinel, loadVideos, loadMoreVideos,
   loadAreas, loadYears, loadJobs, loadTasks, loadCategories, loadCategoryTree, loadTags, loadUsers, refresh,
   categoryName, activeTaskOf, queuedCountOf, showCategoryVideos, filterByTag, catCollapsed, isCatCollapsed, toggleCat,
-  catKey, siteNameOf, categoryForest, catTotal, catPath, catSelectLabel, tagSelectLabel, applyFilterLinkage,
+  catKey, siteNameOf, categoryForest, catTotal, catVideoCount, catPath, catSelectLabel, tagSelectLabel, applyFilterLinkage,
   onFilterChange, applyLinkage, clearAllFilters, toggleAllCats, fieldMeta, detail, detailTab, onlyNonEmpty,
   loadFieldMeta, hasValue, nonEmptyCount, groupedFields, extraPairs, playGroups, posterOf, markPicFailed,
   episodeLabel, scoreOf, metaLine, tagListOf, playerEl, activeGroup, activeEp, hlsInstance,

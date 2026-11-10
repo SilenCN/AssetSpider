@@ -149,6 +149,9 @@ type ListResponse struct {
 	Limit     flexInt     `json:"limit"`
 	Total     flexInt     `json:"total"`
 	List      []VideoItem `json:"list"`
+	// 很多 MacCMS 站点在影片列表响应里顺带返回 class[]（本站全部分类定义，
+	// 含 type_pid），这是最可靠的层级来源，采集时直接拿来重建分类树。
+	Class []TypeItem `json:"class"`
 }
 
 // ParseList 解析采集接口的 JSON 响应，兼容常见字段别名与类型差异。

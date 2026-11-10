@@ -16,6 +16,9 @@ type CategoryRepository interface {
 	EnsureForVideos(sourceID uint, videos []model.Video) (map[string]uint, error)
 	// ApplyTypeNames 用苹果CMS typelist 返回的权威分类名称补全本源分类的名称。
 	ApplyTypeNames(sourceID uint, names map[string]string) error
+	// ApplyTypeTree 用苹果CMS typelist 的权威父子关系校正本站分类层级，
+	// 并补建引用了却不存在的一级分类（defs 为空时也能按库内数据重建）。
+	ApplyTypeTree(sourceID uint, defs []CategoryDef) error
 	// visible 为可选站点白名单，语义见 visibility.go。
 	List(sourceID uint, visible ...[]uint) ([]model.Category, error)
 	Get(id uint, visible ...[]uint) (*model.Category, error)
@@ -221,6 +224,211 @@ func (r *categoryRepository) ApplyTypeNames(sourceID uint, names map[string]stri
 		}
 	}
 	return nil
+}
+
+// CategoryDef 是苹果CMS typelist 返回的一条分类定义。
+type CategoryDef struct {
+	TypeID       string
+	Name         string
+	ParentTypeID string // type_pid，"0" / 空表示一级分类
+}
+
+// ApplyTypeTree 把 typelist 的权威父子关系写回本站分类，再重建整棵树。
+//
+// 与 EnsureForVideos 的差别：有的站点 videolist 根本不返回 type_id_1，层级只存在于
+// typelist 的 type_pid 里；也有老库只存了二级分类、一级分类从未被建出来。这里统一
+// 以「被引用过的父级 ID」为准补建一级分类，避免二级分类永远沦为「未归类」。
+// 只在库里已存在该分类时改写它的父级信息，不凭空创建没有影片的叶子分类。
+func (r *categoryRepository) ApplyTypeTree(sourceID uint, defs []CategoryDef) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		names := make(map[string]string)
+		referenced := make(map[string]bool)
+		items := make([]CategoryDef, 0, len(defs))
+		for _, d := range defs {
+			id := strings.TrimSpace(d.TypeID)
+			if id == "" {
+				continue
+			}
+			pid := strings.TrimSpace(d.ParentTypeID)
+			if pid == "0" || pid == id {
+				pid = ""
+			}
+			nm := strings.TrimSpace(d.Name)
+			if nm != "" {
+				names[id] = nm
+			}
+			if pid != "" {
+				referenced[pid] = true
+			}
+			items = append(items, CategoryDef{TypeID: id, Name: nm, ParentTypeID: pid})
+		}
+		for _, d := range items {
+			var cat model.Category
+			if err := tx.Where("source_id = ? AND TRIM(COALESCE(type_id, '')) = ?", sourceID, d.TypeID).
+				Order("id ASC").Limit(1).Find(&cat).Error; err != nil {
+				return err
+			}
+			if cat.ID == 0 {
+				continue // 站点定义了但本站还没采到影片的叶子分类，不预先建空分类
+			}
+			updates := map[string]interface{}{}
+			if d.ParentTypeID != "" && cat.TypePID != d.ParentTypeID {
+				updates["type_pid"] = d.ParentTypeID
+			}
+			// typelist 明确说它是父级时清掉残留的父级引用，避免一级分类被当成二级。
+			if referenced[d.TypeID] && d.ParentTypeID == "" && cat.TypePID != "" {
+				updates["type_pid"] = ""
+			}
+			if d.Name != "" && (cat.Name == "" || cat.Name == cat.TypeID || cat.Name == d.TypeID) && cat.Name != d.Name {
+				updates["name"] = d.Name
+			}
+			if len(updates) > 0 {
+				if err := tx.Model(&model.Category{}).Where("id = ?", cat.ID).Updates(updates).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return rebuildCategoryTree(tx, sourceID, names)
+	})
+}
+
+// categoryParentRef 是一条「本源内被引用过的父级 type_id」。
+type categoryParentRef struct {
+	SourceID uint   `gorm:"column:source_id"`
+	PID      string `gorm:"column:pid"`
+}
+
+// referencedParentIDs 汇总两个来源的父级引用：
+//   - videos.type_id_1：采集时的一级分类 ID；
+//   - categories.type_pid：老库里已经记下的父级 ID。
+//
+// 排除 "0"、空值与「父级等于自身」这三种无效引用。sourceID 为 0 时查全部站点。
+func referencedParentIDs(tx *gorm.DB, sourceID uint) ([]categoryParentRef, error) {
+	const sql = `
+WITH refs AS (
+  SELECT source_id, TRIM(type_id_1) AS pid FROM videos
+   WHERE TRIM(COALESCE(type_id_1, '')) NOT IN ('', '0')
+     AND TRIM(COALESCE(type_id_1, '')) <> TRIM(COALESCE(type_id, ''))
+  UNION
+  SELECT source_id, TRIM(type_pid) AS pid FROM categories
+   WHERE TRIM(COALESCE(type_pid, '')) NOT IN ('', '0')
+     AND TRIM(COALESCE(type_pid, '')) <> TRIM(COALESCE(type_id, ''))
+)
+SELECT source_id, pid FROM refs
+ WHERE (? = 0 OR source_id = ?)
+ GROUP BY source_id, pid`
+	var rows []categoryParentRef
+	if err := tx.Raw(sql, sourceID, sourceID).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// rebuildCategoryTree 补建缺失的一级分类并把二级分类挂到父级之下。
+//
+// 这是「缺失一级分类」的通用修复入口：只依赖库内已有数据，不需要重新采集、也不需要
+// 网络。可重复执行（幂等）；names 提供 typelist 的权威名称，没有时以 type_id 占位。
+func rebuildCategoryTree(tx *gorm.DB, sourceID uint, names map[string]string) error {
+	refs, err := referencedParentIDs(tx, sourceID)
+	if err != nil {
+		return err
+	}
+	// 第一遍：确保每个被引用的父级都有一级分类记录，并把它规范成一级。
+	for _, ref := range refs {
+		pid := strings.TrimSpace(ref.PID)
+		if pid == "" {
+			continue
+		}
+		var parent model.Category
+		if err := tx.Where("source_id = ? AND TRIM(COALESCE(type_id, '')) = ?", ref.SourceID, pid).
+			Order("id ASC").Limit(1).Find(&parent).Error; err != nil {
+			return err
+		}
+		key := utils.CategoryKey(pid, "")
+		if parent.ID == 0 {
+			if err := tx.Where("source_id = ? AND cat_key = ?", ref.SourceID, key).
+				Order("id ASC").Limit(1).Find(&parent).Error; err != nil {
+				return err
+			}
+			if parent.ID != 0 && strings.TrimSpace(parent.TypeID) != pid {
+				if err := tx.Model(&model.Category{}).Where("id = ?", parent.ID).
+					Update("type_id", pid).Error; err != nil {
+					return err
+				}
+				parent.TypeID = pid
+			}
+		}
+		if parent.ID == 0 {
+			name := strings.TrimSpace(names[pid])
+			if name == "" {
+				name = pid // 无权威名称时以 type_id 占位，后续 typelist 会补全
+			}
+			parent = model.Category{
+				SourceID: ref.SourceID, Key: key, TypeID: pid,
+				Name: name, TypePID: "", ParentID: 0, Level: 1,
+			}
+			if err := tx.Create(&parent).Error; err != nil {
+				return fmt.Errorf("补建一级分类 %s/%d: %w", pid, ref.SourceID, err)
+			}
+		}
+		updates := map[string]interface{}{}
+		if parent.Level != 1 {
+			updates["level"] = 1
+		}
+		if parent.ParentID != 0 {
+			updates["parent_id"] = 0
+		}
+		if parent.TypePID != "" {
+			updates["type_pid"] = ""
+		}
+		if nm := strings.TrimSpace(names[pid]); nm != "" &&
+			(parent.Name == "" || parent.Name == parent.TypeID || parent.Name == pid) && parent.Name != nm {
+			updates["name"] = nm
+		}
+		if len(updates) > 0 {
+			if err := tx.Model(&model.Category{}).Where("id = ?", parent.ID).Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+	}
+	// 第二遍：把带 type_pid 的二级分类按父级 type_id 挂接。
+	// 父级刚在第一遍建好，因此老库里「未归类」的那批二级分类这次能归位。
+	var children []model.Category
+	if err := tx.Where(`(? = 0 OR source_id = ?)
+		AND TRIM(COALESCE(type_pid, '')) NOT IN ('', '0')`, sourceID, sourceID).
+		Find(&children).Error; err != nil {
+		return err
+	}
+	for _, ch := range children {
+		pid := strings.TrimSpace(ch.TypePID)
+		if pid == "" || pid == "0" || pid == strings.TrimSpace(ch.TypeID) {
+			continue
+		}
+		var parent model.Category
+		if err := tx.Where("source_id = ? AND TRIM(COALESCE(type_id, '')) = ?", ch.SourceID, pid).
+			Order("id ASC").Limit(1).Find(&parent).Error; err != nil {
+			return err
+		}
+		if parent.ID == 0 || parent.ID == ch.ID {
+			continue
+		}
+		if ch.ParentID != parent.ID || ch.Level != 2 {
+			if err := tx.Model(&model.Category{}).Where("id = ?", ch.ID).
+				Updates(map[string]interface{}{"parent_id": parent.ID, "level": 2}).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// backfillCategoryParents 是启动时的老库修复：按库内已有的 type_id_1 / type_pid
+// 补建缺失的一级分类并重建父子关系。由 prepareDatabase 在版本升级时调用一次，
+// 重复执行是空转。
+func backfillCategoryParents(db *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		return rebuildCategoryTree(tx, 0, nil)
+	})
 }
 
 // addCandidate 把候选分类并入收集表；键冲突时保留更有信息量的字段：

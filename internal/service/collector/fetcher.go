@@ -114,18 +114,23 @@ func (f *Fetcher) FetchList(ctx context.Context, src model.Source, page, hours i
 // videolist 只携带影片自身的 type_name、不携带父级分类名称，因此父级（纯容器）
 // 分类在 EnsureForVideos 里只能以 type_id 兜底展示；typelist 一次性给出本站全部
 // 分类的权威名称与父子关系（type_pid），是补全父级名称、校正层级最可靠的来源。
+// 字段统一用 flexString：真实站点的 type_id / type_pid 常是数字而非字符串，
+// 例如 {"type_id":8,"type_pid":0,"type_name":"连续剧"}，直接用 string 会解析失败。
 type TypeItem struct {
-	TypeID   string `json:"type_id"`
-	TypeName string `json:"type_name"`
-	TypePID  string `json:"type_pid"`
-	TypeSort string `json:"type_sort"`
+	TypeID   flexString `json:"type_id"`
+	TypeName flexString `json:"type_name"`
+	TypePID  flexString `json:"type_pid"`
+	TypeSort flexString `json:"type_sort"`
 }
 
 // TypeListResponse 对应 api.php/provide/vod/?ac=typelist 的 JSON 响应。
+// 部分站点不认 ac=typelist，仍返回影片列表，但会附带 class[] 分类定义；
+// 因此两种载体都要收，class 优先。
 type TypeListResponse struct {
-	Code flexInt    `json:"code"`
-	Msg  flexString `json:"msg"`
-	List []TypeItem `json:"list"`
+	Code  flexInt    `json:"code"`
+	Msg   flexString `json:"msg"`
+	List  []TypeItem `json:"list"`
+	Class []TypeItem `json:"class"`
 }
 
 // BuildTypeListURL 按苹果CMS V10 Provide 协议拼装分类定义请求地址。

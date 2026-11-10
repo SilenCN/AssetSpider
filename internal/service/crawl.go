@@ -42,6 +42,25 @@ type RunResult struct {
 	FinishedAt time.Time `json:"finishedAt"`
 }
 
+// mergeTypeDefs 把 typelist / class 里的分类定义按 type_id 合并。
+// 后写入的覆盖先写入的，因此调用顺序应为「先 list[]，再 class[]」。
+func mergeTypeDefs(items []collector.TypeItem, names map[string]string, defs map[string]repository.CategoryDef) {
+	for _, it := range items {
+		id := strings.TrimSpace(it.TypeID.String())
+		if id == "" {
+			continue
+		}
+		nm := strings.TrimSpace(it.TypeName.String())
+		pid := strings.TrimSpace(it.TypePID.String())
+		if nm != "" {
+			names[id] = nm
+		} else {
+			nm = defs[id].Name
+		}
+		defs[id] = repository.CategoryDef{TypeID: id, Name: nm, ParentTypeID: pid}
+	}
+}
+
 // hasExplicitAC 判断站点地址或附加参数里是否显式指定了 ac。
 // 用户显式配置时不自动切换动作，尊重站点实际支持的接口形态。
 func hasExplicitAC(src model.Source) bool {
@@ -236,19 +255,17 @@ func (s *CrawlService) crawl(
 		startPage = 1
 	}
 
-	// 拉取苹果CMS 的分类定义（ac=typelist）补全父级（纯容器）分类名称。
-	// videolist 不携带父级名称，父级此前只能以 type_id 兜底展示；typelist 一次性
-	// 给出本站全部分类的权威名称。失败不致命：拿不到就沿用既有名称，不阻断采集。
+	// 分类定义有两个来源：ac=typelist 的 list[]，以及影片列表响应附带的 class[]。
+	// 真实站点常不认 ac=typelist（仍返回影片列表，但带 class[]），两者都收，
+	// 且以 class[] 为更权威的层级来源。seacms_json 与 maccms_json 共用同一套
+	// JSON 解析器，老站点仍标 seacms_json 也要拉。
+	// 拿不到都不致命：退回库内已有的 type_id_1 / type_pid 关系，不阻断采集。
 	typeNames := make(map[string]string)
-	if src.Format == "" || src.Format == model.FormatMacCMSJSON {
+	typeDefs := make(map[string]repository.CategoryDef)
+	if src.Format == "" || src.Format == model.FormatMacCMSJSON || src.Format == model.FormatSeaCMSJSON {
 		if tl, err := s.fetcher.FetchTypeList(ctx, *src); err == nil {
-			for _, it := range tl.List {
-				id := strings.TrimSpace(it.TypeID)
-				nm := strings.TrimSpace(it.TypeName)
-				if id != "" && nm != "" {
-					typeNames[id] = nm
-				}
-			}
+			mergeTypeDefs(tl.List, typeNames, typeDefs)
+			mergeTypeDefs(tl.Class, typeNames, typeDefs)
 		}
 	}
 
@@ -273,6 +290,10 @@ func (s *CrawlService) crawl(
 		// 抓取前先把「当前页」报到任务视图，列表能看到逐页推进。
 		task.setPage(page)
 		list, err := s.fetcher.FetchList(ctx, *src, page, hours)
+		if err == nil {
+			// 每页都顺带收一次 class[] 分类定义；map 去重，重复页无副作用。
+			mergeTypeDefs(list.Class, typeNames, typeDefs)
+		}
 		if err != nil {
 			// 暂停会取消在途请求，此处不能当失败处理。
 			res.ResumePage = page // 失败页即续采页，手动/自动重试都从这里开始
@@ -400,7 +421,16 @@ func (s *CrawlService) crawl(
 	}
 	// 正常结束（或按 maxPages 上限结束）：下次从头开始。
 	res.ResumePage = 1
-	// 采集完成后用 typelist 补全父级/兜底分类名称（父级此前可能只是 type_id 占位）。
+	// 采集完成后按权威父子关系重建分类树：补建缺失的一级分类、
+	// 把「未归类」的二级分类挂回父级，并补全父级名称。
+	// defs 为空（接口不可用）时仍会按库内 type_id_1 / type_pid 重建，不依赖网络。
+	defs := make([]repository.CategoryDef, 0, len(typeDefs))
+	for _, d := range typeDefs {
+		defs = append(defs, d)
+	}
+	if err := s.categories.ApplyTypeTree(src.ID, defs); err != nil {
+		return fmt.Errorf("重建分类层级失败: %w", err)
+	}
 	if err := s.categories.ApplyTypeNames(src.ID, typeNames); err != nil {
 		return fmt.Errorf("补全分类名称失败: %w", err)
 	}
