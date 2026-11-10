@@ -2001,16 +2001,24 @@ tbody tr:hover td { background: #f8faff; }
 .tree-row.site { background: #f7f9fc; cursor: pointer; user-select: none; border-top: 0; }
 .tree-row.site:hover { background: #eef3fb; }
 .tree-row.group { background: #fbfcff; }
-.tree-row.group b.tree-title { color: var(--text-2); font-weight: 600; }
+.tree-row.group .tree-title { color: var(--text-2); font-weight: 600; }
 .tree-row:hover { background: var(--brand-soft); }
-.tree-row b.tree-title {
+.tree-row .tree-title {
   font-size: 13.5px; font-weight: 600;
   flex: 0 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 分类名本身即可点击跳转，覆盖全局 button 的胶囊按钮样式 */
+.tree-row .tree-title.link {
+  padding: 0; border-radius: 0; background: transparent; color: var(--brand);
+  font-weight: 600; line-height: inherit;
+  text-align: left; box-shadow: none;
+}
+.tree-row .tree-title.link:hover:not(:disabled) { background: transparent; color: var(--brand-dark); text-decoration: underline; }
+.tree-row .tree-title.link:active:not(:disabled) { transform: none; }
+.tree-row .tree-title.link:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 3px; }
 .tree-row > .muted { flex: none; white-space: nowrap; font-size: 12px; }
 .tree-row > .badge { flex: none; }
-.tree-row > .mini { flex: none; }
 .tree-gap { flex: 1 1 auto; min-width: 8px; height: 1px; align-self: center; }
 
 .twisty {
@@ -2109,9 +2117,9 @@ tbody tr:hover td { background: #f8faff; }
   .res-info h4 { font-size: 12px; }
   .res-meta, .res-time { font-size: 10px; }
 
-  /* 分类树：收窄缩进，标题行允许换行不挤压按钮 */
+  /* 分类树：收窄缩进，分类名可点，不再需要给按钮留位置 */
   .tree-row { padding: 9px 10px; gap: 6px; }
-  .tree-row b.tree-title { font-size: 13px; }
+  .tree-row .tree-title { font-size: 13px; }
   .tree-kids .tree-row { padding-left: 20px; }
   .tree-kids .tree-kids .tree-row { padding-left: 34px; }
   .ep-name { min-width: 0; }
