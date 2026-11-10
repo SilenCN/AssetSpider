@@ -22,14 +22,6 @@ const canSave = computed(() => settingsDirty.value && !anyInvalid.value && !sett
           <h2>系统设置</h2>
           <span class="muted">采集运行时配置 · 保存后立即生效并写入配置文件</span>
         </div>
-        <details class="tip" open>
-          <summary>在线修改说明</summary>
-          <p class="hint">
-            这里管理采集器的运行时参数：保存后<b>无需重启</b>，正在排队 / 后续发起的任务立即用上新值，同时写回 <code>{{ settings?.configPath || 'conf/config.yaml' }}</code>，下次启动依旧生效。
-            被<b>环境变量</b>接管的字段会标为「只读」——它们由启动环境决定，页面改动会在重启后被覆盖，请改启动环境后重启。
-          </p>
-        </details>
-
         <p v-if="!settings" class="empty">正在加载配置…</p>
         <template v-else>
           <div class="settings-grid">

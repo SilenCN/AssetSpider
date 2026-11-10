@@ -22,19 +22,7 @@ const {
         <div class="actions">
           <button @click="crawlAll('full')">全量采集可见站点</button>
           <button class="ghost" @click="crawlAll('incremental')">增量采集可见站点</button>
-          <span v-if="isAdmin" class="muted tiny">采集并发与重试等参数已移到「系统设置」统一配置。</span>
         </div>
-        <details class="tip">
-          <summary>采集与任务规则</summary>
-          <p class="hint">
-            采集为异步任务：发起后立即入队，同时运行的任务数不超过上面的上限，其余排队等待（同一站点也串行排队）。
-            运行中的任务可随时<b>暂停</b>——已完成分页的数据已经入库，全量采集的续采页码与增量采集的游标都会保存，
-            点「继续」即可从断点接着采。抓取失败会<b>自动退避重试</b>（次数由 <code>collector.retry_times</code> 配置），
-            仍然失败的任务可在「采集记录」里<b>手动重试</b>（从失败页续采）或<b>重新运行</b>（从第 1 页重来）——
-            <b>继续 / 重试 / 重新运行都复用原任务记录</b>，不会多出一条历史；重新运行时统计与尝试次数清零。<br />
-            站点还可以单独配置<b>定时增量</b>（编辑站点里设置 5 段 cron）：到点自动发起一次增量任务，站点停用或已有任务在跑时跳过，停服期间错过的时刻不补跑。
-          </p>
-        </details>
         <p v-if="!tasks.length" class="empty">当前没有排队或运行中的采集任务。</p>
         <div v-else class="table-wrap">
           <table>

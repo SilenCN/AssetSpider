@@ -17,10 +17,6 @@ const {
             <button class="mini ghost" @click="toggleAllCats">展开 / 收起</button>
           </span>
         </div>
-        <details class="tip">
-          <summary>分类归档规则</summary>
-          <p class="hint">采集时按接口返回的 type_id / type_name 自动创建分类并关联影片，每个资源站各自一套；依据苹果CMS 的 type_pid 模型支持二级分类：视频的 <code>type_id_1</code> 即所属一级分类 ID，二级分类会挂到对应一级分类之下。<b>点分类名称</b>即可按该分类（含其子分类）筛选影片。</p>
-        </details>
         <p v-if="!categoryForest.length" class="empty">还没有分类，执行一次采集后会自动生成。</p>
         <div v-else class="tree">
           <div v-for="site in categoryForest" :key="site.key" class="tree-site">
