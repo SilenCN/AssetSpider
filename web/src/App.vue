@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { linkedFilters, scopeOptions } from './filterLinkage.js'
 
 // ---------- 登录态 ----------
 const TOKEN_KEY = 'assetspider_token'
@@ -50,11 +51,22 @@ const videoTag = ref('')
 const videoAreaId = ref('')
 const videoSort = ref('time_desc')
 const areas = ref([])
-// 地域与标签同构：每个资源站一套，因此下拉按站点分组（optgroup），
-// 避免「美国」在多站点各出现一次时看起来像重复项。
+// ---------- 筛选条件双向联动 ----------
+// 分类 / 标签 / 地域都归属于某个站点（sourceId），站点是筛选的主轴：
+// 选了站点就只列出该站点的选项；反过来选中某个分类 / 标签 / 地域，
+// 站点会自动定位过去，并清掉属于其它站点的已选条件，避免必然为空的组合。
+const visibleCategories = computed(() => scopeOptions(categories.value, videoSource.value))
+const visibleTags = computed(() => scopeOptions(tags.value, videoSource.value))
+const visibleAreas = computed(() => scopeOptions(areas.value, videoSource.value))
+const hasActiveFilters = computed(() => !!(
+  videoQuery.value.trim() || videoSource.value || videoCategory.value ||
+  videoTag.value || videoAreaId.value
+))
+// 地域与标签同构：每个资源站一套，因此站点未定时下拉按站点分组（optgroup），
+// 避免「美国」在多站点各出现一次时看起来像重复项；站点已定时只剩一组，直接平铺。
 const areaGroups = computed(() => {
   const groups = new Map()
-  for (const a of areas.value) {
+  for (const a of visibleAreas.value) {
     if (!groups.has(a.sourceId)) {
       groups.set(a.sourceId, { sourceId: a.sourceId, name: siteNameOf(a.sourceId), items: [] })
     }
@@ -231,15 +243,20 @@ function queuedCountOf(sourceId) {
 }
 function showCategoryVideos(c) {
   videoCategory.value = String(c.id)
+  applyLinkage()
   videoPage.value = 1
   tab.value = 'videos'
   loadVideos().catch(e => { error.value = e.message })
 }
 // 点击卡片上的标签：按该标签筛选资源库（标签名大小写不敏感匹配）。
-function filterByTag(name) {
-  const t = tags.value.find(x => (x.name || '').toLowerCase() === String(name).toLowerCase())
+// 标签按站点隔离，优先取当前影片所在站点的同名标签，避免跳到别的站点去。
+function filterByTag(name, sourceId) {
+  const matched = tags.value.filter(x =>
+    (x.name || '').toLowerCase() === String(name).toLowerCase())
+  const t = matched.find(x => Number(x.sourceId) === Number(sourceId)) || matched[0]
   if (!t) return
   videoTag.value = String(t.id)
+  applyLinkage()
   videoPage.value = 1
   tab.value = 'videos'
   loadVideos().catch(e => { error.value = e.message })
@@ -325,8 +342,56 @@ const catPath = computed(() => {
   return m
 })
 
-function catLabel(c) {
-  return `${siteNameOf(c.sourceId)} · ${catPath.value.get(c.id) || c.name}`
+// 站点已定时下拉里不必再重复站点名；站点未定时保留前缀，避免同名选项混淆。
+function catSelectLabel(c) {
+  const path = catPath.value.get(c.id) || c.name
+  return videoSource.value ? path : `${siteNameOf(c.sourceId)} · ${path}`
+}
+function tagSelectLabel(t) {
+  return videoSource.value ? t.name : `${siteNameOf(t.sourceId)} · ${t.name}`
+}
+
+// 把联动结果写回各筛选 ref。changed 为 null 表示从分类树 / 卡片标签跳转后的校正。
+function applyFilterLinkage(changed) {
+  const state = {
+    source: videoSource.value, category: videoCategory.value,
+    tag: videoTag.value, area: videoAreaId.value,
+  }
+  const next = linkedFilters(state, changed, {
+    category: categories.value, tag: tags.value, area: areas.value,
+  })
+  videoSource.value = next.source
+  videoCategory.value = next.category
+  videoTag.value = next.tag
+  videoAreaId.value = next.area
+}
+
+// 筛选下拉的统一 change 入口：先写回本次变化的值，再联动校正，最后重载列表。
+// 显式从事件取值，不依赖 v-model 与 @change 的监听器执行顺序。
+function onFilterChange(changed, e) {
+  const value = e?.target?.value ?? ''
+  if (changed === 'sort') {
+    videoSort.value = value
+  } else {
+    if (changed === 'source') videoSource.value = value
+    else if (changed === 'category') videoCategory.value = value
+    else if (changed === 'tag') videoTag.value = value
+    else videoAreaId.value = value
+    applyFilterLinkage(changed)
+  }
+  searchVideos()
+}
+
+// 从分类树 / 卡片标签跳转过来时，同样把站点同步到已选条件所属的站点。
+function applyLinkage() { applyFilterLinkage(null) }
+
+function clearAllFilters() {
+  videoQuery.value = ''
+  videoSource.value = ''
+  videoCategory.value = ''
+  videoTag.value = ''
+  videoAreaId.value = ''
+  searchVideos()
 }
 
 function toggleAllCats() {
@@ -1397,30 +1462,37 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
             <button @click="searchVideos">搜索</button>
           </div>
           <div class="filters">
-            <select v-model="videoCategory" @change="searchVideos" title="按分类筛选">
+            <select v-model="videoCategory" @change="onFilterChange('category', $event)" title="按分类筛选">
               <option value="">全部分类</option>
-              <option v-for="c in categories" :key="c.id" :value="c.id">{{ catLabel(c) }}</option>
+              <option v-for="c in visibleCategories" :key="c.id" :value="c.id">{{ catSelectLabel(c) }}</option>
             </select>
-            <select v-model="videoTag" @change="searchVideos" title="按标签筛选">
+            <select v-model="videoTag" @change="onFilterChange('tag', $event)" title="按标签筛选">
               <option value="">全部标签</option>
-              <option v-for="t in tags" :key="t.id" :value="t.id">{{ siteNameOf(t.sourceId) }} · {{ t.name }}</option>
+              <option v-for="t in visibleTags" :key="t.id" :value="t.id">{{ tagSelectLabel(t) }}</option>
             </select>
-            <select v-model="videoAreaId" @change="searchVideos" title="按地域筛选">
+            <select v-model="videoAreaId" @change="onFilterChange('area', $event)" title="按地域筛选">
               <option value="">全部地域</option>
-              <optgroup v-for="g in areaGroups" :key="g.sourceId" :label="g.name">
-                <option v-for="a in g.items" :key="a.id" :value="a.id">{{ a.name }}（{{ a.videoCount }}）</option>
-              </optgroup>
+              <template v-if="videoSource">
+                <option v-for="a in visibleAreas" :key="a.id" :value="a.id">{{ a.name }}（{{ a.videoCount }}）</option>
+              </template>
+              <template v-else>
+                <optgroup v-for="g in areaGroups" :key="g.sourceId" :label="g.name">
+                  <option v-for="a in g.items" :key="a.id" :value="a.id">{{ a.name }}（{{ a.videoCount }}）</option>
+                </optgroup>
+              </template>
             </select>
-            <select v-model="videoSource" @change="searchVideos" title="按站点筛选">
+            <select v-model="videoSource" @change="onFilterChange('source', $event)" title="按站点筛选">
               <option value="">全部站点</option>
               <option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }}</option>
             </select>
-            <select v-model="videoSort" @change="searchVideos" title="排序">
+            <select v-model="videoSort" @change="onFilterChange('sort', $event)" title="排序">
               <option value="time_desc">更新时间 ↓</option>
               <option value="time_asc">更新时间 ↑</option>
               <option value="score_desc">评分 ↓</option>
               <option value="score_asc">评分 ↑</option>
             </select>
+            <button class="ghost btn-clear" :disabled="!hasActiveFilters"
+              @click="clearAllFilters" title="清空搜索词与全部分类、标签、地域、站点条件">清空筛选</button>
           </div>
           <span class="muted res-total">共 <b>{{ videoTotal }}</b> 条</span>
         </div>
@@ -1438,7 +1510,7 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
                 <h4 :title="v.vodName">{{ v.vodName || v.vodId }}</h4>
                 <p v-if="metaLine(v)" class="res-meta">{{ metaLine(v) }}</p>
                 <div v-if="tagListOf(v).length" class="res-tags">
-                  <span v-for="t in tagListOf(v).slice(0, 4)" :key="t" class="res-tag" :title="`按标签「${t}」筛选`" @click.stop="filterByTag(t)">{{ t }}</span>
+                  <span v-for="t in tagListOf(v).slice(0, 4)" :key="t" class="res-tag" :title="`按标签「${t}」筛选`" @click.stop="filterByTag(t, v.sourceId)">{{ t }}</span>
                 </div>
                 <p class="res-time">{{ v.vodTime || formatTime(v.firstSeenAt) }}</p>
               </div>
@@ -1686,7 +1758,7 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
               <span v-if="detail.vodRemarks && detail.vodRemarks !== episodeLabel(detail)"> · {{ detail.vodRemarks }}</span>
             </p>
             <div v-if="tagListOf(detail).length" class="res-tags detail-tags">
-              <span v-for="t in tagListOf(detail)" :key="t" class="res-tag" :title="`按标签「${t}」筛选`" @click="closeDetail(); filterByTag(t)">{{ t }}</span>
+              <span v-for="t in tagListOf(detail)" :key="t" class="res-tag" :title="`按标签「${t}」筛选`" @click="closeDetail(); filterByTag(t, detailSource?.id)">{{ t }}</span>
             </div>
           </div>
           <button class="ghost" @click="closeDetail">关闭</button>
@@ -1978,6 +2050,7 @@ tbody tr:hover td { background: #f8faff; }
 .search-box { display: flex; gap: 8px; flex: 1 1 320px; min-width: 0; }
 .search-box input { flex: 1 1 auto; }
 .filters { display: flex; gap: 8px; flex-wrap: wrap; }
+.filters .btn-clear { border: 1px solid var(--border-strong); }
 .res-total { margin-left: auto; font-size: 12px; }
 .res-total b { color: var(--text); font-size: 13px; }
 
@@ -2239,6 +2312,7 @@ tbody tr:hover td { background: #f8faff; }
   .search-box button { flex: 0 0 auto; }
   .filters { flex: 1 1 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .filters select { width: 100%; }
+  .filters .btn-clear { grid-column: 1 / -1; }
   .res-total { margin-left: 0; flex: 1 1 100%; }
 
   /* 表格横滚 + 隐藏次要列；再压一档内边距与字号，尽量让常用列在窄屏一次看全 */
