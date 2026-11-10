@@ -110,10 +110,10 @@ func newMockVideoSite(t *testing.T) *httptest.Server {
 			"limit": "20", "total": 2,
 			"list": []map[string]interface{}{
 				{"vod_id": 101, "vod_name": "测试影片A", "type_name": "动作片",
-					"vod_area": "大陆", "vod_score": "8.5",
+					"vod_area": "大陆", "vod_score": "8.5", "vod_year": "2024",
 					"vod_time": "2026-11-07 10:00:00", "vod_play_url": "https://x/a.m3u8"},
 				{"vod_id": "102", "vod_name": "测试影片B", "type_name": "喜剧片",
-					"vod_area": "美国", "vod_score": "9.1",
+					"vod_area": "美国", "vod_score": "9.1", "vod_year": "2025",
 					"vod_time": "2026-11-07 11:00:00"},
 			},
 		})
@@ -770,6 +770,27 @@ func TestVideoAreasAndSortEndpoint(t *testing.T) {
 		t.Fatalf("地域名称缺失: %v", areas)
 	}
 
+	// 年份枚举：年份不拆表，直接按 vod_year 聚合（影片上的单值属性），
+	// 下拉选项按年份倒序并带影片数，筛选按 year 等值匹配。
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1/years", nil))
+	var years []struct {
+		Year       string `json:"year"`
+		VideoCount int64  `json:"videoCount"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &years) != nil {
+		t.Fatalf("年份接口异常: %d %s", w.Code, w.Body.String())
+	}
+	if len(years) != 2 || years[0].Year != "2025" || years[1].Year != "2024" {
+		t.Fatalf("年份枚举异常（应为 2025、2024 倒序）: %+v", years)
+	}
+	for _, y := range years {
+		if y.VideoCount != 1 {
+			t.Errorf("年份 %s 的影片数应为 1，实际 %d", y.Year, y.VideoCount)
+		}
+	}
+
+	// 年份筛选（get 在下方定义，见「地域筛选」位置）
 	type listResp struct {
 		Items []model.Video `json:"items"`
 		Total int64         `json:"total"`
@@ -787,6 +808,13 @@ func TestVideoAreasAndSortEndpoint(t *testing.T) {
 	// 地域筛选（按 area_id，走 video_areas 连接表）
 	if got := get("area_id=" + strconv.Itoa(int(areaID["大陆"]))); got.Total != 1 || got.Items[0].VodName != "测试影片A" {
 		t.Errorf("按地域筛选异常: %+v", got)
+	}
+	// 年份筛选：等值匹配，不存在的年份返回空
+	if got := get("year=2024"); got.Total != 1 || got.Items[0].VodName != "测试影片A" {
+		t.Errorf("按年份筛选异常: %+v", got)
+	}
+	if got := get("year=1999"); got.Total != 0 {
+		t.Errorf("不存在的年份应无结果，实际 %+v", got)
 	}
 	// 按更新时间倒序：B 的 vod_time 更晚
 	if got := get("sort=time_desc"); got.Items[0].VodName != "测试影片B" {

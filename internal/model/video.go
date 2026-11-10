@@ -23,6 +23,7 @@ type Video struct {
 	//   idx_videos_source_id    (source_id, id)：单站点 + 默认 id 倒序；
 	//   （vod_area 不再单独建索引：地域已拆成 areas + video_areas，筛选项与筛选都走连接表；
 	//    关键词检索里的 vod_area LIKE '%x%' 本来也用不上索引）
+	//   idx_videos_vod_year     年份筛选与年份下拉的 GROUP BY（单值列，无需拆表）；
 	//   idx_videos_category_id 分类筛选与按分类聚合影片数。
 	ID       uint `gorm:"primaryKey;index:idx_videos_source_id,priority:2" json:"id"`
 	SourceID uint `gorm:"column:source_id;not null;uniqueIndex:idx_source_vod,priority:1;index:idx_videos_source_time,priority:1;index:idx_videos_source_id,priority:1" json:"sourceId"`
@@ -76,7 +77,7 @@ type Video struct {
 	// ---- 属性 ----
 	VodArea     string `gorm:"column:vod_area" json:"vodArea"` // 原始文本保留用于展示；筛选走 video_areas
 	VodLang     string `gorm:"column:vod_lang" json:"vodLang"`
-	VodYear     string `gorm:"column:vod_year" json:"vodYear"`
+	VodYear     string `gorm:"column:vod_year;index" json:"vodYear"` // 站点原始年份文本；筛选与下拉都按它等值聚合
 	VodVersion  string `gorm:"column:vod_version" json:"vodVersion"`
 	VodState    string `gorm:"column:vod_state" json:"vodState"`
 	VodAuthor   string `gorm:"column:vod_author" json:"vodAuthor"`

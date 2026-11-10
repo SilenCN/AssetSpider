@@ -73,8 +73,10 @@ const videoSource = ref('')
 const videoCategory = ref('')
 const videoTag = ref('')
 const videoAreaId = ref('')
+const videoYear = ref('')
 const videoSort = ref('time_desc')
 const areas = ref([])
+const years = ref([])
 // ---------- 筛选条件双向联动 ----------
 // 分类 / 标签 / 地域都归属于某个站点（sourceId），站点是筛选的主轴：
 // 选了站点就只列出该站点的选项；反过来选中某个分类 / 标签 / 地域，
@@ -84,7 +86,7 @@ const visibleTags = computed(() => scopeOptions(tags.value, videoSource.value))
 const visibleAreas = computed(() => scopeOptions(areas.value, videoSource.value))
 const hasActiveFilters = computed(() => !!(
   videoQuery.value.trim() || videoSource.value || videoCategory.value ||
-  videoTag.value || videoAreaId.value
+  videoTag.value || videoAreaId.value || videoYear.value
 ))
 // 地域与标签同构：每个资源站一套，因此站点未定时下拉按站点分组（optgroup），
 // 避免「美国」在多站点各出现一次时看起来像重复项；站点已定时只剩一组，直接平铺。
@@ -169,6 +171,7 @@ async function fetchVideos(page, append) {
     if (videoCategory.value) p.set('category_id', String(videoCategory.value))
     if (videoTag.value) p.set('tag_id', String(videoTag.value))
     if (videoAreaId.value) p.set('area_id', String(videoAreaId.value))
+    if (videoYear.value) p.set('year', videoYear.value)
     if (videoSort.value) p.set('sort', videoSort.value)
     const d = await request('/api/videos/v1?' + p.toString())
     if (seq !== videoSeq) return // 已经有更新的请求在跑，丢弃这次结果
@@ -210,6 +213,11 @@ function loadMoreVideos() {
 async function loadAreas() {
   try { areas.value = (await request('/api/areas/v1')) || [] } catch (e) { areas.value = [] }
 }
+// 年份是影片上的单值属性（不分站点各一套），因此下拉只取一次全局列表；
+// 选项形如 [{ year: '2025', videoCount: 12 }]，按年份倒序。
+async function loadYears() {
+  try { years.value = (await request('/api/videos/v1/years')) || [] } catch (e) { years.value = [] }
+}
 async function loadJobs() {
   jobs.value = (await request('/api/jobs/v1?limit=50')) || []
 }
@@ -241,7 +249,7 @@ async function refresh() {
   try {
     const pending = [
       loadHealth(), loadSources(), loadVideos(), loadJobs(),
-      loadCategories(), loadCategoryTree(), loadTags(), loadAreas(), loadTasks(),
+      loadCategories(), loadCategoryTree(), loadTags(), loadAreas(), loadYears(), loadTasks(),
     ]
     if (isAdmin.value) pending.push(loadUsers())
     await Promise.all(pending)
@@ -396,6 +404,9 @@ function onFilterChange(changed, e) {
   const value = e?.target?.value ?? ''
   if (changed === 'sort') {
     videoSort.value = value
+  } else if (changed === 'year') {
+    // 年份是影片上的单值属性，不属于任何站点，因此不参与站点联动。
+    videoYear.value = value
   } else {
     if (changed === 'source') videoSource.value = value
     else if (changed === 'category') videoCategory.value = value
@@ -415,6 +426,7 @@ function clearAllFilters() {
   videoCategory.value = ''
   videoTag.value = ''
   videoAreaId.value = ''
+  videoYear.value = ''
   searchVideos()
 }
 
@@ -1321,11 +1333,11 @@ provide('app', {
   TOKEN_KEY, token, me, authReady, initialized, isAdmin, currentUsername, clearAuth,
   setAuth, HlsLib, loadHls, tab, health, sources, videos, categories,
   categoryTree, tags, jobs, tasks, users, capacity, maxConcurrent, capacityDirty,
-  error, notice, videoQuery, videoSource, videoCategory, videoTag, videoAreaId, videoSort,
-  areas, visibleCategories, visibleTags, visibleAreas, hasActiveFilters, areaGroups, videoPage, videoSize,
+  error, notice, videoQuery, videoSource, videoCategory, videoTag, videoAreaId, videoYear, videoSort,
+  areas, years, visibleCategories, visibleTags, visibleAreas, hasActiveFilters, areaGroups, videoPage, videoSize,
   videoTotal, videoLoading, videoLoadingMore, videoEnd, videoSeq, visibleVideoTotal, noticeTimer, notify,
   request, jsonOptions, loadHealth, loadSources, fetchVideos, kickSentinel, loadVideos, loadMoreVideos,
-  loadAreas, loadJobs, loadTasks, loadCategories, loadCategoryTree, loadTags, loadUsers, refresh,
+  loadAreas, loadYears, loadJobs, loadTasks, loadCategories, loadCategoryTree, loadTags, loadUsers, refresh,
   categoryName, activeTaskOf, queuedCountOf, showCategoryVideos, filterByTag, catCollapsed, isCatCollapsed, toggleCat,
   catKey, siteNameOf, categoryForest, catTotal, catPath, catSelectLabel, tagSelectLabel, applyFilterLinkage,
   onFilterChange, applyLinkage, clearAllFilters, toggleAllCats, fieldMeta, detail, detailTab, onlyNonEmpty,
@@ -1421,6 +1433,23 @@ provide('app', {
 
       <div class="side-foot">
         <span class="db-chip" :title="health.database || ''">DB {{ health.database || '加载中…' }}</span>
+
+        <!-- 账号与操作区：原在顶栏右上角，现移到导航栏最底部 -->
+        <div class="side-account">
+          <div class="acct-head" :title="sidebarCollapsed ? '展开侧边栏查看账号操作' : currentUsername"
+               @click="sidebarCollapsed && toggleSidebar()">
+            <span class="acct-avatar">{{ (currentUsername || '?').slice(0, 1).toUpperCase() }}</span>
+            <span class="acct-text">
+              <b class="acct-name">{{ currentUsername || '未登录' }}</b>
+              <span class="badge" :class="isAdmin ? 'on' : 'off'">{{ isAdmin ? '管理员' : '普通用户' }}</span>
+            </span>
+          </div>
+          <div class="acct-actions">
+            <button class="mini ghost" @click="pwdModal = true">修改密码</button>
+            <button class="mini ghost" @click="doLogout">退出登录</button>
+            <button class="mini ghost acct-wide" @click="refresh">刷新</button>
+          </div>
+        </div>
       </div>
 
       <button class="sidebar-toggle" @click="toggleSidebar"
@@ -1440,13 +1469,6 @@ provide('app', {
                stroke-linecap="round" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" /></svg>
         </button>
         <div class="topbar-title"><span>AssetSpider</span><b>{{ currentPageTitle }}</b></div>
-        <div class="appbar-side">
-          <span class="user-name">{{ currentUsername }}</span>
-          <span class="badge" :class="isAdmin ? 'on' : 'off'">{{ isAdmin ? '管理员' : '普通用户' }}</span>
-          <button class="mini ghost" @click="pwdModal = true">修改密码</button>
-          <button class="mini ghost" @click="doLogout">退出登录</button>
-          <button class="mini ghost topbar-refresh" @click="refresh">刷新</button>
-        </div>
       </header>
 
       <main class="page">
@@ -1615,13 +1637,11 @@ body { margin: 0; background: var(--bg); color: var(--text); -webkit-font-smooth
 }
 .brand-text h1 { margin: 0; font-size: 19px; letter-spacing: .2px; }
 .brand-text p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
-.appbar-side { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .db-chip {
   max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   padding: 4px 10px; border-radius: 999px; background: #f2f4f8; color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px;
 }
-.user-name { font-size: 13px; font-weight: 600; }
 
 /* ---------- 概览指标（侧边栏内竖排，容器样式见 .side-overview） ---------- */
 .ov {
@@ -1943,7 +1963,6 @@ tbody tr:hover td { background: #f8faff; }
   .brand-mark { width: 34px; height: 34px; border-radius: 10px; font-size: 13px; }
   .brand-text h1 { font-size: 17px; }
   .brand-text p { display: none; }
-  .appbar-side { gap: 6px; }
   .ov { padding: 11px 13px; }
   .ov-value { font-size: 20px; }
   .ov-sub { font-size: 10px; }
@@ -2104,6 +2123,22 @@ tbody tr:hover td { background: #f8faff; }
 .side-foot { padding: 10px 12px 4px; }
 .side-foot .db-chip { display: block; max-width: 100%; }
 
+/* 账号与操作区（导航栏底部）：头像 + 用户名/角色 + 修改密码 / 退出登录 / 刷新 */
+.side-account { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.acct-head { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 4px 2px; border-radius: 9px; }
+.acct-avatar {
+  width: 30px; height: 30px; flex: none; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--brand-soft); color: var(--brand);
+  font-size: 13px; font-weight: 700; letter-spacing: .3px;
+}
+.acct-text { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; }
+.acct-name { max-width: 100%; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-text .badge { padding: 1px 7px; font-size: 10px; line-height: 1.6; }
+.acct-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
+.acct-actions button { padding: 6px 8px; font-size: 12px; }
+.acct-actions .acct-wide { grid-column: 1 / -1; }
+
 .sidebar-toggle {
   display: flex; align-items: center; gap: 10px; margin: 4px 10px 14px;
   padding: 9px 12px; border-radius: 9px;
@@ -2125,7 +2160,6 @@ tbody tr:hover td { background: #f8faff; }
 .topbar-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .topbar-title span { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .topbar-title b { font-size: 16px; white-space: nowrap; }
-.topbar .appbar-side { margin-left: auto; }
 .hamburger {
   display: none; flex: none; align-items: center; justify-content: center;
   width: 38px; height: 38px; padding: 0; border-radius: 9px;
@@ -2143,8 +2177,15 @@ tbody tr:hover td { background: #f8faff; }
   .sidebar.collapsed .nav-label,
   .sidebar.collapsed .nav-count,
   .sidebar.collapsed .side-overview,
-  .sidebar.collapsed .side-foot,
   .sidebar.collapsed .sidebar-toggle span { display: none; }
+  /* 折叠态：底部只留头像（点一下展开，露出操作按钮），DB 与文字全部隐藏 */
+  .sidebar.collapsed .side-foot { padding: 10px 8px 4px; }
+  .sidebar.collapsed .side-foot .db-chip,
+  .sidebar.collapsed .acct-text,
+  .sidebar.collapsed .acct-actions { display: none; }
+  .sidebar.collapsed .side-account { margin-top: 8px; padding-top: 8px; border-top: 0; }
+  .sidebar.collapsed .acct-head { justify-content: center; padding: 4px 0; cursor: pointer; }
+  .sidebar.collapsed .acct-head:hover { background: var(--brand-soft); }
   .sidebar.collapsed .nav-item { justify-content: center; padding: 10px 0; }
   .sidebar.collapsed .side-nav { padding: 12px 8px; }
   .sidebar.collapsed .sidebar-toggle { justify-content: center; padding: 9px 0; margin: 4px 8px 14px; }
@@ -2168,7 +2209,6 @@ tbody tr:hover td { background: #f8faff; }
 }
 @media (max-width: 560px) {
   .topbar-title span { display: none; }
-  .topbar .appbar-side .user-name { display: none; }
 }
 
 

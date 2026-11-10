@@ -39,9 +39,10 @@ import (
 //
 //	2 → 新增检索复合索引与全文索引
 //	3 → 地域拆成 areas + video_areas（升级时按 videos.vod_area 回灌一次）
+//	4 → 年份筛选新增 idx_videos_vod_year
 //
 // 新增索引 / 改变索引列 / 增加需要回灌的数据迁移时把它 +1。
-const schemaVersion = 3
+const schemaVersion = 4
 
 // Repositories 是各实体仓储的容器。
 // 它只是装配结果，不是「大杂烩仓储」：任何实体读写都必须走对应的那个对象。

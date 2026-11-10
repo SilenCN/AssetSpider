@@ -23,10 +23,17 @@ type VideoListQuery struct {
 	CategoryID uint
 	TagID      uint
 	AreaID     uint
+	Year       string
 	Keyword    string
 	Sort       string
 	Page       int
 	Size       int
+}
+
+// YearView 是年份筛选项：年份 + 该年份下的影片数。
+type YearView struct {
+	Year       string `json:"year"`
+	VideoCount int64  `json:"videoCount"`
 }
 
 // VideoService 处理入库影片的查询与分页规则。
@@ -159,6 +166,7 @@ func (s *VideoService) List(query VideoListQuery, p ...Principal) (VideoList, er
 		CategoryID:       query.CategoryID,
 		TagID:            query.TagID,
 		AreaID:           query.AreaID,
+		Year:             strings.TrimSpace(query.Year),
 		Keyword:          strings.TrimSpace(query.Keyword),
 		Sort:             strings.TrimSpace(query.Sort),
 		Page:             page,
@@ -173,6 +181,20 @@ func (s *VideoService) List(query VideoListQuery, p ...Principal) (VideoList, er
 		return VideoList{}, err
 	}
 	return VideoList{Items: items, Total: total, Page: page, Size: size}, nil
+}
+
+// Years 返回库中出现过的年份（按年份倒序）及各自的影片数，供年份筛选下拉使用。
+// 与标签 / 地域不同，年份是影片上的单值属性，不做实体拆分，直接按 vod_year 聚合。
+func (s *VideoService) Years(sourceID uint, p ...Principal) ([]YearView, error) {
+	items, err := s.videos.ListVideoYears(sourceID, principalOf(p...).Visible())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]YearView, 0, len(items))
+	for _, it := range items {
+		out = append(out, YearView{Year: it.Year, VideoCount: it.Count})
+	}
+	return out, nil
 }
 
 // Get 返回单条影片完整记录（含原始 JSON 与扩展字段）；不可见站点按不存在处理。

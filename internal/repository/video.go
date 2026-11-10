@@ -3,6 +3,7 @@ package repository
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/SilenCN/AssetSpider/internal/model"
@@ -16,12 +17,19 @@ type UpsertStats struct {
 	Unchanged int `json:"unchanged"`
 }
 
+// VideoYear 是一个年份及其影片数，供资源库的年份筛选下拉使用。
+type VideoYear struct {
+	Year  string
+	Count int64
+}
+
 // VideoQuery 是影片列表的查询条件，避免随筛选维度增加不断拉长参数列表。
 type VideoQuery struct {
 	SourceID   uint
 	CategoryID uint
-	TagID      uint // 按标签过滤（经 video_tags 关联表）
-	AreaID     uint // 按地域过滤（经 video_areas 关联表）
+	TagID      uint   // 按标签过滤（经 video_tags 关联表）
+	AreaID     uint   // 按地域过滤（经 video_areas 关联表）
+	Year       string // 按年份过滤（vod_year 等值匹配）
 	Keyword    string
 	Sort       string // 排序标识，见 videoOrder；空则按 id 倒序
 	Page       int
@@ -48,6 +56,8 @@ type VideoRepository interface {
 	CountVideos(sourceID uint) (int64, error)
 	CountVideosBySource(visible ...[]uint) (map[uint]int64, error)
 	CountVideosByCategory(visible ...[]uint) (map[uint]int64, error)
+	// ListVideoYears 返回库中出现过的年份及各自的影片数，供年份筛选下拉使用。
+	ListVideoYears(sourceID uint, visible ...[]uint) ([]VideoYear, error)
 }
 
 // videoRepository 是 Video 实体专属的仓储对象。
@@ -218,6 +228,10 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, int64, er
 		q = q.Joins("JOIN video_areas ON video_areas.video_id = videos.id").
 			Where("video_areas.area_id = ?", query.AreaID)
 	}
+	if year := strings.TrimSpace(query.Year); year != "" {
+		// 年份是影片上的单值列，直接等值匹配（走 idx_videos_vod_year）。
+		q = q.Where("vod_year = ?", year)
+	}
 	if query.Keyword != "" {
 		q = applyVideoKeyword(q, query.Keyword, r.search)
 	}
@@ -240,6 +254,36 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, int64, er
 		return nil, 0, err
 	}
 	return items, total, nil
+}
+
+// ListVideoYears 返回库中出现过的年份及各自的影片数，按年份倒序。
+//
+// 年份不像标签 / 地域那样拆成独立实体：它是影片上的单值属性，既没有跨站共享的名称，
+// 也不需要多对多关系，直接对 vod_year 做 GROUP BY 即可（走 idx_videos_vod_year）。
+// 空年份（接口没给）不进入下拉，否则会出现一个没有意义的空白选项。
+// sourceID 为 0 时统计全部可见站点。
+func (r *videoRepository) ListVideoYears(sourceID uint, visible ...[]uint) ([]VideoYear, error) {
+	type row struct {
+		Year  string
+		Count int64
+	}
+	var rows []row
+	q := applyVisibility(r.db.Model(&model.Video{}), "source_id", firstVisible(visible...))
+	if sourceID > 0 {
+		q = q.Where("source_id = ?", sourceID)
+	}
+	if err := q.Select("vod_year AS year, count(*) AS count").
+		Where("TRIM(vod_year) <> ''").
+		Group("vod_year").
+		Order("vod_year DESC").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]VideoYear, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, VideoYear{Year: row.Year, Count: row.Count})
+	}
+	return out, nil
 }
 
 // CountVideos 返回某站点已入库的影片总数。

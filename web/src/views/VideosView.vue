@@ -8,7 +8,7 @@ const {
   openDetail, posterOf, scoreOf, searchVideos, sources, tagListOf,
   tagSelectLabel, tags, videoAreaId, videoCategory, videoEnd, videoLoading,
   videoLoadingMore, videoQuery, videoSentinel, videoSort, videoSource, videoTag,
-  videoTotal, videos, visibleAreas, visibleCategories, visibleTags
+  videoTotal, videoYear, videos, visibleAreas, visibleCategories, visibleTags, years
 } = inject('app')
 </script>
 
@@ -39,6 +39,10 @@ const {
                 </optgroup>
               </template>
             </select>
+            <select v-model="videoYear" @change="onFilterChange('year', $event)" title="按年份筛选">
+              <option value="">全部年份</option>
+              <option v-for="y in years" :key="y.year" :value="y.year">{{ y.year }}（{{ y.videoCount }}）</option>
+            </select>
             <select v-model="videoSource" @change="onFilterChange('source', $event)" title="按站点筛选">
               <option value="">全部站点</option>
               <option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }}</option>
@@ -50,7 +54,7 @@ const {
               <option value="score_asc">评分 ↑</option>
             </select>
             <button class="ghost btn-clear" :disabled="!hasActiveFilters"
-              @click="clearAllFilters" title="清空搜索词与全部分类、标签、地域、站点条件">清空筛选</button>
+              @click="clearAllFilters" title="清空搜索词与全部分类、标签、地域、年份、站点条件">清空筛选</button>
           </div>
           <span class="muted res-total">共 <b>{{ videoTotal }}</b> 条</span>
         </div>
