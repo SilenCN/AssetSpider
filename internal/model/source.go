@@ -45,6 +45,14 @@ type Source struct {
 	IncrementalHours int  `gorm:"not null;default:24" json:"incrementalHours"`
 	MaxPages         int  `gorm:"not null;default:0" json:"maxPages"` // 0 表示使用全局配置
 
+	// 定时增量采集：ScheduleEnabled 打开且 ScheduleCron 命中当前分钟时，
+	// 后台调度器自动发起一次 incremental 任务。cron 为 5 段标准表达式
+	// （分 时 日 月 周），见 utils.ParseCron。ScheduleLastAt 记录上次自动触发
+	// 的时刻，用于同一分钟内去重（进程重启后也不会重复触发）。
+	ScheduleEnabled bool       `gorm:"not null;default:false" json:"scheduleEnabled"`
+	ScheduleCron    string     `gorm:"size:64" json:"scheduleCron"`
+	ScheduleLastAt  *time.Time `json:"scheduleLastAt"`
+
 	// 采集状态与增量游标（由采集器回写，前端只读）。
 	LastSyncAt     *time.Time `json:"lastSyncAt"`
 	LastFullSyncAt *time.Time `json:"lastFullSyncAt"`

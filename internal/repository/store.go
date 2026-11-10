@@ -41,9 +41,10 @@ import (
 //	3 → 地域拆成 areas + video_areas（升级时按 videos.vod_area 回灌一次）
 //	4 → 年份筛选新增 idx_videos_vod_year
 //	5 → 补建缺失的一级分类（按 videos.type_id_1 / categories.type_pid 重建父子关系）
+//	6 → 站点增加定时增量配置列（schedule_enabled / schedule_cron / schedule_last_at）
 //
 // 新增索引 / 改变索引列 / 增加需要回灌的数据迁移时把它 +1。
-const schemaVersion = 5
+const schemaVersion = 6
 
 // Repositories 是各实体仓储的容器。
 // 它只是装配结果，不是「大杂烩仓储」：任何实体读写都必须走对应的那个对象。

@@ -774,6 +774,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEsc))
 const emptyForm = () => ({
   id: null, name: '', apiBase: '', format: 'seacms_json', extraParams: '',
   incrementalHours: 24, maxPages: 0, enabled: true,
+  scheduleEnabled: false, scheduleCron: '',
   parseApi: '', playDomain: '', picApi: '', picDomain: '',
 })
 const form = reactive(emptyForm())
@@ -788,6 +789,8 @@ function sourcePayload(s) {
     extraParams: s.extraParams || '', enabled: s.enabled,
     incrementalHours: Number(s.incrementalHours) || 0,
     maxPages: Number(s.maxPages) || 0,
+    scheduleEnabled: !!s.scheduleEnabled,
+    scheduleCron: (s.scheduleCron || '').trim(),
     parseApi: s.parseApi || '', playDomain: s.playDomain || '',
     picApi: s.picApi || '', picDomain: s.picDomain || '',
   }
@@ -800,6 +803,7 @@ function openSourceForm(s) {
       id: s.id, name: s.name, apiBase: s.apiBase, format: s.format,
       extraParams: s.extraParams, incrementalHours: s.incrementalHours,
       maxPages: s.maxPages, enabled: s.enabled,
+      scheduleEnabled: !!s.scheduleEnabled, scheduleCron: s.scheduleCron || '',
       parseApi: s.parseApi || '', playDomain: s.playDomain || '',
       picApi: s.picApi || '', picDomain: s.picDomain || '',
     })
@@ -1580,6 +1584,22 @@ provide('app', {
             <span>最大页数（0 = 全局配置）</span>
             <input v-model.number="form.maxPages" type="number" min="0" />
           </label>
+          <p class="sf-group full">定时增量采集<span class="muted">到点自动发起一次增量任务，站点停用或已有任务在跑时不触发</span></p>
+          <label class="check full"><input v-model="form.scheduleEnabled" type="checkbox" /> 启用定时增量采集</label>
+          <label class="sf-item full">
+            <span>执行时间（5 段 cron：分 时 日 月 周）</span>
+            <input v-model="form.scheduleCron" list="cron-presets" :disabled="!form.scheduleEnabled"
+                   :required="form.scheduleEnabled" placeholder="例：0 3 * * *（每天 03:00）" />
+            <datalist id="cron-presets">
+              <option value="*/30 * * * *">每 30 分钟</option>
+              <option value="0 * * * *">每小时整点</option>
+              <option value="0 */6 * * *">每 6 小时</option>
+              <option value="0 3 * * *">每天 03:00</option>
+              <option value="0 3 * * 1-5">工作日 03:00</option>
+            </datalist>
+            <span class="hint">支持 <code>*</code>、<code>*/n</code>、<code>a-b</code>、逗号列表；停服期间错过的时刻不补跑，同一分钟只触发一次。</span>
+          </label>
+
           <label class="check full"><input v-model="form.enabled" type="checkbox" /> 启用该站点</label>
 
           <p class="hint full">

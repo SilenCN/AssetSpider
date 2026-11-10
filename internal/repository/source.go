@@ -24,6 +24,8 @@ type SourceRepository interface {
 	// 采集状态与影片数快照，站点配置本身保持不变。
 	ClearSourceData(id uint) (ClearStats, error)
 	UpdateSourceResult(id uint, mode, status, cursor, errMsg string, at time.Time) error
+	// UpdateScheduleLastAt 回写定时增量上次触发时刻，用于同一分钟内去重。
+	UpdateScheduleLastAt(id uint, at time.Time) error
 	// UpdateVideoCount 回写站点已入库的影片总数（采集运行中定期 + 任务结束时调用）。
 	UpdateVideoCount(id uint, count int64) error
 	// RefreshVideoCounts 按 videos 表重算全部站点的影片总数，用于启动时校准历史数据。
@@ -111,6 +113,9 @@ func (r *sourceRepository) UpdateSource(id uint, in *model.Source) (*model.Sourc
 	src.Enabled = in.Enabled
 	src.IncrementalHours = in.IncrementalHours
 	src.MaxPages = in.MaxPages
+	src.ScheduleEnabled = in.ScheduleEnabled
+	src.ScheduleCron = in.ScheduleCron
+	// ScheduleLastAt 属于运行状态，前端编辑配置时不带该字段，这里保留原值。
 	if err := r.db.Save(src).Error; err != nil {
 		return nil, err
 	}
@@ -260,6 +265,13 @@ func (r *sourceRepository) UpdateSourceResult(id uint, mode, status, cursor, err
 		updates["last_full_sync_at"] = at
 	}
 	return r.db.Model(&model.Source{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// UpdateScheduleLastAt 记录定时增量上次触发时刻。
+// 用 UpdateColumn 不刷新 updated_at：调度触发不算「修改了站点配置」。
+func (r *sourceRepository) UpdateScheduleLastAt(id uint, at time.Time) error {
+	return r.db.Model(&model.Source{}).Where("id = ?", id).
+		UpdateColumn("schedule_last_at", at).Error
 }
 
 // UpdateVideoCount 回写站点已入库的影片总数。

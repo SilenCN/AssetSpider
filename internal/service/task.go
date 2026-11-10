@@ -738,6 +738,13 @@ func (s *CrawlService) StartTask(sourceID uint, mode string, p ...Principal) (*T
 	return s.startTask(sourceID, mode, startOptions{})
 }
 
+// StartScheduled 由定时调度器调用：系统级发起一次增量采集，绕过登录主体校验
+// （调度器没有用户上下文），但仍走完整的任务排队 / 断点 / 状态回写流程。
+func (s *CrawlService) StartScheduled(sourceID uint) error {
+	_, err := s.startTask(sourceID, model.ModeIncremental, startOptions{})
+	return err
+}
+
 // PauseTask 手动暂停一个排队中或运行中的任务。
 func (s *CrawlService) PauseTask(jobID uint, p ...Principal) (*TaskView, error) {
 	s.mu.Lock()

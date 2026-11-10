@@ -37,7 +37,8 @@ const {
             运行中的任务可随时<b>暂停</b>——已完成分页的数据已经入库，全量采集的续采页码与增量采集的游标都会保存，
             点「继续」即可从断点接着采。抓取失败会<b>自动退避重试</b>（次数由 <code>collector.retry_times</code> 配置），
             仍然失败的任务可在「采集记录」里<b>手动重试</b>（从失败页续采）或<b>重新运行</b>（从第 1 页重来）——
-            <b>继续 / 重试 / 重新运行都复用原任务记录</b>，不会多出一条历史；重新运行时统计与尝试次数清零。
+            <b>继续 / 重试 / 重新运行都复用原任务记录</b>，不会多出一条历史；重新运行时统计与尝试次数清零。<br />
+            站点还可以单独配置<b>定时增量</b>（编辑站点里设置 5 段 cron）：到点自动发起一次增量任务，站点停用或已有任务在跑时跳过，停服期间错过的时刻不补跑。
           </p>
         </details>
         <p v-if="!tasks.length" class="empty">当前没有排队或运行中的采集任务。</p>
@@ -113,6 +114,11 @@ const {
                 <td class="mono hide-sm">{{ s.id }}</td>
                 <td class="host">
                   {{ s.name }}
+                  <div v-if="s.scheduleEnabled" class="tiny muted"
+                       :title="`定时增量：${s.scheduleCron}｜下次 ${formatTime(s.nextScheduleAt)}｜上次触发 ${formatTime(s.scheduleLastAt)}`">
+                    ⏰ {{ s.scheduleCron }} · 下次 {{ formatTime(s.nextScheduleAt) }}
+                    <span v-if="!s.enabled">（站点停用，不触发）</span>
+                  </div>
                   <div v-if="s.parseApi || s.playDomain || s.picApi || s.picDomain" class="tiny muted" :title="[s.parseApi && ('解析：' + s.parseApi), s.playDomain && ('播放域名：' + s.playDomain), s.picApi && ('图片代理：' + s.picApi), s.picDomain && ('图片域名：' + s.picDomain)].filter(Boolean).join(' / ')">
                     {{ [s.parseApi && '解析播放', s.playDomain && '播放域名替换', (s.picApi || s.picDomain) && '图片改写'].filter(Boolean).join(' · ') }}
                   </div>

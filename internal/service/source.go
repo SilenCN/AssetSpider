@@ -9,6 +9,7 @@ import (
 
 	"github.com/SilenCN/AssetSpider/internal/model"
 	"github.com/SilenCN/AssetSpider/internal/repository"
+	"github.com/SilenCN/AssetSpider/internal/utils"
 )
 
 // SourceInput 是站点配置中允许前端提交的字段，也是 controller → service 的 DTO。
@@ -20,10 +21,13 @@ type SourceInput struct {
 	Enabled          *bool  `json:"enabled"`
 	IncrementalHours int    `json:"incrementalHours"`
 	MaxPages         int    `json:"maxPages"`
-	ParseAPI         string `json:"parseApi"`   // 视频解析地址，播放时拼在播放地址前
-	PlayDomain       string `json:"playDomain"` // 视频播放域名，播放时替换原地址域名
-	PicAPI           string `json:"picApi"`     // 图片解析/代理地址，展示时拼在图片地址前
-	PicDomain        string `json:"picDomain"`  // 图片域名，展示时替换原图片地址域名
+	// 定时增量采集：用指针是为了让未带该字段的旧客户端 / 局部 PUT 不误关定时。
+	ScheduleEnabled *bool  `json:"scheduleEnabled"`
+	ScheduleCron    string `json:"scheduleCron"` // 5 段 cron（分 时 日 月 周）
+	ParseAPI        string `json:"parseApi"`     // 视频解析地址，播放时拼在播放地址前
+	PlayDomain      string `json:"playDomain"`   // 视频播放域名，播放时替换原地址域名
+	PicAPI          string `json:"picApi"`       // 图片解析/代理地址，展示时拼在图片地址前
+	PicDomain       string `json:"picDomain"`    // 图片域名，展示时替换原图片地址域名
 }
 
 func (in SourceInput) validate() error {
@@ -40,6 +44,14 @@ func (in SourceInput) validate() error {
 	}
 	if in.IncrementalHours < 0 || in.MaxPages < 0 {
 		return invalid("增量小时数与最大页数不能为负")
+	}
+	cron := strings.TrimSpace(in.ScheduleCron)
+	if cron != "" {
+		if _, err := utils.ParseCron(cron); err != nil {
+			return invalid("定时 cron 表达式非法：%v", err)
+		}
+	} else if in.ScheduleEnabled != nil && *in.ScheduleEnabled {
+		return invalid("启用定时增量采集时必须填写 cron 表达式")
 	}
 	if _, err := NormalizeParseAPI(in.ParseAPI); err != nil {
 		return invalid("%s", err.Error())
@@ -86,6 +98,14 @@ func (in SourceInput) apply(dst *model.Source) *model.Source {
 	}
 	dst.IncrementalHours = in.IncrementalHours
 	dst.MaxPages = in.MaxPages
+	// 老版本导出的 JSON / 只提交部分字段的客户端不带 scheduleEnabled，
+	// 这时不要动定时配置，否则会把已有 cron 清空成「已启用但无表达式」。
+	if in.ScheduleEnabled != nil {
+		dst.ScheduleEnabled = *in.ScheduleEnabled
+		dst.ScheduleCron = strings.TrimSpace(in.ScheduleCron)
+	} else if cron := strings.TrimSpace(in.ScheduleCron); cron != "" {
+		dst.ScheduleCron = cron
+	}
 	return dst
 }
 
@@ -93,8 +113,26 @@ func (in SourceInput) apply(dst *model.Source) *model.Source {
 //
 // 影片总数 videoCount 随 model.Source 一起返回：它是采集任务维护的快照列
 // （运行中每分钟刷新、结束时刷新），因此列表查询不再对 videos 表做 COUNT(*)。
+// NextScheduleAt 是按 cron 现算的下次触发时刻，不落库。
 type SourceView struct {
 	model.Source
+	NextScheduleAt *time.Time `json:"nextScheduleAt"`
+}
+
+// scheduleNext 计算站点下次定时增量的时刻；配置无效 / 未启用时返回 nil。
+func scheduleNext(src model.Source, now time.Time) *time.Time {
+	if !src.Enabled || !src.ScheduleEnabled || strings.TrimSpace(src.ScheduleCron) == "" {
+		return nil
+	}
+	spec, err := utils.ParseCron(src.ScheduleCron)
+	if err != nil {
+		return nil
+	}
+	next := spec.Next(now)
+	if next.IsZero() {
+		return nil
+	}
+	return &next
 }
 
 // ClearResult 是一次「清空站点数据」实际删除的各表条数。
@@ -138,8 +176,9 @@ func (s *SourceService) List(p ...Principal) ([]SourceView, error) {
 		return nil, err
 	}
 	out := make([]SourceView, 0, len(srcs))
+	now := time.Now()
 	for _, src := range srcs {
-		out = append(out, SourceView{Source: src})
+		out = append(out, SourceView{Source: src, NextScheduleAt: scheduleNext(src, now)})
 	}
 	return out, nil
 }
@@ -262,7 +301,7 @@ func (r *ImportResult) fail(index int, name string, err error) {
 }
 
 func sourceInputOf(src model.Source) SourceInput {
-	enabled := src.Enabled
+	enabled, scheduled := src.Enabled, src.ScheduleEnabled
 	return SourceInput{
 		Name:             src.Name,
 		APIBase:          src.APIBase,
@@ -271,6 +310,8 @@ func sourceInputOf(src model.Source) SourceInput {
 		Enabled:          &enabled,
 		IncrementalHours: src.IncrementalHours,
 		MaxPages:         src.MaxPages,
+		ScheduleEnabled:  &scheduled,
+		ScheduleCron:     src.ScheduleCron,
 		ParseAPI:         src.ParseAPI,
 		PlayDomain:       src.PlayDomain,
 		PicAPI:           src.PicAPI,
