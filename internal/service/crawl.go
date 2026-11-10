@@ -123,7 +123,8 @@ type CrawlService struct {
 	areas      repository.AreaRepository
 	jobs       repository.JobRepository
 	fetcher    *collector.Fetcher
-	cfg        config.CollectorConfig
+	cfg        config.CollectorConfig // 构造时的初始快照（无 store 时兜底，兼容测试）
+	store      *config.Store          // 运行时配置源；非空时所有读取走它，实现在线改配置即时生效
 
 	mu      sync.Mutex
 	tasks   map[uint]*crawlTask // jobID → 运行时任务（含排队中的）
@@ -142,7 +143,13 @@ func NewCrawlService(
 	areas repository.AreaRepository,
 	jobs repository.JobRepository,
 	cfg config.CollectorConfig,
+	store ...*config.Store,
 ) *CrawlService {
+	var rt *config.Store
+	if len(store) > 0 && store[0] != nil {
+		rt = store[0]
+		cfg = rt.Collector()
+	}
 	return &CrawlService{
 		sources:     sources,
 		videos:      videos,
@@ -150,12 +157,32 @@ func NewCrawlService(
 		tags:        tags,
 		areas:       areas,
 		jobs:        jobs,
-		fetcher:     collector.NewFetcher(cfg),
+		fetcher:     collector.NewFetcher(cfg, rt),
 		cfg:         cfg,
+		store:       rt,
 		tasks:       make(map[uint]*crawlTask),
 		limiter:     newConcurrencyLimiter(cfg.MaxConcurrent),
 		sourceGates: make(map[uint]*concurrencyLimiter),
 	}
+}
+
+// collectorCfg 返回当前采集器配置：有运行时 store 时每页读取最新值，
+// 否则用构造时的快照。CollectConfig 在线更新后无需重启即在此处生效。
+func (s *CrawlService) collectorCfg() config.CollectorConfig {
+	if s.store != nil {
+		return s.store.Collector()
+	}
+	return s.cfg
+}
+
+// SetStore 在运行期注入配置源（装配层用）；注入后配置读取自动切到最新值。
+func (s *CrawlService) SetStore(store *config.Store) {
+	if store == nil {
+		return
+	}
+	s.store = store
+	s.fetcher.SetStore(store)
+	s.limiter.setMax(store.Collector().MaxConcurrent)
 }
 
 // RunOne 同步执行一次采集，调用方阻塞直到任务结束（成功/暂停/失败）。
@@ -229,7 +256,7 @@ func (s *CrawlService) crawl(
 	if mode == model.ModeIncremental {
 		hours = src.IncrementalHours
 		if hours <= 0 {
-			hours = s.cfg.DefaultHours
+			hours = s.collectorCfg().DefaultHours
 		}
 		// 用上次采集时间兜底：时间窗取"配置小时数"与"距上次采集的小时数"的较大者，
 		// 避免站点时间不准或采集间隔过长导致漏数据。
@@ -244,7 +271,7 @@ func (s *CrawlService) crawl(
 		}
 	}
 
-	maxPages := s.cfg.MaxPages
+	maxPages := s.collectorCfg().MaxPages
 	if src.MaxPages > 0 {
 		maxPages = src.MaxPages
 	}

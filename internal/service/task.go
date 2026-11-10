@@ -367,7 +367,7 @@ func (s *CrawlService) begin(sourceID uint, mode string, opt startOptions) (*cra
 	} else if err := s.jobs.CreateJob(job); err != nil {
 		return nil, nil, fmt.Errorf("创建采集记录失败: %w", err)
 	}
-	task := newCrawlTask(job, 1+s.cfg.RetryTimes)
+	task := newCrawlTask(job, 1+s.collectorCfg().RetryTimes)
 	s.tasks[job.ID] = task
 	return task, src, nil
 }
@@ -506,7 +506,7 @@ func (s *CrawlService) runTask(ctx context.Context, task *crawlTask, src *model.
 //
 // 停止会等待正在进行的写库结束，保证不会与 settle 的终态写入交叉。
 func (s *CrawlService) startProgressSaver(task *crawlTask) func() {
-	interval := time.Duration(s.cfg.ProgressSaveSeconds) * time.Second
+	interval := time.Duration(s.collectorCfg().ProgressSaveSeconds) * time.Second
 	if interval <= 0 {
 		interval = time.Minute
 	}
@@ -587,7 +587,7 @@ func (s *CrawlService) awaitRetry(ctx context.Context, task *crawlTask, attempt 
 
 // retryDelay 计算第 attempt 次失败后的等待时长：线性翻倍退避，上限 30 秒。
 func (s *CrawlService) retryDelay(attempt int) time.Duration {
-	base := s.cfg.RetryBackoffSeconds
+	base := s.collectorCfg().RetryBackoffSeconds
 	if base <= 0 {
 		base = 3
 	}
@@ -912,11 +912,30 @@ func (s *CrawlService) Capacity() Capacity {
 	return Capacity{MaxConcurrent: max, Running: active, Queued: s.queuedTasks()}
 }
 
-// SetMaxConcurrent 运行时调整「同时运行的任务数」上限（重启后回到配置文件的值）。
+// SetMaxConcurrent 调整「同时运行的任务数」上限。
+// 有运行时 store 时写入配置并持久化，与设置页共用同一份数据源；
+// 无 store（测试 / 未接配置页）时仅调整内存限流器，保持旧行为。
 func (s *CrawlService) SetMaxConcurrent(n int) (Capacity, error) {
 	if n < 1 || n > 64 {
 		return Capacity{}, invalid("max_concurrent 需在 1..64 之间")
 	}
+	if s.store != nil {
+		in := s.store.Collector()
+		in.MaxConcurrent = n
+		if _, err := s.store.UpdateCollector(in); err != nil {
+			return Capacity{}, invalid("%s", err.Error())
+		}
+	}
 	s.limiter.setMax(n)
 	return s.Capacity(), nil
+}
+
+// ApplyLive 在 Store 的配置被在线更新后调用，把并发上限同步到限流器。
+// 其余配置（超时 / UA / 最大页数 / 重试 / 进度间隔 / 默认时间窗）由采集循环与
+// Fetcher 直接读 Store，无需重启；这里只处理构造期就缓存了上限的限流器。
+func (s *CrawlService) ApplyLive() {
+	if s.store == nil {
+		return
+	}
+	s.limiter.setMax(s.store.Collector().MaxConcurrent)
 }

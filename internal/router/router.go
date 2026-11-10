@@ -111,6 +111,11 @@ func registerV1(api *gin.RouterGroup, set controller.Set) {
 	meta := secured.Group("/meta/" + APIVersion)
 	meta.GET("/fields", set.Meta.Fields)
 
+	// 设置页：读取配置登录即可，在线修改仅管理员。
+	settings := secured.Group("/settings/" + APIVersion)
+	settings.GET("", set.Settings.Get)
+	admin.PUT("/settings/"+APIVersion, set.Settings.Update)
+
 	// 采集记录
 	jobs := secured.Group("/jobs/" + APIVersion)
 	jobs.GET("", set.Job.List)

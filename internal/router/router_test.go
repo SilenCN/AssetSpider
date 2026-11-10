@@ -428,7 +428,7 @@ func TestAPIRoutesFollowModuleVersionConvention(t *testing.T) {
 		"system": true, "assets": true, "sources": true,
 		"crawls": true, "videos": true, "categories": true, "tags": true, "areas": true,
 		"meta": true, "jobs": true, "tasks": true,
-		"auth": true, "users": true,
+		"auth": true, "users": true, "settings": true,
 	}
 	forbidden := map[string]bool{
 		"crawl": true, "crawls-run": true, "create": true, "update": true,

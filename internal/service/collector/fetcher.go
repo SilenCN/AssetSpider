@@ -18,17 +18,52 @@ import (
 const maxResponseBytes = 64 << 20 // 单页响应最大 64MB
 
 // Fetcher 负责按苹果CMS V10 Provide 协议请求采集接口并解析 JSON。
+//
+// cfg 是构造时的初始快照；store 非空时，UA / 超时 / pagesize 等每次请求都读最新值，
+// 让设置页的在线修改即时生效。超时不放在共享 client.Timeout 上（并发改会有数据竞争），
+// 而是每次请求用 context.WithTimeout 套一层。
 type Fetcher struct {
 	client *http.Client
 	cfg    config.CollectorConfig
+	store  *config.Store
 }
 
-// NewFetcher 创建采集 HTTP 客户端。
-func NewFetcher(cfg config.CollectorConfig) *Fetcher {
-	return &Fetcher{
-		client: &http.Client{Timeout: time.Duration(cfg.TimeoutSeconds) * time.Second},
-		cfg:    cfg,
+// NewFetcher 创建采集 HTTP 客户端。store 可选，用于配置热更新。
+func NewFetcher(cfg config.CollectorConfig, store ...*config.Store) *Fetcher {
+	f := &Fetcher{client: &http.Client{}, cfg: cfg}
+	if len(store) > 0 {
+		f.store = store[0]
 	}
+	return f
+}
+
+// SetStore 在运行期注入配置源；注入后所有请求读最新配置。
+func (f *Fetcher) SetStore(store *config.Store) { f.store = store }
+
+// current 返回当前采集配置快照。
+func (f *Fetcher) current() config.CollectorConfig {
+	if f.store != nil {
+		return f.store.Collector()
+	}
+	return f.cfg
+}
+
+// requestContext 按当前超时配置派生一个带超时的 context。
+func (f *Fetcher) requestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	seconds := f.current().TimeoutSeconds
+	if seconds <= 0 {
+		seconds = 20
+	}
+	return context.WithTimeout(ctx, time.Duration(seconds)*time.Second)
+}
+
+// userAgent 返回当前配置的 UA（空则用默认值）。
+func (f *Fetcher) userAgent() string {
+	ua := f.current().UserAgent
+	if ua == "" {
+		return "AssetSpider/1.0"
+	}
+	return ua
 }
 
 // BuildURL 按苹果CMS V10 Provide 协议拼装某一页的请求地址。
@@ -74,19 +109,17 @@ func BuildURL(src model.Source, page, hours int, cfg config.CollectorConfig) (st
 
 // FetchList 请求指定页并返回解析后的列表响应。
 func (f *Fetcher) FetchList(ctx context.Context, src model.Source, page, hours int) (*ListResponse, error) {
-	rawURL, err := BuildURL(src, page, hours, f.cfg)
+	rawURL, err := BuildURL(src, page, hours, f.current())
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	reqCtx, cancel := f.requestContext(ctx)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	ua := f.cfg.UserAgent
-	if ua == "" {
-		ua = "AssetSpider/1.0"
-	}
-	req.Header.Set("User-Agent", ua)
+	req.Header.Set("User-Agent", f.userAgent())
 	req.Header.Set("Accept", "application/json, */*")
 
 	resp, err := f.client.Do(req)
@@ -166,15 +199,13 @@ func (f *Fetcher) FetchTypeList(ctx context.Context, src model.Source) (*TypeLis
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	reqCtx, cancel := f.requestContext(ctx)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	ua := f.cfg.UserAgent
-	if ua == "" {
-		ua = "AssetSpider/1.0"
-	}
-	req.Header.Set("User-Agent", ua)
+	req.Header.Set("User-Agent", f.userAgent())
 	req.Header.Set("Accept", "application/json, */*")
 
 	resp, err := f.client.Do(req)

@@ -39,12 +39,16 @@ func New(cfg *config.Config) (*App, error) {
 	if err := repos.Sources.RefreshVideoCounts(); err != nil {
 		log.Printf("启动校准站点影片总数失败（不影响服务启动）: %v", err)
 	}
+	// 配置运行时存储：设置页在线改采集配置后写回配置文件、替换内存快照，
+	// 采集循环 / Fetcher 每页读最新值，即时生效。
+	cfgStore := config.NewStore(cfg)
 	// 第 3 层：业务服务，各自只注入需要的实体仓储
 	healthSvc := service.NewHealthService(repos.Sources, repos.Videos, repos.Path())
 	assetSvc := service.NewAssetService(repos.Assets)
 	// 采集调度先构造：站点服务在清空数据前要问它「该站点是否还在采集」。
-	crawlSvc := service.NewCrawlService(repos.Sources, repos.Videos, repos.Categories, repos.Tags, repos.Areas, repos.Jobs, cfg.Collector)
+	crawlSvc := service.NewCrawlService(repos.Sources, repos.Videos, repos.Categories, repos.Tags, repos.Areas, repos.Jobs, cfg.Collector, cfgStore)
 	sourceSvc := service.NewSourceService(repos.Sources, crawlSvc)
+	settingsSvc := service.NewSettingsService(cfgStore, crawlSvc)
 	// 启动钩子：自动恢复因进程重启而中断的采集任务（用户手动暂停的任务不动）。
 	// 恢复是异步的，且失败只记日志、不阻断服务启动，避免单个坏记录拖垮整个服务。
 	if recovered, err := crawlSvc.RecoverInterrupted(); err != nil {
@@ -82,6 +86,7 @@ func New(cfg *config.Config) (*App, error) {
 		Job:      controller.NewJobController(jobSvc),
 		Auth:     controller.NewAuthController(authSvc),
 		Users:    controller.NewUserController(authSvc),
+		Settings: controller.NewSettingsController(settingsSvc),
 		Page:     controller.NewPageController(cfg.Web.Dir),
 	}
 

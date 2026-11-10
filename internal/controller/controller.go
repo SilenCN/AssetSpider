@@ -28,6 +28,7 @@ type Set struct {
 	Job      *JobController
 	Auth     *AuthController
 	Users    *UserController
+	Settings *SettingsController
 	Page     *PageController
 }
 

@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
 import { linkedFilters, scopeOptions } from './filterLinkage.js'
 import { evaluateCron, formatCronTime } from './cron.js'
+import { buildPayload } from './settings.js'
 import {
   NAV_ITEMS, DEFAULT_TAB, normalizeTab, tabToHash, navItemsFor,
   detailHash, detailIdFromHash,
@@ -9,6 +10,7 @@ import {
 import SourcesView from './views/SourcesView.vue'
 import CategoriesView from './views/CategoriesView.vue'
 import VideosView from './views/VideosView.vue'
+import SettingsView from './views/SettingsView.vue'
 import VideoDetailView from './views/VideoDetailView.vue'
 import JobsView from './views/JobsView.vue'
 import UsersView from './views/UsersView.vue'
@@ -64,8 +66,11 @@ const jobs = ref([])
 const tasks = ref([])
 const users = ref([])
 const capacity = ref({ maxConcurrent: 3, running: 0, queued: 0 })
-const maxConcurrent = ref(3)
-const capacityDirty = ref(false)
+// 系统设置：采集运行时配置（并发上限已并入此处，任务页只做只读展示）
+const settings = ref(null)
+const settingsForm = ref({})
+const settingsDirty = ref(false)
+const settingsSaving = ref(false)
 const error = ref('')
 const notice = ref(null)
 
@@ -229,8 +234,6 @@ async function loadTasks() {
   const d = (await request('/api/tasks/v1')) || {}
   tasks.value = d.items || []
   if (d.capacity) capacity.value = d.capacity
-  // 用户正在输入时不覆盖输入框
-  if (!capacityDirty.value) maxConcurrent.value = capacity.value.maxConcurrent
 }
 async function loadCategories() {
   categories.value = (await request('/api/categories/v1')) || []
@@ -254,7 +257,7 @@ async function refresh() {
       loadHealth(), loadSources(), loadVideos(), loadJobs(),
       loadCategories(), loadCategoryTree(), loadTags(), loadAreas(), loadYears(), loadTasks(),
     ]
-    if (isAdmin.value) pending.push(loadUsers())
+    if (isAdmin.value) pending.push(loadUsers(), loadSettings())
     await Promise.all(pending)
   } catch (e) {
     error.value = e.message
@@ -1052,14 +1055,34 @@ function taskStatusText(t) {
   return statusLabel(t.status)
 }
 
-async function saveCapacity() {
+async function loadSettings() {
   try {
-    const c = await request('/api/tasks/v1/capacity',
-      jsonOptions('PUT', { maxConcurrent: Number(maxConcurrent.value) }))
-    capacity.value = c
-    capacityDirty.value = false
-    notify(`并发上限已调整为 ${c.maxConcurrent} 个任务`)
-  } catch (e) { notify(e.message, 'err') }
+    settings.value = (await request('/api/settings/v1')) || null
+    // 表单只放可编辑的 collector 字段；只读启动项与字段元信息留在 settings 里展示
+    settingsForm.value = { ...(settings.value?.collector || {}) }
+    settingsDirty.value = false
+  } catch (e) { error.value = e.message }
+}
+
+async function saveSettings() {
+  if (settingsSaving.value || !settingsDirty.value) return
+  settingsSaving.value = true
+  try {
+    // 只提交可编辑且未被环境变量锁定的字段；其余保持后端原值
+    const payload = buildPayload(settings.value.fields, settingsForm.value)
+    settings.value = await request('/api/settings/v1', jsonOptions('PUT', payload))
+    settingsForm.value = { ...(settings.value.collector || {}) }
+    settingsDirty.value = false
+    // 并发上限可能变了，刷新容量让任务页/概览卡的只读展示同步
+    const c = await request('/api/tasks/v1/capacity')
+    if (c) capacity.value = c
+    notify('系统设置已保存并即时生效')
+  } catch (e) {
+    error.value = e.message
+    notify(e.message, 'err')
+  } finally {
+    settingsSaving.value = false
+  }
 }
 
 function searchVideos() { loadVideos().catch(e => { error.value = e.message }) }
@@ -1363,7 +1386,8 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
 provide('app', {
   TOKEN_KEY, token, me, authReady, initialized, isAdmin, currentUsername, clearAuth,
   setAuth, HlsLib, loadHls, tab, health, sources, videos, categories,
-  categoryTree, tags, jobs, tasks, users, capacity, maxConcurrent, capacityDirty,
+  categoryTree, tags, jobs, tasks, users, capacity,
+  settings, settingsForm, settingsDirty, settingsSaving, loadSettings, saveSettings,
   error, notice, videoQuery, videoSource, videoCategory, videoTag, videoAreaId, videoYear, videoSort,
   areas, years, visibleCategories, visibleTags, visibleAreas, hasActiveFilters, areaGroups, videoPage, videoSize,
   videoLoading, videoLoadingMore, videoEnd, videoSeq, visibleVideoTotal, noticeTimer, notify,
@@ -1381,7 +1405,7 @@ provide('app', {
   closeSourceForm, editSource, importOpen, importBusy, importFileName, importRaw, importPreview, importFileEl,
   importPreviewShown, exportSources, pickImportFile, onImportFile, closeImport, confirmImport, saveSource, removeSource,
   clearSourceData, toggleSource, startTask, crawlAll, pauseTask, resumeTask, retryTask, rerunTask,
-  barWidth, isIndeterminate, fmtEta, taskStatusText, saveCapacity, searchVideos, videoSentinel, videoObserver,
+  barWidth, isIndeterminate, fmtEta, taskStatusText, searchVideos, videoSentinel, videoObserver,
   formatTime, modeLabel, statusLabel, short, stat, jobMessage, loginForm, loginBusy,
   loginError, doLogin, doLogout, pwdModal, pwdForm, doChangePassword, bootstrap, emptyUserForm,
   userForm, userEditing, userFormOpen, openUserForm, closeUserForm, resetUserForm,
@@ -1513,6 +1537,7 @@ provide('app', {
           <CategoriesView v-else-if="tab === 'categories'" />
           <VideosView v-else-if="tab === 'videos'" />
           <JobsView v-else-if="tab === 'jobs'" />
+          <SettingsView v-else-if="tab === 'settings' && isAdmin" />
           <UsersView v-else-if="tab === 'users' && isAdmin" />
         </template>
       </main>
@@ -1948,6 +1973,22 @@ tbody tr:hover td { background: #f8faff; }
 .ep-url { color: var(--brand); text-decoration: none; word-break: break-all; }
 .ep-url:hover { text-decoration: underline; }
 .badge.info { background: var(--brand-soft); color: var(--brand); }
+/* 系统设置页 */
+.settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px 18px; margin-top: 16px; }
+.setting-item { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 11px; background: var(--panel); }
+.setting-item.locked { background: #f6f8fc; opacity: .85; }
+.setting-label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text); }
+.setting-control { display: flex; align-items: center; gap: 8px; }
+.setting-control input { flex: 1 1 auto; min-width: 0; }
+.setting-control input:disabled { cursor: not-allowed; }
+.setting-unit { flex: none; font-size: 12px; color: var(--muted); }
+.setting-help { font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+.setting-error { font-size: 11.5px; color: #d93a3f; }
+.settings-actions { display: flex; align-items: center; gap: 12px; margin-top: 18px; flex-wrap: wrap; }
+.settings-static { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 16px; margin-top: 12px; }
+.settings-static > div { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px dashed var(--border); font-size: 12px; }
+.settings-static span { color: var(--muted); }
+.settings-static b { color: var(--text-2); font-weight: 600; text-align: right; word-break: break-all; }
 .field-k { font-size: 11px; color: var(--muted); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .field-v { font-size: 13px; word-break: break-all; white-space: pre-wrap; max-height: 66px; overflow: hidden; }
 .field-item.long .field-v { max-height: 130px; }
@@ -2110,6 +2151,8 @@ tbody tr:hover td { background: #f8faff; }
   .field-item.long .field-v { max-height: 180px; }
   .kv-table th { width: auto; }
 
+  /* 系统设置：窄屏单列 */
+  .settings-grid, .settings-static { grid-template-columns: 1fr; gap: 10px; }
   /* 资源卡片：窄屏两列 */
   .res-grid { grid-template-columns: repeat(auto-fill, minmax(138px, 1fr)); gap: 10px; }
   .res-poster-ph { font-size: 30px; }

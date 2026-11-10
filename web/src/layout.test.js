@@ -9,7 +9,7 @@ test('资源库是默认页且排在第一位', () => {
   assert.equal(DEFAULT_TAB, 'videos')
   assert.equal(NAV_ITEMS[0].key, 'videos')
   assert.equal(NAV_ITEMS[0].primary, true)
-  assert.deepEqual(TAB_KEYS, ['videos', 'sources', 'categories', 'jobs', 'users'])
+  assert.deepEqual(TAB_KEYS, ['videos', 'sources', 'categories', 'jobs', 'settings', 'users'])
 })
 
 test('tabToHash 输出稳定的 hash', () => {
@@ -49,7 +49,7 @@ test('导航配置结构完整：每项都有 key/label/icon', () => {
     assert.ok(item.key && item.label && item.icon, `缺少字段: ${JSON.stringify(item)}`)
   }
   assert.equal(new Set(NAV_ITEMS.map(i => i.key)).size, NAV_ITEMS.length, 'key 不应重复')
-  assert.equal(NAV_ITEMS.filter(i => i.adminOnly).length, 1)
+  assert.equal(NAV_ITEMS.filter(i => i.adminOnly).length, 2)
 })
 
 test('detailHash 输出稳定的详情页面地址', () => {
@@ -82,5 +82,5 @@ test('详情 hash 与 tab hash 互不混淆，且可往返', () => {
   for (const key of TAB_KEYS) {
     assert.equal(detailIdFromHash(tabToHash(key)), null, `${key} 的 hash 不应被当成详情`)
   }
-  assert.deepEqual(TAB_KEYS, ['videos', 'sources', 'categories', 'jobs', 'users'], '详情页不应进入侧边栏')
+  assert.deepEqual(TAB_KEYS, ['videos', 'sources', 'categories', 'jobs', 'settings', 'users'], '详情页不应进入侧边栏')
 })

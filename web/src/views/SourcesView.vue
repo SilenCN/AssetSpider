@@ -3,10 +3,10 @@
 // 解构出的仍是原始 ref / computed / 函数，模板写法与拆分前一致。
 import { inject } from 'vue'
 const {
-  activeTaskOf, barWidth, capacity, capacityDirty, clearSourceData, crawlAll,
+  activeTaskOf, barWidth, capacity, clearSourceData, crawlAll,
   editSource, exportSources, fmtEta, formatTime, importFileEl, isAdmin,
-  isIndeterminate, maxConcurrent, modeLabel, onImportFile, openSourceForm, pauseTask,
-  pickImportFile, queuedCountOf, removeSource, resumeTask, saveCapacity, short,
+  isIndeterminate, modeLabel, onImportFile, openSourceForm, pauseTask,
+  pickImportFile, queuedCountOf, removeSource, resumeTask, short,
   sources, startTask, statusLabel, taskStatusText, tasks, toggleSource
 } = inject('app')
 </script>
@@ -22,13 +22,7 @@ const {
         <div class="actions">
           <button @click="crawlAll('full')">全量采集可见站点</button>
           <button class="ghost" @click="crawlAll('incremental')">增量采集可见站点</button>
-          <template v-if="isAdmin">
-            <label class="field inline">最多同时运行
-              <input v-model.number="maxConcurrent" type="number" min="1" max="64"
-                     @input="capacityDirty = true" />
-            </label>
-            <button class="ghost" :disabled="!capacityDirty" @click="saveCapacity">保存上限</button>
-          </template>
+          <span v-if="isAdmin" class="muted tiny">采集并发与重试等参数已移到「系统设置」统一配置。</span>
         </div>
         <details class="tip">
           <summary>采集与任务规则</summary>

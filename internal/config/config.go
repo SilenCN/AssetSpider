@@ -16,6 +16,10 @@ type Config struct {
 	Web       WebConfig       `yaml:"web"`
 	Collector CollectorConfig `yaml:"collector"`
 	Auth      AuthConfig      `yaml:"auth"`
+
+	// 以下为非导出元数据，不参与 YAML 序列化：仅服务于运行时的「在线改配置」。
+	path    string          // 配置文件路径，写回用；空表示不持久化
+	envKeys map[string]bool // 被环境变量覆盖的 collector YAML 键，页面只读
 }
 
 // AuthConfig 描述登录认证与会话策略。
@@ -41,15 +45,15 @@ type WebConfig struct {
 
 // CollectorConfig 描述视频站点 JSON 采集器。
 type CollectorConfig struct {
-	TimeoutSeconds      int    `yaml:"timeout_seconds"`           // 单次 HTTP 请求超时（秒）
-	MaxPages            int    `yaml:"max_pages"`                 // 单次采集最多遍历的页数，防止失控
-	PageSize            int    `yaml:"page_size"`                 // 0 表示由站点返回决定；>0 时附加苹果CMS 的 pagesize 参数（通常上限 100）
-	UserAgent           string `yaml:"user_agent"`                // 请求 UA
-	DefaultHours        int    `yaml:"default_incremental_hours"` // 站点未配置时默认增量时间窗
-	MaxConcurrent       int    `yaml:"max_concurrent"`            // 同时运行的采集任务上限，超出部分排队；运行时可通过接口调整
-	RetryTimes          int    `yaml:"retry_times"`               // 单次采集失败后的自动重试次数，0 表示不自动重试
-	RetryBackoffSeconds int    `yaml:"retry_backoff_seconds"`     // 首次自动重试的等待秒数，之后按 2 倍退避（上限 30 秒）
-	ProgressSaveSeconds int    `yaml:"progress_save_seconds"`     // 运行中任务把进度写库的间隔（秒），默认 60，避免重启丢进度
+	TimeoutSeconds      int    `yaml:"timeout_seconds" json:"timeoutSeconds"`                    // 单次 HTTP 请求超时（秒）
+	MaxPages            int    `yaml:"max_pages" json:"maxPages"`                                // 单次采集最多遍历的页数，防止失控
+	PageSize            int    `yaml:"page_size" json:"pageSize"`                                // 0 表示由站点返回决定；>0 时附加苹果CMS 的 pagesize 参数（通常上限 100）
+	UserAgent           string `yaml:"user_agent" json:"userAgent"`                              // 请求 UA
+	DefaultHours        int    `yaml:"default_incremental_hours" json:"defaultIncrementalHours"` // 站点未配置时默认增量时间窗
+	MaxConcurrent       int    `yaml:"max_concurrent" json:"maxConcurrent"`                      // 同时运行的采集任务上限，超出部分排队；运行时可通过接口调整
+	RetryTimes          int    `yaml:"retry_times" json:"retryTimes"`                            // 单次采集失败后的自动重试次数，0 表示不自动重试
+	RetryBackoffSeconds int    `yaml:"retry_backoff_seconds" json:"retryBackoffSeconds"`         // 首次自动重试的等待秒数，之后按 2 倍退避（上限 30 秒）
+	ProgressSaveSeconds int    `yaml:"progress_save_seconds" json:"progressSaveSeconds"`         // 运行中任务把进度写库的间隔（秒），默认 60，避免重启丢进度
 }
 
 // Default 返回开箱即用的默认配置。
@@ -77,6 +81,10 @@ func Default() *Config {
 // 随后用 ASSETSPIDER_* 环境变量覆盖，最后校验必填项。
 func Load(path string) (*Config, error) {
 	cfg := Default()
+	cfg.path = path
+	cfg.envKeys = map[string]bool{}
+	// 记录哪些 collector 键被环境变量接管：这些字段在线不可改（改了也会被下次启动覆盖）。
+	markEnv := func(name string) { cfg.envKeys[EnvOverrides[name]] = true }
 	if path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -98,6 +106,7 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("ASSETSPIDER_COLLECTOR_USER_AGENT"); v != "" {
 		cfg.Collector.UserAgent = v
+		markEnv("ASSETSPIDER_COLLECTOR_USER_AGENT")
 	}
 	for _, item := range []struct {
 		name string
@@ -112,13 +121,21 @@ func Load(path string) (*Config, error) {
 		{"ASSETSPIDER_COLLECTOR_RETRY_BACKOFF", &cfg.Collector.RetryBackoffSeconds},
 		{"ASSETSPIDER_COLLECTOR_PROGRESS_SAVE", &cfg.Collector.ProgressSaveSeconds},
 	} {
+		before := *item.dst
 		if err := utils.EnvInt(item.name, item.dst); err != nil {
 			return nil, err
 		}
+		if *item.dst != before {
+			markEnv(item.name)
+		}
 	}
 	// 兼容旧版本环境变量名：并行站点数已升级为全局任务并发上限。
+	before := cfg.Collector.MaxConcurrent
 	if err := utils.EnvInt("ASSETSPIDER_COLLECTOR_PARALLEL", &cfg.Collector.MaxConcurrent); err != nil {
 		return nil, err
+	}
+	if cfg.Collector.MaxConcurrent != before {
+		markEnv("ASSETSPIDER_COLLECTOR_PARALLEL")
 	}
 	for _, item := range []struct {
 		name string
