@@ -1,6 +1,24 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
 import { linkedFilters, scopeOptions } from './filterLinkage.js'
+import { NAV_ITEMS, DEFAULT_TAB, normalizeTab, tabToHash, navItemsFor } from './layout.js'
+import SourcesView from './views/SourcesView.vue'
+import CategoriesView from './views/CategoriesView.vue'
+import VideosView from './views/VideosView.vue'
+import JobsView from './views/JobsView.vue'
+import UsersView from './views/UsersView.vue'
+
+// 侧边栏布局：记住当前页面（URL hash 优先，localStorage 兜底）与折叠状态。
+const TAB_KEY = 'assetspider_tab'
+const SIDEBAR_KEY = 'assetspider_sidebar_collapsed'
+function initialTab() {
+  const fromHash = normalizeTab(location.hash)
+  if (fromHash) return fromHash
+  // URL 显式带了但非法的 hash：忽略 localStorage，直接回退到主页面，
+  // 避免一个无效链接把用户送到上一次访问的无关页面。
+  if (location.hash) return DEFAULT_TAB
+  return normalizeTab(localStorage.getItem(TAB_KEY)) || DEFAULT_TAB
+}
 
 // ---------- 登录态 ----------
 const TOKEN_KEY = 'assetspider_token'
@@ -28,7 +46,7 @@ async function loadHls() {
   return HlsLib
 }
 
-const tab = ref('sources')
+const tab = ref(initialTab())  // 资源库为主：默认 / 回退页都是资源库
 const health = ref({})
 const sources = ref([])
 const videos = ref([])
@@ -1031,7 +1049,7 @@ async function doLogin() {
 async function doLogout() {
   try { await request('/api/auth/v1/sessions', { method: 'DELETE' }) } catch (e) { /* 忽略 */ }
   clearAuth()
-  tab.value = 'sources'
+  tab.value = DEFAULT_TAB
   notify('已退出登录', 'info')
 }
 
@@ -1153,16 +1171,104 @@ onMounted(async () => {
 })
 onBeforeUnmount(() => { clearInterval(taskTimer) })
 
-// 从别的页签切回来时立刻补一次，不用等下一个轮询周期；页面重新可见时也补一次。
+// ---------- 侧边栏导航 ----------
+const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_KEY) === '1')
+const sidebarMobileOpen = ref(false)
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  localStorage.setItem(SIDEBAR_KEY, sidebarCollapsed.value ? '1' : '')
+}
+
+// 导航项：按权限过滤，并带上各页面的实时计数徽标。
+const navItems = computed(() => {
+  const counts = {
+    videos: videoTotal.value, sources: sources.value.length,
+    categories: catTotal.value, jobs: jobs.value.length, users: users.value.length,
+  }
+  return navItemsFor(isAdmin.value).map(i => ({ ...i, count: counts[i.key] || 0 }))
+})
+const currentPageTitle = computed(() => NAV_ITEMS.find(i => i.key === tab.value)?.label || '资源库')
+
+// 点击侧边栏：切换页面并按需加载该页数据（与拆分前的页签按钮行为一致）。
+function switchTab(key) {
+  let k = normalizeTab(key) || DEFAULT_TAB
+  if (k === 'users' && !isAdmin.value) k = DEFAULT_TAB
+  tab.value = k
+  if (k === 'videos') loadVideos().catch(e => { error.value = e.message })
+  else if (k === 'categories') loadCategories().catch(e => { error.value = e.message })
+  else if (k === 'users') loadUsers().catch(e => { error.value = e.message })
+}
+
+// tab 变化时：同步 URL hash 与 localStorage（刷新/重开可恢复）、收起移动端抽屉，
+// 并对采集类页面立刻补一次轮询数据。用 replaceState 写 hash 不产生历史噪音、也不回环。
 watch(tab, (v) => {
+  const h = tabToHash(v)
+  if (location.hash !== h) history.replaceState(null, '', h)
+  localStorage.setItem(TAB_KEY, v)
+  sidebarMobileOpen.value = false
   if (!me.value || !collectTabs.includes(v)) return
   refreshCollectData().catch(() => {})
 })
+// 用户手动改 hash / 浏览器后退时反向同步页面，并补齐该页数据。
+function onHashChange() {
+  const k = normalizeTab(location.hash)
+  if (!k) {
+    // 无效 hash：地址栏纠正回当前页，页面保持不变（不把用户踢走）。
+    if (location.hash !== tabToHash(tab.value)) history.replaceState(null, '', tabToHash(tab.value))
+    return
+  }
+  if (k === tab.value) return
+  tab.value = k
+  if (k === 'videos') loadVideos().catch(() => {})
+  else if (k === 'categories') loadCategories().catch(() => {})
+  else if (k === 'users') loadUsers().catch(() => {})
+}
+// 普通用户若从链接直接落到「用户管理」，登录后校正回资源库。
+watch(me, () => {
+  if (tab.value === 'users' && !isAdmin.value) tab.value = DEFAULT_TAB
+})
+onMounted(() => {
+  // 首次进入时 tab 是初始值、watch 不会触发，这里把空 / 非法 hash 规范化一次，
+  // 保证地址栏与实际页面一致，刷新也能恢复到同一页。
+  if (normalizeTab(location.hash) !== tab.value) history.replaceState(null, '', tabToHash(tab.value))
+  window.addEventListener('hashchange', onHashChange)
+})
+onBeforeUnmount(() => window.removeEventListener('hashchange', onHashChange))
+
 function onVisible() {
   if (!document.hidden && me.value && collectTabs.includes(tab.value)) refreshCollectData().catch(() => {})
 }
 onMounted(() => document.addEventListener('visibilitychange', onVisible))
 onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible))
+
+// 把共享状态一次性提供给各页面组件；子组件用 inject('app') 解构出的仍是原始 ref / computed / 函数。
+provide('app', {
+  TOKEN_KEY, token, me, authReady, initialized, isAdmin, currentUsername, clearAuth,
+  setAuth, HlsLib, loadHls, tab, health, sources, videos, categories,
+  categoryTree, tags, jobs, tasks, users, capacity, maxConcurrent, capacityDirty,
+  error, notice, videoQuery, videoSource, videoCategory, videoTag, videoAreaId, videoSort,
+  areas, visibleCategories, visibleTags, visibleAreas, hasActiveFilters, areaGroups, videoPage, videoSize,
+  videoTotal, videoLoading, videoLoadingMore, videoEnd, videoSeq, visibleVideoTotal, noticeTimer, notify,
+  request, jsonOptions, loadHealth, loadSources, fetchVideos, kickSentinel, loadVideos, loadMoreVideos,
+  loadAreas, loadJobs, loadTasks, loadCategories, loadCategoryTree, loadTags, loadUsers, refresh,
+  categoryName, activeTaskOf, queuedCountOf, showCategoryVideos, filterByTag, catCollapsed, isCatCollapsed, toggleCat,
+  catKey, siteNameOf, categoryForest, catTotal, catPath, catSelectLabel, tagSelectLabel, applyFilterLinkage,
+  onFilterChange, applyLinkage, clearAllFilters, toggleAllCats, fieldMeta, detail, detailTab, onlyNonEmpty,
+  loadFieldMeta, hasValue, nonEmptyCount, groupedFields, extraPairs, playGroups, posterOf, markPicFailed,
+  episodeLabel, scoreOf, metaLine, tagListOf, playerEl, activeGroup, activeEp, hlsInstance,
+  currentGroup, currentEpisodes, currentEpisode, currentUrl, detailSource, parseEnabled, useFrame, isHls,
+  isDirectVideo, isUnknownStream, canPlay, playError, playErrorTimer, onVideoLoaded, hlsErrorText, videoErrorText,
+  onVideoError, destroyPlayer, mountPlayer, chooseGroup, chooseEp, switchDetailTab, closeDetail, openDetail,
+  onEsc, emptyForm, form, editing, sourceOpen, resetForm, sourcePayload, openSourceForm,
+  closeSourceForm, editSource, importOpen, importBusy, importFileName, importRaw, importPreview, importFileEl,
+  importPreviewShown, exportSources, pickImportFile, onImportFile, closeImport, confirmImport, saveSource, removeSource,
+  clearSourceData, toggleSource, startTask, crawlAll, pauseTask, resumeTask, retryTask, rerunTask,
+  barWidth, isIndeterminate, fmtEta, taskStatusText, saveCapacity, searchVideos, videoSentinel, videoObserver,
+  formatTime, modeLabel, statusLabel, short, stat, jobMessage, loginForm, loginBusy,
+  loginError, doLogin, doLogout, pwdModal, pwdForm, doChangePassword, bootstrap, emptyUserForm,
+  userForm, userEditing, resetUserForm, editUser, saveUser, toggleUser, removeUser, visibleLabel,
+  collectTabs, refreshCollectData, taskTimer, onVisible
+})
 </script>
 
 <template>
@@ -1186,469 +1292,99 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
     </div>
   </div>
 
+
   <template v-else>
-  <main class="page">
-    <div class="appbar">
-      <div class="appbar-inner">
-        <div class="brand">
-          <span class="brand-mark">AS</span>
-          <div class="brand-text">
-            <h1>AssetSpider</h1>
-            <p>视频站点采集 · 全量 / 增量 · 全字段入库</p>
-          </div>
+  <div class="app-shell">
+    <!-- 移动端抽屉遮罩 -->
+    <div v-if="sidebarMobileOpen" class="sidebar-backdrop" @click="sidebarMobileOpen = false"></div>
+
+    <aside class="sidebar" :class="{ collapsed: sidebarCollapsed, 'mobile-open': sidebarMobileOpen }">
+      <div class="sidebar-head">
+        <span class="brand-mark">AS</span>
+        <div class="brand-text">
+          <h1>AssetSpider</h1>
+          <p>视频站点采集</p>
         </div>
+      </div>
+
+      <nav class="side-nav">
+        <button v-for="item in navItems" :key="item.key"
+                class="nav-item" :class="{ active: tab === item.key, primary: item.primary }"
+                :title="item.label" @click="switchTab(item.key)">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path :d="item.icon" />
+          </svg>
+          <span class="nav-label">{{ item.label }}</span>
+          <span v-if="item.count" class="nav-count">{{ item.count }}</span>
+        </button>
+      </nav>
+
+      <div class="side-overview">
+        <div class="ov">
+          <span class="ov-label">可见站点</span>
+          <b class="ov-value">{{ sources.length }}</b>
+          <span class="ov-sub">启用 {{ sources.filter(s => s.enabled).length }} · 停用 {{ sources.length - sources.filter(s => s.enabled).length }}</span>
+        </div>
+        <div class="ov">
+          <span class="ov-label">可见影片</span>
+          <b class="ov-value">{{ visibleVideoTotal }}</b>
+          <span class="ov-sub">按站点影片数快照累加</span>
+        </div>
+        <div class="ov">
+          <span class="ov-label">采集任务</span>
+          <b class="ov-value">{{ capacity.running }}<span class="ov-unit">/ {{ capacity.maxConcurrent }}</span></b>
+          <span class="ov-sub">运行中 · 排队 {{ capacity.queued }}</span>
+        </div>
+        <div class="ov">
+          <span class="ov-label">字段清单</span>
+          <b class="ov-value">{{ fieldMeta.total || '-' }}</b>
+          <span class="ov-sub">标准字段 · 全量入库</span>
+        </div>
+      </div>
+
+      <div class="side-foot">
+        <span class="db-chip" :title="health.database || ''">DB {{ health.database || '加载中…' }}</span>
+      </div>
+
+      <button class="sidebar-toggle" @click="toggleSidebar"
+              :title="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path :d="sidebarCollapsed ? 'M9 6l6 6-6 6' : 'M15 6l-6 6 6 6'" />
+        </svg>
+        <span>收起侧边栏</span>
+      </button>
+    </aside>
+
+    <div class="main-area">
+      <header class="topbar">
+        <button class="hamburger" @click="sidebarMobileOpen = !sidebarMobileOpen" aria-label="打开菜单">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" /></svg>
+        </button>
+        <div class="topbar-title"><span>AssetSpider</span><b>{{ currentPageTitle }}</b></div>
         <div class="appbar-side">
-          <span class="db-chip" :title="health.database || ''">DB {{ health.database || '加载中…' }}</span>
           <span class="user-name">{{ currentUsername }}</span>
           <span class="badge" :class="isAdmin ? 'on' : 'off'">{{ isAdmin ? '管理员' : '普通用户' }}</span>
           <button class="mini ghost" @click="pwdModal = true">修改密码</button>
           <button class="mini ghost" @click="doLogout">退出登录</button>
+          <button class="mini ghost topbar-refresh" @click="refresh">刷新</button>
         </div>
-      </div>
+      </header>
 
-      <nav class="tabs">
-        <button :class="{ active: tab === 'sources' }" @click="tab = 'sources'">
-          站点配置<span v-if="sources.length" class="tab-count">{{ sources.length }}</span>
-        </button>
-        <button :class="{ active: tab === 'videos' }" @click="tab = 'videos'; loadVideos()">
-          资源库<span v-if="videoTotal" class="tab-count">{{ videoTotal }}</span>
-        </button>
-        <button :class="{ active: tab === 'categories' }" @click="tab = 'categories'; loadCategories()">
-          视频分类<span v-if="catTotal" class="tab-count">{{ catTotal }}</span>
-        </button>
-        <button :class="{ active: tab === 'jobs' }" @click="tab = 'jobs'">
-          采集记录<span v-if="jobs.length" class="tab-count">{{ jobs.length }}</span>
-        </button>
-        <button v-if="isAdmin" :class="{ active: tab === 'users' }" @click="tab = 'users'; loadUsers()">
-          用户管理<span v-if="users.length" class="tab-count">{{ users.length }}</span>
-        </button>
-        <button class="ghost refresh" @click="refresh">刷新</button>
-      </nav>
+      <main class="page">
+        <div v-if="notice" class="notice" :class="notice.type">{{ notice.text }}</div>
+        <p v-if="error" class="error">{{ error }}</p>
+
+        <SourcesView v-if="tab === 'sources'" />
+        <CategoriesView v-else-if="tab === 'categories'" />
+        <VideosView v-else-if="tab === 'videos'" />
+        <JobsView v-else-if="tab === 'jobs'" />
+        <UsersView v-else-if="tab === 'users' && isAdmin" />
+      </main>
     </div>
-
-    <div v-if="notice" class="notice" :class="notice.type">{{ notice.text }}</div>
-    <p v-if="error" class="error">{{ error }}</p>
-
-    <div class="overview">
-      <div class="ov">
-        <span class="ov-label">可见站点</span>
-        <b class="ov-value">{{ sources.length }}</b>
-        <span class="ov-sub">启用 {{ sources.filter(s => s.enabled).length }} 个 · 停用 {{ sources.length - sources.filter(s => s.enabled).length }} 个</span>
-      </div>
-      <div class="ov">
-        <span class="ov-label">可见影片</span>
-        <b class="ov-value">{{ visibleVideoTotal }}</b>
-        <span class="ov-sub">按站点影片数快照累加</span>
-      </div>
-      <div class="ov">
-        <span class="ov-label">采集任务</span>
-        <b class="ov-value">{{ capacity.running }}<span class="ov-unit">/ {{ capacity.maxConcurrent }}</span></b>
-        <span class="ov-sub">运行中 · 排队 {{ capacity.queued }}</span>
-      </div>
-      <div class="ov">
-        <span class="ov-label">字段清单</span>
-        <b class="ov-value">{{ fieldMeta.total || '-' }}</b>
-        <span class="ov-sub">标准字段 · 全量入库</span>
-      </div>
-    </div>
-
-    <!-- 站点配置 -->
-    <template v-if="tab === 'sources'">
-      <section class="card">
-        <div class="list-head">
-          <h2>采集任务</h2>
-          <span class="muted">
-            运行 {{ capacity.running }} / {{ capacity.maxConcurrent }} · 排队 {{ capacity.queued }}
-          </span>
-        </div>
-        <div class="actions">
-          <button @click="crawlAll('full')">全量采集可见站点</button>
-          <button class="ghost" @click="crawlAll('incremental')">增量采集可见站点</button>
-          <template v-if="isAdmin">
-            <label class="field inline">最多同时运行
-              <input v-model.number="maxConcurrent" type="number" min="1" max="64"
-                     @input="capacityDirty = true" />
-            </label>
-            <button class="ghost" :disabled="!capacityDirty" @click="saveCapacity">保存上限</button>
-          </template>
-        </div>
-        <details class="tip">
-          <summary>采集与任务规则</summary>
-          <p class="hint">
-            采集为异步任务：发起后立即入队，同时运行的任务数不超过上面的上限，其余排队等待（同一站点也串行排队）。
-            运行中的任务可随时<b>暂停</b>——已完成分页的数据已经入库，全量采集的续采页码与增量采集的游标都会保存，
-            点「继续」即可从断点接着采。抓取失败会<b>自动退避重试</b>（次数由 <code>collector.retry_times</code> 配置），
-            仍然失败的任务可在「采集记录」里<b>手动重试</b>（从失败页续采）或<b>重新运行</b>（从第 1 页重来）——
-            <b>继续 / 重试 / 重新运行都复用原任务记录</b>，不会多出一条历史；重新运行时统计与尝试次数清零。
-          </p>
-        </details>
-        <p v-if="!tasks.length" class="empty">当前没有排队或运行中的采集任务。</p>
-        <div v-else class="table-wrap">
-          <table>
-            <thead>
-              <tr><th class="hide-sm">任务</th><th>站点</th><th>模式</th><th>状态</th><th class="prog-col">实时进度</th><th title="拉取 / 新增 / 更新 / 未变">拉取/新增/更新/未变</th><th class="hide-sm">速率</th><th class="hide-sm">已运行</th><th>操作</th></tr>
-            </thead>
-            <tbody>
-              <tr v-for="t in tasks" :key="t.jobId">
-                <td class="mono hide-sm">#{{ t.jobId }}</td>
-                <td class="host">{{ t.sourceName }}</td>
-                <td>
-                  {{ modeLabel(t.mode) }}
-                  <div v-if="t.maxAttempts > 1" class="tiny">第 {{ t.attempt }}/{{ t.maxAttempts }} 次尝试</div>
-                </td>
-                <td>
-                  <span class="badge" :class="t.retryInSeconds > 0 ? 'paused' : t.status">{{ taskStatusText(t) }}</span>
-                </td>
-                <td class="prog-col">
-                  <div class="prog-track" :class="{ indet: isIndeterminate(t) }">
-                    <i :style="{ width: barWidth(t) }"></i>
-                  </div>
-                  <div class="prog-meta">
-                    <b>{{ isIndeterminate(t) ? '—' : Math.floor(t.percent) + '%' }}</b>
-                    <span v-if="t.pageCount > 0">{{ t.page }} / {{ t.pageCount }} 页</span>
-                    <span v-else>{{ t.pages }} 页</span>
-                    <span>{{ t.fetched }} 条</span>
-                    <span v-if="t.etaSeconds > 0">剩余 {{ fmtEta(t.etaSeconds) }}</span>
-                  </div>
-                  <div v-if="t.message" class="tiny msg" :title="t.message">{{ short(t.message, 60) }}</div>
-                </td>
-                <td class="mono stats" :title="`拉取 ${t.fetched} 条，新增 ${t.new}，更新 ${t.updated}，未变 ${t.unchanged}`">
-                  {{ t.fetched }} / <span class="up">{{ t.new }}</span> / {{ t.updated }} / <span class="muted">{{ t.unchanged }}</span>
-                </td>
-                <td class="mono muted hide-sm">{{ t.itemsPerSecond > 0 ? t.itemsPerSecond.toFixed(1) + ' 条/秒' : '-' }}</td>
-                <td class="muted hide-sm">{{ t.elapsedSeconds }}s</td>
-                <td class="ops">
-                  <button v-if="t.status === 'running' || t.status === 'queued'"
-                          class="mini danger" @click="pauseTask(t.jobId)">暂停</button>
-                  <button v-else-if="t.status === 'paused'"
-                          class="mini ghost" @click="resumeTask(t.jobId)">继续</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="list-head">
-          <div class="list-head-l">
-            <h2>站点列表</h2><span class="muted">共 {{ sources.length }} 个</span>
-          </div>
-          <div class="ops import-ops">
-            <button class="ghost" @click="exportSources">导出 JSON</button>
-            <button v-if="isAdmin" class="ghost" @click="pickImportFile">导入 JSON</button>
-            <button v-if="isAdmin" @click="openSourceForm()">+ 新增站点</button>
-            <input ref="importFileEl" class="hidden-file" type="file" accept=".json,application/json" @change="onImportFile" />
-          </div>
-        </div>
-        <p v-if="!sources.length" class="empty">{{ isAdmin ? '还没有站点，点右上角「新增站点」添加一个 JSON 采集接口。' : '管理员尚未给你分配任何可见站点。' }}</p>
-        <div v-else class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th class="hide-sm">ID</th><th>名称</th><th class="hide-sm">接口地址</th><th>状态</th><th>影片数</th>
-                <th class="hide-sm">上次采集</th><th class="hide-sm">游标 / 结果</th><th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="s in sources" :key="s.id">
-                <td class="mono hide-sm">{{ s.id }}</td>
-                <td class="host">
-                  {{ s.name }}
-                  <div v-if="s.parseApi || s.playDomain || s.picApi || s.picDomain" class="tiny muted" :title="[s.parseApi && ('解析：' + s.parseApi), s.playDomain && ('播放域名：' + s.playDomain), s.picApi && ('图片代理：' + s.picApi), s.picDomain && ('图片域名：' + s.picDomain)].filter(Boolean).join(' / ')">
-                    {{ [s.parseApi && '解析播放', s.playDomain && '播放域名替换', (s.picApi || s.picDomain) && '图片改写'].filter(Boolean).join(' · ') }}
-                  </div>
-                </td>
-                <td class="url hide-sm" :title="s.apiBase">{{ short(s.apiBase, 38) }}</td>
-                <td>
-                  <span class="badge" :class="s.enabled ? 'on' : 'off'">{{ s.enabled ? '启用' : '停用' }}</span>
-                </td>
-                <td class="mono" title="已入库影片总数：采集运行中按进度落库间隔（默认每分钟）刷新，任务结束时再刷新一次">{{ s.videoCount }}</td>
-                <td class="muted hide-sm">{{ formatTime(s.lastSyncAt) }}</td>
-                <td class="muted hide-sm">
-                  <span class="badge" :class="s.lastStatus">{{ statusLabel(s.lastStatus) }}</span>
-                  <div class="mono tiny">{{ s.lastCursor || '-' }}</div>
-                </td>
-                <td class="ops">
-                  <template v-if="activeTaskOf(s.id)">
-                    <span class="muted tiny">
-                      {{ statusLabel(activeTaskOf(s.id).status) }}…
-                      <template v-if="activeTaskOf(s.id).status === 'running' && queuedCountOf(s.id)">
-                        （另有 {{ queuedCountOf(s.id) }} 个排队）
-                      </template>
-                    </span>
-                    <button class="mini danger" @click="pauseTask(activeTaskOf(s.id).jobId)">暂停</button>
-                  </template>
-                  <template v-else>
-                    <button class="mini" @click="startTask(s, 'full')">全量</button>
-                    <button class="mini ghost" @click="startTask(s, 'incremental')">增量</button>
-                  </template>
-                  <template v-if="isAdmin">
-                    <button class="mini ghost" @click="editSource(s)">编辑</button>
-                    <button class="mini ghost" @click="toggleSource(s)">{{ s.enabled ? '停用' : '启用' }}</button>
-                    <button class="mini ghost" @click="clearSourceData(s)" title="删除该站点的影片、分类、标签与采集记录，保留站点配置">清空</button>
-                    <button class="mini danger" @click="removeSource(s)">删除</button>
-                  </template>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </template>
-
-    <!-- 视频分类 -->
-    <template v-if="tab === 'categories'">
-      <section class="card">
-        <div class="list-head">
-          <h2>视频分类</h2>
-          <span class="muted">
-            {{ categoryForest.length }} 个站点 · {{ catTotal }} 个分类（支持二级）
-            <button class="mini ghost" @click="toggleAllCats">展开 / 收起</button>
-          </span>
-        </div>
-        <details class="tip">
-          <summary>分类归档规则</summary>
-          <p class="hint">采集时按接口返回的 type_id / type_name 自动创建分类并关联影片，每个资源站各自一套；依据苹果CMS 的 type_pid 模型支持二级分类：视频的 <code>type_id_1</code> 即所属一级分类 ID，二级分类会挂到对应一级分类之下。点「查看影片」可按分类（含其子分类）筛选影片。</p>
-        </details>
-        <p v-if="!categoryForest.length" class="empty">还没有分类，执行一次采集后会自动生成。</p>
-        <div v-else class="tree">
-          <div v-for="site in categoryForest" :key="site.key" class="tree-site">
-            <div class="tree-row site" @click="toggleCat(site.key)">
-              <span class="twisty" :class="{ open: !isCatCollapsed(site.key) }">▶</span>
-              <b class="tree-title">{{ site.name }}</b>
-              <span class="muted">{{ site.catCount }} 个分类 · {{ site.videoCount }} 部影片</span>
-            </div>
-            <div v-show="!isCatCollapsed(site.key)" class="tree-kids">
-              <div v-for="node in site.children" :key="node.key || node.id" class="tree-branch">
-                <div class="tree-row" :class="{ group: node.virtual }">
-                  <span
-                    class="twisty"
-                    :class="{ open: !isCatCollapsed(catKey(node)), 'no-kids': !(node.children && node.children.length) }"
-                    @click.stop="node.children && node.children.length && toggleCat(catKey(node))"
-                  >▶</span>
-                  <span class="badge" :class="node.virtual ? 'queued' : (node.level === 1 ? 'on' : 'off')">{{ node.virtual ? '分组' : (node.level === 1 ? '一级' : '二级') }}</span>
-                  <b class="tree-title">{{ node.name }}</b>
-                  <span v-if="!node.virtual" class="muted hide-sm">站点ID {{ node.typeId || '-' }}</span>
-                  <span v-if="node.virtual" class="muted">{{ node.hint }}</span>
-                  <span class="muted">{{ node.videoCount }} 部</span>
-                  <span class="tree-gap"></span>
-                  <button v-if="!node.virtual" class="mini ghost" @click="showCategoryVideos(node)">查看影片</button>
-                </div>
-                <div v-if="node.children && node.children.length" v-show="!isCatCollapsed(catKey(node))" class="tree-kids">
-                  <div v-for="ch in node.children" :key="ch.id" class="tree-row leaf">
-                    <span class="twisty no-kids"></span>
-                    <span class="badge off">二级</span>
-                    <b class="tree-title">{{ ch.name }}</b>
-                    <span class="muted hide-sm">站点ID {{ ch.typeId || '-' }}</span>
-                    <span class="muted">{{ ch.videoCount }} 部</span>
-                    <span class="tree-gap"></span>
-                    <button class="mini ghost" @click="showCategoryVideos(ch)">查看影片</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-    </template>
-
-    <!-- 资源库 -->
-    <template v-if="tab === 'videos'">
-      <section class="card">
-        <div class="res-toolbar">
-          <div class="search-box">
-            <input v-model="videoQuery" placeholder="搜索片名 / 别名 / 演员 / 导演" @keyup.enter="searchVideos" />
-            <button @click="searchVideos">搜索</button>
-          </div>
-          <div class="filters">
-            <select v-model="videoCategory" @change="onFilterChange('category', $event)" title="按分类筛选">
-              <option value="">全部分类</option>
-              <option v-for="c in visibleCategories" :key="c.id" :value="c.id">{{ catSelectLabel(c) }}</option>
-            </select>
-            <select v-model="videoTag" @change="onFilterChange('tag', $event)" title="按标签筛选">
-              <option value="">全部标签</option>
-              <option v-for="t in visibleTags" :key="t.id" :value="t.id">{{ tagSelectLabel(t) }}</option>
-            </select>
-            <select v-model="videoAreaId" @change="onFilterChange('area', $event)" title="按地域筛选">
-              <option value="">全部地域</option>
-              <template v-if="videoSource">
-                <option v-for="a in visibleAreas" :key="a.id" :value="a.id">{{ a.name }}（{{ a.videoCount }}）</option>
-              </template>
-              <template v-else>
-                <optgroup v-for="g in areaGroups" :key="g.sourceId" :label="g.name">
-                  <option v-for="a in g.items" :key="a.id" :value="a.id">{{ a.name }}（{{ a.videoCount }}）</option>
-                </optgroup>
-              </template>
-            </select>
-            <select v-model="videoSource" @change="onFilterChange('source', $event)" title="按站点筛选">
-              <option value="">全部站点</option>
-              <option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }}</option>
-            </select>
-            <select v-model="videoSort" @change="onFilterChange('sort', $event)" title="排序">
-              <option value="time_desc">更新时间 ↓</option>
-              <option value="time_asc">更新时间 ↑</option>
-              <option value="score_desc">评分 ↓</option>
-              <option value="score_asc">评分 ↑</option>
-            </select>
-            <button class="ghost btn-clear" :disabled="!hasActiveFilters"
-              @click="clearAllFilters" title="清空搜索词与全部分类、标签、地域、站点条件">清空筛选</button>
-          </div>
-          <span class="muted res-total">共 <b>{{ videoTotal }}</b> 条</span>
-        </div>
-        <div class="res-body">
-          <p v-if="!videos.length && !videoLoading" class="empty">{{ isAdmin ? '暂无采集数据，可到「站点配置」执行一次全量采集。' : '暂无可见的采集数据。' }}</p>
-          <div v-if="videos.length || videoLoading" class="res-grid">
-            <article v-for="v in videos" :key="v.id" class="res-card" @click="openDetail(v)">
-              <div class="res-poster">
-                <img v-if="posterOf(v)" :src="posterOf(v)" :alt="v.vodName" loading="lazy" @error="markPicFailed(v)" />
-                <div v-else class="res-poster-ph">{{ (v.vodName || '#').slice(0, 1) }}</div>
-                <span v-if="scoreOf(v)" class="res-score">{{ scoreOf(v) }}</span>
-                <span v-if="episodeLabel(v) !== '-'" class="res-eps">{{ episodeLabel(v) }}</span>
-              </div>
-              <div class="res-info">
-                <h4 :title="v.vodName">{{ v.vodName || v.vodId }}</h4>
-                <p v-if="metaLine(v)" class="res-meta">{{ metaLine(v) }}</p>
-                <div v-if="tagListOf(v).length" class="res-tags">
-                  <span v-for="t in tagListOf(v).slice(0, 4)" :key="t" class="res-tag" :title="`按标签「${t}」筛选`" @click.stop="filterByTag(t, v.sourceId)">{{ t }}</span>
-                </div>
-                <p class="res-time">{{ v.vodTime || formatTime(v.firstSeenAt) }}</p>
-              </div>
-            </article>
-          </div>
-          <!-- 整表重载（搜索 / 切筛选）时的遮罩：固定在视口中央，旧卡片留在下面打底 -->
-          <div v-if="videoLoading" class="res-mask">
-            <div class="res-mask-inner">
-              <span class="spinner"></span>
-              <span class="res-mask-text">{{ videoQuery.trim() ? '搜索中…' : '加载中…' }}</span>
-            </div>
-          </div>
-          <!-- 无限滚动哨兵：进入视口即加载下一页 -->
-          <div ref="videoSentinel" class="res-more">
-            <template v-if="videoLoadingMore">
-              <span class="spinner"></span><span>加载更多…</span>
-            </template>
-            <span v-else-if="videos.length && videoEnd" class="res-more-end">已经到底了 · 共 {{ videoTotal }} 条</span>
-          </div>
-        </div>
-      </section>
-    </template>
-
-    <!-- 采集记录 -->
-    <template v-if="tab === 'jobs'">
-      <section class="card">
-        <div class="list-head"><h2>采集记录</h2><span class="muted">最近 50 条</span></div>
-        <p v-if="!jobs.length" class="empty">暂无采集记录。</p>
-        <div v-else class="table-wrap">
-          <table>
-            <thead>
-              <tr><th>ID</th><th>站点</th><th class="hide-sm">模式</th><th>状态</th><th>页数</th><th>拉取</th><th>新增</th><th>更新</th><th>未变</th><th class="hide-sm">开始时间</th><th class="hide-sm">说明</th><th>操作</th></tr>
-            </thead>
-            <tbody>
-              <tr v-for="j in jobs" :key="j.id">
-                <td class="mono">
-                  {{ j.id }}
-                  <div v-if="j.retryOf" class="tiny">源自 #{{ j.retryOf }}</div>
-                </td>
-                <td class="host">{{ j.sourceName }}</td>
-                <td class="hide-sm">{{ modeLabel(j.mode) }}</td>
-                <td>
-                  <span class="badge" :class="j.status">{{ j.live ? taskStatusText(j.live) : statusLabel(j.status) }}</span>
-                  <div v-if="stat(j, 'attempt') > 1" class="tiny">尝试 {{ stat(j, 'attempt') }} 次</div>
-                </td>
-                <td class="mono">
-                  <template v-if="j.live">
-                    <div class="prog-track sm" :class="{ indet: isIndeterminate(j.live) }">
-                      <i :style="{ width: barWidth(j.live) }"></i>
-                    </div>
-                    <div class="tiny">
-                      {{ j.live.pageCount > 0 ? j.live.page + '/' + j.live.pageCount : j.live.pages }} 页
-                      · {{ j.live.pageCount > 0 ? Math.floor(j.live.percent) + '%' : '进行中' }}
-                    </div>
-                  </template>
-                  <template v-else>{{ j.pages }}</template>
-                </td>
-                <td class="mono">{{ stat(j, 'fetched') }}</td>
-                <td class="mono up">{{ stat(j, 'new') }}</td>
-                <td class="mono">{{ stat(j, 'updated') }}</td>
-                <td class="mono muted">{{ stat(j, 'unchanged') }}</td>
-                <td class="muted hide-sm">{{ formatTime(j.startedAt) }}</td>
-                <td class="muted msg hide-sm" :title="jobMessage(j)">{{ short(jobMessage(j), 30) }}</td>
-                <td class="ops">
-                  <template v-if="j.status === 'running' || j.status === 'queued'">
-                    <button class="mini danger" @click="pauseTask(j.id)">暂停</button>
-                  </template>
-                  <template v-else>
-                    <button v-if="j.status === 'paused'" class="mini" @click="resumeTask(j.id)">继续</button>
-                    <button v-if="j.status === 'failed'" class="mini" @click="retryTask(j.id)">重试</button>
-                    <button class="mini ghost" @click="rerunTask(j.id)">重新运行</button>
-                  </template>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </template>
-
-    <!-- 用户管理（管理员） -->
-    <template v-if="tab === 'users' && isAdmin">
-      <section class="card">
-        <h2>{{ userEditing ? `编辑用户「${userForm.username}」` : '新增用户' }}</h2>
-        <form class="user-form" @submit.prevent="saveUser">
-          <input v-model="userForm.username" placeholder="用户名 *" :disabled="userEditing" :required="!userEditing" />
-          <input v-model="userForm.password" type="password"
-                 :placeholder="userEditing ? '新密码（留空不改）' : '密码 *（至少 6 位）'" :required="!userEditing" />
-          <label class="field">角色
-            <select v-model="userForm.role">
-              <option value="user">普通用户</option>
-              <option value="admin">管理员</option>
-            </select>
-          </label>
-          <label class="check"><input v-model="userForm.enabled" type="checkbox" /> 启用</label>
-          <button type="submit">{{ userEditing ? '保存修改' : '创建用户' }}</button>
-          <button v-if="userEditing" type="button" class="ghost" @click="resetUserForm">取消</button>
-          <div class="source-grants">
-            <span class="muted">可见站点授权</span>
-            <span class="hint">普通用户只能看见被勾选的站点；管理员默认可见全部，无需授权。</span>
-            <div class="grant-list">
-              <label v-for="s in sources" :key="s.id" class="check">
-                <input type="checkbox" :value="s.id" v-model="userForm.sourceIds" /> {{ s.name }}
-              </label>
-              <span v-if="!sources.length" class="muted">还没有站点可分配</span>
-            </div>
-          </div>
-        </form>
-        <p class="hint">创建/修改后立即生效，无需用户重新登录。停用、改密或变更角色会使该用户的现有会话失效。</p>
-      </section>
-
-      <section class="card">
-        <div class="list-head"><h2>用户列表</h2><span class="muted">共 {{ users.length }} 个账号</span></div>
-        <p v-if="!users.length" class="empty">还没有其他账号。</p>
-        <div v-else class="table-wrap">
-          <table>
-            <thead>
-              <tr><th>ID</th><th>用户名</th><th>角色</th><th>状态</th><th>可见站点</th><th class="hide-sm">最后登录</th><th>操作</th></tr>
-            </thead>
-            <tbody>
-              <tr v-for="u in users" :key="u.id">
-                <td class="mono">{{ u.id }}</td>
-                <td class="host">{{ u.username }}<span v-if="u.id === me.user?.id" class="tiny muted">（我）</span></td>
-                <td><span class="badge" :class="u.role === 'admin' ? 'on' : 'off'">{{ u.role === 'admin' ? '管理员' : '普通用户' }}</span></td>
-                <td><span class="badge" :class="u.enabled ? 'on' : 'off'">{{ u.enabled ? '启用' : '停用' }}</span></td>
-                <td class="muted">{{ visibleLabel(u) }}</td>
-                <td class="muted hide-sm">{{ formatTime(u.lastLoginAt) }}</td>
-                <td class="ops">
-                  <button class="mini ghost" @click="editUser(u)">编辑</button>
-                  <button class="mini ghost" @click="toggleUser(u)">{{ u.enabled ? '停用' : '启用' }}</button>
-                  <button class="mini danger" @click="removeUser(u)">删除</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </template>
+  </div>
 
     <!-- 站点配置导入确认（仅管理员） -->
     <div v-if="importOpen" class="modal-mask" @click.self="closeImport">
@@ -1855,7 +1591,6 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
         </div>
       </div>
     </div>
-  </main>
   </template>
 </template>
 
@@ -1883,16 +1618,7 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
 body { margin: 0; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
 .page { max-width: 1240px; margin: 0 auto; padding: 0 20px 64px; }
 
-/* ---------- 顶部栏：品牌 + 账号 + 页签（吸顶） ---------- */
-.appbar {
-  position: sticky; top: 0; z-index: 30;
-  padding: 14px 0 0; margin-bottom: 18px;
-  background: rgba(255, 255, 255, .92);
-  backdrop-filter: saturate(180%) blur(14px);
-  border-bottom: 1px solid var(--border);
-}
-.appbar-inner { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+/* ---------- 品牌标识 / 账号区（侧边栏与顶栏共用） ---------- */
 .brand-mark {
   width: 40px; height: 40px; flex: none; border-radius: 12px;
   display: grid; place-items: center;
@@ -1910,32 +1636,7 @@ body { margin: 0; background: var(--bg); color: var(--text); -webkit-font-smooth
 }
 .user-name { font-size: 13px; font-weight: 600; }
 
-/* 页签：下划线式，窄屏可横向滑动 */
-.tabs { display: flex; align-items: center; gap: 2px; margin-top: 10px; overflow-x: auto; scrollbar-width: none; }
-.tabs::-webkit-scrollbar { display: none; }
-.tabs button {
-  position: relative; flex: 0 0 auto;
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 10px 14px; border-radius: 9px 9px 0 0;
-  background: transparent; color: var(--muted);
-  font-size: 14px; font-weight: 500; box-shadow: none;
-}
-.tabs button:hover:not(:disabled) { background: var(--brand-soft); color: var(--text); }
-.tabs button.active { background: transparent; color: var(--brand); }
-.tabs button.active::after {
-  content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px;
-  height: 2px; border-radius: 2px; background: var(--brand);
-}
-.tab-count {
-  padding: 0 7px; border-radius: 999px; background: #eef1f7; color: #5b6577;
-  font-size: 11px; font-weight: 600; line-height: 17px;
-}
-.tabs button.active .tab-count { background: var(--brand-soft); color: var(--brand); }
-.tabs .refresh { margin-left: auto; margin-bottom: 6px; padding: 7px 14px; border-radius: 9px; background: #f2f4f8; color: var(--text-2); font-size: 13px; }
-.tabs .refresh:hover:not(:disabled) { background: #e8ecf4; }
-
-/* ---------- 概览指标 ---------- */
-.overview { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+/* ---------- 概览指标（侧边栏内竖排，容器样式见 .side-overview） ---------- */
 .ov {
   display: flex; flex-direction: column; gap: 2px;
   padding: 14px 16px; background: var(--panel);
@@ -2246,37 +1947,16 @@ tbody tr:hover td { background: #f8faff; }
 .tree-kids .tree-kids .tree-row { padding-left: 46px; background: #fafbfe; }
 .tree-kids .tree-kids .tree-row:hover { background: #f4f7fc; }
 
-/* ---------- 中等屏幕：概览两列 ---------- */
-@media (max-width: 960px) {
-  .overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-
 /* ---------- 手机端适配（≤760px） ---------- */
 @media (max-width: 760px) {
   body { overflow-x: hidden; } /* 兜底：任何元素都不应把整页撑出横向滚动 */
   .page { padding: 0 12px 44px; }
 
-  /* 顶栏：品牌与账号分两行，页签单行横滑 */
-  .appbar { padding-top: 10px; }
-  .appbar-inner { gap: 8px; }
+  /* 品牌在移动抽屉里略收窄，副标题隐藏 */
   .brand-mark { width: 34px; height: 34px; border-radius: 10px; font-size: 13px; }
   .brand-text h1 { font-size: 17px; }
   .brand-text p { display: none; }
   .appbar-side { gap: 6px; }
-  .db-chip { display: none; }
-  .tabs {
-    overflow-x: auto;
-    flex-wrap: nowrap;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-    gap: 0;
-    margin-top: 8px;
-  }
-  .tabs::-webkit-scrollbar { display: none; }
-  .tabs button { flex: 0 0 auto; padding: 9px 12px; font-size: 13px; }
-  .tabs .refresh { margin-left: 6px; margin-bottom: 5px; padding: 6px 12px; }
-
-  .overview { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .ov { padding: 11px 13px; }
   .ov-value { font-size: 20px; }
   .ov-sub { font-size: 10px; }
@@ -2388,4 +2068,119 @@ tbody tr:hover td { background: #f8faff; }
 .source-grants { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; }
 .grant-list { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 4px; }
 .modal.sm { width: min(460px, 100%); }
+
+
+/* ---------- 侧边栏布局（页面拆分后） ---------- */
+.app-shell { display: flex; align-items: stretch; min-height: 100vh; }
+.sidebar {
+  position: sticky; top: 0; align-self: flex-start;
+  width: 236px; flex: none; height: 100vh; z-index: 40;
+  display: flex; flex-direction: column; overflow-y: auto;
+  background: var(--panel); border-right: 1px solid var(--border);
+  transition: width .18s ease;
+}
+.sidebar-head {
+  display: flex; align-items: center; gap: 10px; min-height: 70px;
+  padding: 14px; border-bottom: 1px solid var(--border);
+}
+.sidebar-head .brand-mark { width: 36px; height: 36px; border-radius: 10px; font-size: 14px; }
+.sidebar-head .brand-text { min-width: 0; overflow: hidden; }
+.sidebar-head .brand-text h1 { font-size: 16px; white-space: nowrap; }
+.sidebar-head .brand-text p { font-size: 11px; white-space: nowrap; }
+
+.side-nav { display: flex; flex-direction: column; gap: 3px; padding: 12px 10px; flex: 1 1 auto; }
+.nav-item {
+  display: flex; align-items: center; gap: 11px; width: 100%;
+  padding: 10px 12px; border-radius: 9px;
+  background: transparent; color: var(--text-2);
+  font-size: 14px; font-weight: 500; text-align: left; white-space: nowrap;
+  box-shadow: none;
+}
+.side-nav .nav-item:hover:not(:disabled) { background: var(--brand-soft); color: var(--brand); }
+.nav-item.active { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+.nav-item.primary.active { box-shadow: inset 3px 0 0 var(--brand); }
+.nav-icon { width: 19px; height: 19px; flex: none; }
+.nav-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.nav-count {
+  flex: none; padding: 0 7px; border-radius: 999px;
+  background: #eef1f7; color: #5b6577; font-size: 11px; font-weight: 600; line-height: 18px;
+}
+.nav-item.active .nav-count { background: #fff; color: var(--brand); }
+
+.side-overview {
+  display: grid; gap: 8px; padding: 12px;
+  border-top: 1px solid var(--border);
+}
+.side-overview .ov { padding: 9px 12px; gap: 1px; box-shadow: none; }
+.side-overview .ov-value { font-size: 19px; }
+.side-overview .ov-sub { font-size: 10px; }
+.side-foot { padding: 10px 12px 4px; }
+.side-foot .db-chip { display: block; max-width: 100%; }
+
+.sidebar-toggle {
+  display: flex; align-items: center; gap: 10px; margin: 4px 10px 14px;
+  padding: 9px 12px; border-radius: 9px;
+  background: #f3f5f9; color: var(--text-2); font-size: 13px;
+  box-shadow: none; white-space: nowrap;
+}
+.sidebar-toggle:hover:not(:disabled) { background: #e9edf5; color: var(--text); }
+.sidebar-toggle svg { width: 16px; height: 16px; flex: none; }
+
+.main-area { flex: 1 1 auto; min-width: 0; }
+.topbar {
+  position: sticky; top: 0; z-index: 30;
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 20px;
+  background: rgba(255, 255, 255, .92);
+  backdrop-filter: saturate(180%) blur(14px);
+  border-bottom: 1px solid var(--border);
+}
+.topbar-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.topbar-title span { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.topbar-title b { font-size: 16px; white-space: nowrap; }
+.topbar .appbar-side { margin-left: auto; }
+.hamburger {
+  display: none; flex: none; align-items: center; justify-content: center;
+  width: 38px; height: 38px; padding: 0; border-radius: 9px;
+  background: #f3f5f9; color: var(--text-2); box-shadow: none;
+}
+.hamburger:hover:not(:disabled) { background: #e9edf5; color: var(--text); }
+.hamburger svg { width: 20px; height: 20px; }
+.sidebar-backdrop { display: none; }
+
+/* 桌面：折叠态只留图标 */
+@media (min-width: 901px) {
+  .sidebar.collapsed { width: 68px; }
+  .sidebar.collapsed .sidebar-head { justify-content: center; padding: 14px 0; }
+  .sidebar.collapsed .brand-text,
+  .sidebar.collapsed .nav-label,
+  .sidebar.collapsed .nav-count,
+  .sidebar.collapsed .side-overview,
+  .sidebar.collapsed .side-foot,
+  .sidebar.collapsed .sidebar-toggle span { display: none; }
+  .sidebar.collapsed .nav-item { justify-content: center; padding: 10px 0; }
+  .sidebar.collapsed .side-nav { padding: 12px 8px; }
+  .sidebar.collapsed .sidebar-toggle { justify-content: center; padding: 9px 0; margin: 4px 8px 14px; }
+}
+
+/* 平板 / 手机：侧边栏改为抽屉 + 汉堡按钮，折叠态不再生效 */
+@media (max-width: 900px) {
+  .sidebar {
+    position: fixed; top: 0; left: 0; width: 236px; height: 100vh;
+    transform: translateX(-100%); transition: transform .2s ease;
+    box-shadow: var(--shadow-md); z-index: 60;
+  }
+  .sidebar.mobile-open { transform: translateX(0); }
+  .sidebar-backdrop {
+    display: block; position: fixed; inset: 0; z-index: 55;
+    background: rgba(16, 24, 40, .42);
+  }
+  .hamburger { display: inline-flex; }
+  .main-area { width: 100%; }
+  .topbar { padding: 10px 14px; }
+}
+@media (max-width: 560px) {
+  .topbar-title span { display: none; }
+  .topbar .appbar-side .user-name { display: none; }
+}
 </style>
