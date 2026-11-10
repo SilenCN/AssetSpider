@@ -45,3 +45,23 @@ export function normalizeTab(value) {
 export function navItemsFor(isAdmin) {
   return NAV_ITEMS.filter(i => !i.adminOnly || isAdmin)
 }
+
+// ---------- 影片详情页 ----------
+// 详情页不是侧边栏常驻入口，用 #/video/<数字ID> 作为独立页面地址，
+// 因此刷新、分享链接、浏览器前进后退都能按 ID 恢复（由 App.vue 调后端详情接口）。
+export const DETAIL_HASH_PREFIX = '#/video/'
+
+export function detailHash(id) {
+  return DETAIL_HASH_PREFIX + encodeURIComponent(String(id))
+}
+
+// 兼容 '#/video/12'、'/video/12'、'video/12'、'#/video/12/' 等写法；
+// 非数字、非正数、普通 tab 或其它路径一律返回 null。
+export function detailIdFromHash(value) {
+  if (typeof value !== 'string') return null
+  const raw = value.trim().replace(/^#/, '').replace(/^\/+/, '').replace(/\/+$/, '')
+  const m = raw.match(/^video\/(\d+)$/i)
+  if (!m) return null
+  const n = Number(m[1])
+  return Number.isSafeInteger(n) && n > 0 ? n : null
+}

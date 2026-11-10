@@ -1,10 +1,14 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
 import { linkedFilters, scopeOptions } from './filterLinkage.js'
-import { NAV_ITEMS, DEFAULT_TAB, normalizeTab, tabToHash, navItemsFor } from './layout.js'
+import {
+  NAV_ITEMS, DEFAULT_TAB, normalizeTab, tabToHash, navItemsFor,
+  detailHash, detailIdFromHash,
+} from './layout.js'
 import SourcesView from './views/SourcesView.vue'
 import CategoriesView from './views/CategoriesView.vue'
 import VideosView from './views/VideosView.vue'
+import VideoDetailView from './views/VideoDetailView.vue'
 import JobsView from './views/JobsView.vue'
 import UsersView from './views/UsersView.vue'
 
@@ -12,6 +16,8 @@ import UsersView from './views/UsersView.vue'
 const TAB_KEY = 'assetspider_tab'
 const SIDEBAR_KEY = 'assetspider_sidebar_collapsed'
 function initialTab() {
+  // 影片详情页地址（#/video/<id>）以资源库为底层页面，登录后按 id 恢复详情。
+  if (detailIdFromHash(location.hash)) return DEFAULT_TAB
   const fromHash = normalizeTab(location.hash)
   if (fromHash) return fromHash
   // URL 显式带了但非法的 hash：忽略 localStorage，直接回退到主页面，
@@ -673,12 +679,22 @@ function switchDetailTab(t) {
     detailTab.value = t
   }
 }
-function closeDetail() {
+// ---------- 影片详情：作为主内容区的独立页面，而非弹窗 ----------
+// 离开详情页：销毁播放器并清空详情（地址栏由调用方或 hashchange 处理）。
+function leaveDetail() {
   destroyPlayer()
   detail.value = null
 }
 
-async function openDetail(v) {
+// 详情页「返回资源库」：写回列表 hash，hashchange 会同步清掉详情。
+function closeDetail() {
+  leaveDetail()
+  const h = tabToHash(DEFAULT_TAB)
+  if (location.hash !== h) location.hash = h
+}
+
+// 把影片对象渲染成详情页面（初始化逻辑与弹窗时期一致）。
+async function showVideoDetail(v) {
   detail.value = v
   detailTab.value = 'play'
   onlyNonEmpty.value = true
@@ -687,16 +703,44 @@ async function openDetail(v) {
   activeGroup.value = gi >= 0 ? gi : 0
   activeEp.value = 0
   if (!fieldMeta.value.fields?.length) await loadFieldMeta()
-  mountPlayer()
+  mountPlayer() // 内部会 await nextTick() 等详情组件挂载出 <video>
+}
+
+// 从资源库点开影片：作为一次页面跳转，pushState 让浏览器后退能回到列表。
+// 已在详情页时改用 replaceState，避免历史栈里堆一串影片。
+async function openDetail(v) {
+  const h = detailHash(v.id)
+  if (detailIdFromHash(location.hash) == null) history.pushState(null, '', h)
+  else if (location.hash !== h) history.replaceState(null, '', h)
+  await showVideoDetail(v)
+}
+
+// 刷新 / 分享链接 / 浏览器前进后退落到 #/video/<id>：按 ID 重新取详情。
+// 优先复用列表里已有的对象，否则调后端详情接口（返回结构与列表项一致）。
+async function openDetailById(id) {
+  try {
+    const cached = videos.value.find(x => Number(x.id) === Number(id))
+    const v = cached || await request(`/api/videos/v1/${id}`)
+    await showVideoDetail(v)
+  } catch (e) {
+    error.value = `影片不存在或已移除：${e.message}`
+    notify('影片不存在或已移除', 'err')
+    leaveDetail()
+    history.replaceState(null, '', tabToHash(DEFAULT_TAB))
+    tab.value = DEFAULT_TAB
+    loadVideos().catch(() => {})
+  }
 }
 
 onBeforeUnmount(destroyPlayer)
 
-// Esc 关闭当前弹窗（导入确认 → 站点配置 → 资源详情）
+// Esc 关闭当前弹窗；详情页是页面而非弹窗，Esc 仅作为「返回资源库」的快捷方式。
 function onEsc(e) {
   if (e.key !== 'Escape') return
   if (importOpen.value) { closeImport(); return }
   if (sourceOpen.value) { closeSourceForm(); return }
+  if (userFormOpen.value) { closeUserForm(); return }
+  if (pwdModal.value) { pwdModal.value = false; return }
   if (detail.value) closeDetail()
 }
 onMounted(() => window.addEventListener('keydown', onEsc))
@@ -1091,16 +1135,28 @@ const emptyUserForm = () => ({
 })
 const userForm = reactive(emptyUserForm())
 const userEditing = computed(() => !!userForm.id)
+// 新增 / 编辑用户共用一个弹窗；用户管理页只保留列表与「新增用户」入口。
+const userFormOpen = ref(false)
 
 function resetUserForm() { Object.assign(userForm, emptyUserForm()) }
 
-function editUser(u) {
-  Object.assign(userForm, {
-    id: u.id, username: u.username, password: '', role: u.role,
-    enabled: u.enabled, sourceIds: [...(u.sourceIds || [])],
-  })
-  window.scrollTo({ top: 0, behavior: 'smooth' })
+function openUserForm(u = null) {
+  resetUserForm()
+  if (u) {
+    Object.assign(userForm, {
+      id: u.id, username: u.username, password: '', role: u.role,
+      enabled: u.enabled, sourceIds: [...(u.sourceIds || [])],
+    })
+  }
+  userFormOpen.value = true
 }
+
+function closeUserForm() {
+  userFormOpen.value = false
+  resetUserForm()
+}
+
+function editUser(u) { openUserForm(u) }
 
 async function saveUser() {
   error.value = ''
@@ -1117,7 +1173,7 @@ async function saveUser() {
       payload.password = userForm.password
       await request('/api/users/v1', jsonOptions('POST', payload))
     }
-    resetUserForm()
+    closeUserForm() // 保存成功才关闭；失败时保留弹窗内容便于修改
     notify('用户信息已保存')
     await refresh()
   } catch (e) {
@@ -1139,7 +1195,7 @@ async function removeUser(u) {
   try {
     await request(`/api/users/v1/${u.id}`, { method: 'DELETE' })
     notify('用户已删除')
-    if (userForm.id === u.id) resetUserForm()
+    if (userForm.id === u.id) closeUserForm()
     await refresh()
   } catch (e) { notify(e.message, 'err') }
 }
@@ -1187,12 +1243,16 @@ const navItems = computed(() => {
   }
   return navItemsFor(isAdmin.value).map(i => ({ ...i, count: counts[i.key] || 0 }))
 })
-const currentPageTitle = computed(() => NAV_ITEMS.find(i => i.key === tab.value)?.label || '资源库')
+const currentPageTitle = computed(() => detail.value
+  ? (detail.value.vodName || '影片详情')
+  : (NAV_ITEMS.find(i => i.key === tab.value)?.label || '资源库'))
 
-// 点击侧边栏：切换页面并按需加载该页数据（与拆分前的页签按钮行为一致）。
+// 点击侧边栏：切换页面并按需加载该页数据。详情页是资源库的下钻页，
+// 点任意菜单都离开它（播放器一并销毁）。
 function switchTab(key) {
   let k = normalizeTab(key) || DEFAULT_TAB
   if (k === 'users' && !isAdmin.value) k = DEFAULT_TAB
+  leaveDetail()
   tab.value = k
   if (k === 'videos') loadVideos().catch(e => { error.value = e.message })
   else if (k === 'categories') loadCategories().catch(e => { error.value = e.message })
@@ -1202,6 +1262,8 @@ function switchTab(key) {
 // tab 变化时：同步 URL hash 与 localStorage（刷新/重开可恢复）、收起移动端抽屉，
 // 并对采集类页面立刻补一次轮询数据。用 replaceState 写 hash 不产生历史噪音、也不回环。
 watch(tab, (v) => {
+  // 直接赋值 tab 的路径（分类树 / 标签跳转）也要离开详情页。
+  if (detail.value) leaveDetail()
   const h = tabToHash(v)
   if (location.hash !== h) history.replaceState(null, '', h)
   localStorage.setItem(TAB_KEY, v)
@@ -1209,8 +1271,16 @@ watch(tab, (v) => {
   if (!me.value || !collectTabs.includes(v)) return
   refreshCollectData().catch(() => {})
 })
-// 用户手动改 hash / 浏览器后退时反向同步页面，并补齐该页数据。
+// 用户手动改 hash / 浏览器前进后退时反向同步页面，并补齐该页数据。
 function onHashChange() {
+  const did = detailIdFromHash(location.hash)
+  if (did != null) {
+    // 前进 / 手动输入到某影片：按 ID 恢复详情页。
+    if (Number(detail.value?.id) !== did) openDetailById(did)
+    return
+  }
+  // 离开详情页（返回按钮、浏览器后退、切到别的页面）。
+  leaveDetail()
   const k = normalizeTab(location.hash)
   if (!k) {
     // 无效 hash：地址栏纠正回当前页，页面保持不变（不把用户踢走）。
@@ -1223,14 +1293,19 @@ function onHashChange() {
   else if (k === 'categories') loadCategories().catch(() => {})
   else if (k === 'users') loadUsers().catch(() => {})
 }
-// 普通用户若从链接直接落到「用户管理」，登录后校正回资源库。
+// 普通用户若从链接直接落到「用户管理」，登录后校正回资源库；
+// 刷新 / 分享链接直达 #/video/<id> 时，登录态就绪后按 ID 恢复详情。
 watch(me, () => {
   if (tab.value === 'users' && !isAdmin.value) tab.value = DEFAULT_TAB
+  const did = detailIdFromHash(location.hash)
+  if (me.value && did != null && Number(detail.value?.id) !== did) openDetailById(did)
 })
 onMounted(() => {
   // 首次进入时 tab 是初始值、watch 不会触发，这里把空 / 非法 hash 规范化一次，
-  // 保证地址栏与实际页面一致，刷新也能恢复到同一页。
-  if (normalizeTab(location.hash) !== tab.value) history.replaceState(null, '', tabToHash(tab.value))
+  // 保证地址栏与实际页面一致。详情地址是合法页面，不能被覆盖。
+  if (!detailIdFromHash(location.hash) && normalizeTab(location.hash) !== tab.value) {
+    history.replaceState(null, '', tabToHash(tab.value))
+  }
   window.addEventListener('hashchange', onHashChange)
 })
 onBeforeUnmount(() => window.removeEventListener('hashchange', onHashChange))
@@ -1266,7 +1341,8 @@ provide('app', {
   barWidth, isIndeterminate, fmtEta, taskStatusText, saveCapacity, searchVideos, videoSentinel, videoObserver,
   formatTime, modeLabel, statusLabel, short, stat, jobMessage, loginForm, loginBusy,
   loginError, doLogin, doLogout, pwdModal, pwdForm, doChangePassword, bootstrap, emptyUserForm,
-  userForm, userEditing, resetUserForm, editUser, saveUser, toggleUser, removeUser, visibleLabel,
+  userForm, userEditing, userFormOpen, openUserForm, closeUserForm, resetUserForm,
+  editUser, saveUser, toggleUser, removeUser, visibleLabel,
   collectTabs, refreshCollectData, taskTimer, onVisible
 })
 </script>
@@ -1377,11 +1453,15 @@ provide('app', {
         <div v-if="notice" class="notice" :class="notice.type">{{ notice.text }}</div>
         <p v-if="error" class="error">{{ error }}</p>
 
-        <SourcesView v-if="tab === 'sources'" />
-        <CategoriesView v-else-if="tab === 'categories'" />
-        <VideosView v-else-if="tab === 'videos'" />
-        <JobsView v-else-if="tab === 'jobs'" />
-        <UsersView v-else-if="tab === 'users' && isAdmin" />
+        <!-- 影片详情是独立页面，占据整个主内容区；其余按侧边栏切换 -->
+        <VideoDetailView v-if="detail" />
+        <template v-else>
+          <SourcesView v-if="tab === 'sources'" />
+          <CategoriesView v-else-if="tab === 'categories'" />
+          <VideosView v-else-if="tab === 'videos'" />
+          <JobsView v-else-if="tab === 'jobs'" />
+          <UsersView v-else-if="tab === 'users' && isAdmin" />
+        </template>
       </main>
     </div>
   </div>
@@ -1481,99 +1561,6 @@ provide('app', {
       </div>
     </div>
 
-    <!-- 资源详情 -->
-    <div v-if="detail" class="modal-mask" @click.self="closeDetail">
-      <div class="modal">
-        <div class="modal-head">
-          <div>
-            <h3>{{ detail.vodName || detail.vodId }}</h3>
-            <p class="muted">
-              <span v-if="metaLine(detail)">{{ metaLine(detail) }} · </span>
-              更新：{{ episodeLabel(detail) }} · {{ detail.vodTime || '-' }}
-              <span v-if="scoreOf(detail)"> · 评分 {{ scoreOf(detail) }}</span>
-              <span v-if="detail.vodRemarks && detail.vodRemarks !== episodeLabel(detail)"> · {{ detail.vodRemarks }}</span>
-            </p>
-            <div v-if="tagListOf(detail).length" class="res-tags detail-tags">
-              <span v-for="t in tagListOf(detail)" :key="t" class="res-tag" :title="`按标签「${t}」筛选`" @click="closeDetail(); filterByTag(t, detailSource?.id)">{{ t }}</span>
-            </div>
-          </div>
-          <button class="ghost" @click="closeDetail">关闭</button>
-        </div>
-        <div class="modal-tabs">
-          <button :class="{ active: detailTab === 'play' }" @click="switchDetailTab('play')">播放组 ({{ playGroups.length }})</button>
-          <button :class="{ active: detailTab === 'fields' }" @click="switchDetailTab('fields')">标准字段</button>
-          <button :class="{ active: detailTab === 'extra' }" @click="switchDetailTab('extra')">扩展字段 ({{ extraPairs.length }})</button>
-          <label v-if="detailTab === 'fields'" class="check"><input v-model="onlyNonEmpty" type="checkbox" /> 只看非空</label>
-        </div>
-        <div class="modal-body">
-          <template v-if="detailTab === 'play'">
-            <div class="player-wrap">
-              <video v-show="!useFrame && playGroups.length" ref="playerEl" class="player" controls playsinline preload="metadata"
-                     @error="onVideoError" @loadeddata="onVideoLoaded"></video>
-              <iframe v-if="useFrame" :key="currentUrl" class="player-frame" :src="currentUrl"
-                      allow="autoplay; fullscreen; encrypted-media" allowfullscreen
-                      referrerpolicy="no-referrer"></iframe>
-              <p v-if="!playGroups.length" class="empty">该影片没有播放地址（vod_play_url 为空）。</p>
-              <p v-else-if="useFrame" class="hint">
-                已按站点配置拼接<strong>视频解析地址</strong>，下面用解析页面播放；若解析站要求手动播放，
-                可在<strong>解析页面内</strong>点击播放。
-                <a v-if="currentUrl" :href="currentUrl" target="_blank" rel="noopener" class="ep-url">在新窗口打开</a>
-              </p>
-              <p v-else-if="!currentUrl" class="hint">
-                当前线路这一集没有播放地址。
-              </p>
-              <p v-else class="hint">m3u8 优先用 hls.js 播放，mp4 / webm 走直链；无后缀地址会先按 HLS 试播再回退直链。切换线路或集数即时切换。</p>
-              <p v-if="playError" class="play-error">
-                {{ playError }}
-                <a v-if="currentUrl" :href="currentUrl" target="_blank" rel="noopener" class="ep-url">在新窗口打开</a>
-              </p>
-            </div>
-            <template v-if="playGroups.length">
-              <div class="group-tabs">
-                <button
-                  v-for="(g, gi) in playGroups" :key="gi"
-                  class="mini" :class="gi === activeGroup ? '' : 'ghost'"
-                  :title="g.note || ''"
-                  @click="chooseGroup(gi)"
-                >{{ g.from || ('线路' + (gi + 1)) }} ({{ g.episodes?.length || 0 }})</button>
-              </div>
-              <div class="ep-chips">
-                <button
-                  v-for="(ep, ei) in currentEpisodes" :key="ei"
-                  class="mini" :class="ei === activeEp ? '' : 'ghost'"
-                  @click="chooseEp(ei)"
-                >{{ ep.name || ('第' + (ei + 1) + '集') }}</button>
-                <span v-if="!currentEpisodes.length" class="muted">该线路暂无剧集。</span>
-              </div>
-              <p v-if="currentEpisode?.url" class="play-url">
-                <span v-if="detailSource?.playDomain" class="badge on">播放域名已替换</span>
-                <span v-if="parseEnabled" class="badge on">已拼接解析地址</span>
-                {{ currentEpisode.url }}
-              </p>
-            </template>
-          </template>
-          <template v-else-if="detailTab === 'fields'">
-            <section v-for="g in groupedFields" :key="g.key" class="field-group">
-              <h4>{{ g.label }} <span class="muted">{{ g.items.length }} 项</span></h4>
-              <div class="field-grid">
-                <div v-for="f in g.items" :key="f.key" class="field-item" :class="{ long: f.long }">
-                  <div class="field-k"><code>{{ f.key }}</code> {{ f.desc }}</div>
-                  <div class="field-v" :title="String(detail[f.json] ?? '')">{{ detail[f.json] ?? '-' }}</div>
-                </div>
-              </div>
-            </section>
-            <p v-if="!groupedFields.length" class="empty">没有可显示的字段。</p>
-          </template>
-          <template v-else-if="detailTab === 'extra'">
-            <p class="hint">接口返回但不在标准字段清单内的字段（站点自定义字段、嵌套对象、数组等），按原始 JSON 值保存，确保不丢失。</p>
-            <p v-if="!extraPairs.length" class="empty">该站点未返回扩展字段。</p>
-            <table v-else class="kv-table">
-              <tbody><tr v-for="[k, val] in extraPairs" :key="k"><th><code>{{ k }}</code></th><td>{{ val }}</td></tr></tbody>
-            </table>
-          </template>
-        </div>
-      </div>
-    </div>
     <!-- 修改密码 -->
     <div v-if="pwdModal" class="modal-mask" @click.self="pwdModal = false">
       <div class="modal sm">
@@ -1830,11 +1817,11 @@ tbody tr:hover td { background: #f8faff; }
 .modal-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 18px 22px; border-bottom: 1px solid var(--border); }
 .modal-head h3 { margin: 0 0 6px; font-size: 17px; }
 .modal-head p { margin: 0; font-size: 12px; }
-.modal-tabs { display: flex; gap: 8px; align-items: center; padding: 12px 22px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-.modal-tabs button { padding: 5px 12px; background: #f2f4f8; color: var(--text-2); font-size: 13px; box-shadow: none; }
-.modal-tabs button:hover:not(:disabled) { background: #e8ecf4; }
-.modal-tabs button.active { background: var(--brand); color: #fff; }
-.modal-tabs .check { margin-left: auto; }
+.modal-tabs, .detail-tabs { display: flex; gap: 8px; align-items: center; padding: 12px 22px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.modal-tabs button, .detail-tabs button { padding: 5px 12px; background: #f2f4f8; color: var(--text-2); font-size: 13px; box-shadow: none; }
+.modal-tabs button:hover:not(:disabled), .detail-tabs button:hover:not(:disabled) { background: #e8ecf4; }
+.modal-tabs button.active, .detail-tabs button.active { background: var(--brand); color: #fff; }
+.modal-tabs .check, .detail-tabs .check { margin-left: auto; }
 .modal-body { overflow-y: auto; padding: 6px 22px 22px; }
 /* 站点配置导入 / 导出 */
 .hidden-file { display: none; }
@@ -2005,13 +1992,13 @@ tbody tr:hover td { background: #f8faff; }
   .ops { gap: 4px; }
   .ops button.mini { padding: 5px 7px; }
 
-  /* 详情弹窗全屏；播放器按比例收敛高度 */
+  /* 弹窗全屏；详情页面与播放器按比例收敛高度 */
   .modal-mask { padding: 0; align-items: stretch; }
   .modal { width: 100%; height: 100%; max-height: none; border-radius: 0; }
   .modal-head { padding: 14px 16px; flex-wrap: wrap; gap: 8px; }
   .modal-head h3 { font-size: 16px; }
-  .modal-tabs { padding: 10px 16px; gap: 6px; }
-  .modal-tabs button { padding: 5px 10px; }
+  .modal-tabs, .detail-tabs { padding: 10px 16px; gap: 6px; }
+  .modal-tabs button, .detail-tabs button { padding: 5px 10px; }
   .modal-body { padding: 4px 16px 20px; }
   .sf-form { grid-template-columns: 1fr; padding: 12px 16px 18px; gap: 10px; }
   .sf-actions { flex-wrap: wrap; justify-content: stretch; }
@@ -2182,5 +2169,36 @@ tbody tr:hover td { background: #f8faff; }
 @media (max-width: 560px) {
   .topbar-title span { display: none; }
   .topbar .appbar-side .user-name { display: none; }
+}
+
+
+/* ---------- 影片详情页面（占据主内容区，不再是弹窗） ---------- */
+.detail-page { padding: 0; overflow: hidden; }
+.detail-head {
+  display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap;
+  padding: 18px 22px; border-bottom: 1px solid var(--border);
+}
+.detail-back { flex: none; white-space: nowrap; }
+.detail-title { flex: 1 1 260px; min-width: 0; }
+.detail-title h2 { margin: 0 0 6px; font-size: 19px; line-height: 1.35; word-break: break-word; }
+.detail-title p { margin: 0; font-size: 12px; }
+.detail-body { padding: 16px 22px 22px; }
+
+/* ---------- 新增 / 编辑用户弹窗表单 ---------- */
+.list-add { margin-left: auto; }
+.modal-body.user-form { padding: 16px 22px 22px; }
+.user-form-wide { flex-basis: 100%; width: 100%; }
+.user-form-actions {
+  flex-basis: 100%; display: flex; justify-content: flex-end;
+  gap: 10px; padding-top: 4px;
+}
+
+/* 窄屏：详情页内边距收敛，弹窗表单按钮铺满 */
+@media (max-width: 900px) {
+  .detail-head { padding: 14px 16px; gap: 10px; }
+  .detail-body { padding: 12px 16px 20px; }
+  .detail-title h2 { font-size: 17px; }
+  .modal-body.user-form { padding: 12px 16px 18px; }
+  .user-form-actions button { flex: 1 1 auto; }
 }
 </style>
