@@ -49,7 +49,9 @@ type VideoRepository interface {
 	UpsertVideos(items []model.Video) (UpsertStats, error)
 	// 读取类方法都接受可选的站点白名单，语义见 visibility.go。
 	GetVideo(id uint, visible ...[]uint) (*model.Video, error)
-	ListVideos(query VideoQuery) ([]model.Video, int64, error)
+	// ListVideos 只返回本页影片，不计算总数、也不多取一条：
+	// COUNT 需要一次全量扫描，前端按「本页条数 == size」判断是否继续翻页。
+	ListVideos(query VideoQuery) ([]model.Video, error)
 	// MapVodIDs 把一批 vod_id 解析为库内影片主键，供标签关联回填等场景使用。
 	MapVodIDs(sourceID uint, vodIDs []string) (map[string]uint, error)
 	// CountVideos 返回某站点已入库的影片总数，供站点表的 video_count 快照回写。
@@ -194,7 +196,11 @@ func videoOrder(sort string) string {
 }
 
 // ListVideos 分页查询影片，支持按站点、分类、地域过滤、多字段模糊搜索与排序。
-func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, int64, error) {
+//
+// 不再计算总数：COUNT 需要对命中结果做一次全量扫描，在关键词检索 / 大表上往往比
+// 取本页数据还贵。也不额外多取一条、不返回 hasMore——前端按「本页条数 >= size」
+// 认为还有下一页，到底时最多多发一次拿到空页的请求。
+func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, error) {
 	if query.Page < 1 {
 		query.Page = 1
 	}
@@ -211,7 +217,7 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, int64, er
 		if err := r.db.Model(&model.Category{}).
 			Where("id = ? OR parent_id = ?", query.CategoryID, query.CategoryID).
 			Pluck("id", &ids).Error; err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		if len(ids) == 0 {
 			ids = []uint{query.CategoryID}
@@ -235,25 +241,13 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, int64, er
 	if query.Keyword != "" {
 		q = applyVideoKeyword(q, query.Keyword, r.search)
 	}
-	// 先取本页数据，再决定要不要算总数：
-	// 第一页且没取满时，本页条数就是总数，可省掉一次全量扫描（关键词检索时尤其明显）。
-	//
-	// 分页查询必须在独立的 Session 上执行：GORM 的链式方法会复用同一个 Statement，
-	// 直接在 q 上 .Order().Offset().Limit() 会把分页条件带到后面的 Count 上。
+	// 一次查询拿本页数据即可，不做 COUNT、不多取一条。
 	var items []model.Video
-	page := q.Session(&gorm.Session{})
-	if err := page.Order(videoOrder(query.Sort)).
+	if err := q.Order(videoOrder(query.Sort)).
 		Offset((query.Page - 1) * query.Size).Limit(query.Size).Find(&items).Error; err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	if query.Page == 1 && len(items) < query.Size {
-		return items, int64(len(items)), nil
-	}
-	var total int64
-	if err := q.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-	return items, total, nil
+	return items, nil
 }
 
 // ListVideoYears 返回库中出现过的年份及各自的影片数，按年份倒序。

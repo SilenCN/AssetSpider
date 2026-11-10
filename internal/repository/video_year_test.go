@@ -27,7 +27,7 @@ func TestVideoYearFilterAndFacet(t *testing.T) {
 	}
 
 	// 等值筛选：只命中该年份
-	items, total, err := r.Videos.ListVideos(VideoQuery{Year: "2025", Page: 1, Size: 20})
+	items, total, err := listVideosForTest(r.Videos, VideoQuery{Year: "2025", Page: 1, Size: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestVideoYearFilterAndFacet(t *testing.T) {
 	}
 
 	// 年份 + 站点组合筛选
-	if _, total, err = r.Videos.ListVideos(VideoQuery{Year: "2025", SourceID: 1, Page: 1, Size: 20}); err != nil {
+	if _, total, err = listVideosForTest(r.Videos, VideoQuery{Year: "2025", SourceID: 1, Page: 1, Size: 20}); err != nil {
 		t.Fatal(err)
 	} else if total != 2 {
 		t.Errorf("年份 + 站点组合应命中 2 条，实际 %d", total)

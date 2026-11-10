@@ -39,7 +39,7 @@ func TestSourceClearRefusesWhileCrawling(t *testing.T) {
 	if _, err := svc.Clear(src.ID); !errors.Is(err, ErrConflict) {
 		t.Fatalf("站点正在采集时应返回 ErrConflict，实际 %v", err)
 	}
-	if _, total, err := repos.Videos.ListVideos(repository.NewVideoQuery(src.ID, "", 1, 20)); err != nil || total != 1 {
+	if _, total, err := listVideosForTest(repos.Videos, repository.NewVideoQuery(src.ID, "", 1, 20)); err != nil || total != 1 {
 		t.Fatalf("冲突时不应删除影片: total=%d err=%v", total, err)
 	}
 
@@ -52,7 +52,7 @@ func TestSourceClearRefusesWhileCrawling(t *testing.T) {
 	if res.Videos != 1 {
 		t.Fatalf("清空回报的影片数应为 1，实际 %d", res.Videos)
 	}
-	if _, total, err := repos.Videos.ListVideos(repository.NewVideoQuery(src.ID, "", 1, 20)); err != nil || total != 0 {
+	if _, total, err := listVideosForTest(repos.Videos, repository.NewVideoQuery(src.ID, "", 1, 20)); err != nil || total != 0 {
 		t.Fatalf("清空后影片应为 0: total=%d err=%v", total, err)
 	}
 	// 站点配置仍在。

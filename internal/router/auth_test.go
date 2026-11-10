@@ -264,11 +264,7 @@ func TestAuthSourceVisibility(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("读取影片失败: %d %s", w.Code, w.Body.String())
 		}
-		var out struct {
-			Total int64 `json:"total"`
-		}
-		decode(t, w, &out)
-		return out.Total
+		return int64(listItemCount(t, w.Body.Bytes()))
 	}
 
 	if ids := sourceIDs(admin); len(ids) != 2 {
@@ -298,12 +294,8 @@ func TestAuthSourceVisibility(t *testing.T) {
 	}
 	// 显式指定不可见站点也必须返回空，而不是绕过过滤
 	w := authCall(r, http.MethodGet, "/api/videos/v1?source_id="+strconv.Itoa(int(srcB)), tokenA, nil)
-	var forced struct {
-		Total int64 `json:"total"`
-	}
-	decode(t, w, &forced)
-	if forced.Total != 0 {
-		t.Fatalf("userA 指定不可见站点应返回 0 条，实际 %d", forced.Total)
+	if got := listItemCount(t, w.Body.Bytes()); got != 0 {
+		t.Fatalf("userA 指定不可见站点应返回 0 条，实际 %d", got)
 	}
 
 	// 采集记录与分类同样按站点隔离

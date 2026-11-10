@@ -92,7 +92,7 @@ func TestSameSourceTasksQueueInsteadOfReject(t *testing.T) {
 		}
 	}
 	// 两次全量采集同一批影片，不应产生重复行。
-	if _, total, err := st.Videos.ListVideos(repository.NewVideoQuery(id, "", 1, 20)); err != nil || total != 4 {
+	if _, total, err := listVideosForTest(st.Videos, repository.NewVideoQuery(id, "", 1, 20)); err != nil || total != 4 {
 		t.Fatalf("重复采集不应产生重复影片: total=%d err=%v", total, err)
 	}
 }

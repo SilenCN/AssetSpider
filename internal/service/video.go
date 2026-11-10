@@ -10,9 +10,10 @@ import (
 )
 
 // VideoList 是影片分页查询的结果 DTO。
+// 只返回本页数据与分页参数：不返回 total（要全量 COUNT），也不返回 hasMore，
+// 前端按「本页条数 >= size」判断是否还有下一页。
 type VideoList struct {
 	Items []model.Video `json:"items"`
-	Total int64         `json:"total"`
 	Page  int           `json:"page"`
 	Size  int           `json:"size"`
 }
@@ -161,7 +162,7 @@ func (s *VideoService) List(query VideoListQuery, p ...Principal) (VideoList, er
 	if size < 1 || size > 200 {
 		size = 20
 	}
-	items, total, err := s.videos.ListVideos(repository.VideoQuery{
+	items, err := s.videos.ListVideos(repository.VideoQuery{
 		SourceID:         query.SourceID,
 		CategoryID:       query.CategoryID,
 		TagID:            query.TagID,
@@ -180,7 +181,7 @@ func (s *VideoService) List(query VideoListQuery, p ...Principal) (VideoList, er
 	if err := s.rewriteVideos(items); err != nil {
 		return VideoList{}, err
 	}
-	return VideoList{Items: items, Total: total, Page: page, Size: size}, nil
+	return VideoList{Items: items, Page: page, Size: size}, nil
 }
 
 // Years 返回库中出现过的年份（按年份倒序）及各自的影片数，供年份筛选下拉使用。

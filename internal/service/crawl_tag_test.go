@@ -58,14 +58,14 @@ func TestCrawlSavesTagsAndFilters(t *testing.T) {
 	}
 
 	// 按标签筛选：科幻命中 2 条，动作命中 1 条（影片A）。
-	_, total, err := st.Videos.ListVideos(repository.VideoQuery{SourceID: id, TagID: byName["科幻"].ID, Page: 1, Size: 20})
+	_, total, err := listVideosForTest(st.Videos, repository.VideoQuery{SourceID: id, TagID: byName["科幻"].ID, Page: 1, Size: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if total != 2 {
 		t.Fatalf("按「科幻」筛选应命中 2 条，实际 %d", total)
 	}
-	only, _, err := st.Videos.ListVideos(repository.VideoQuery{SourceID: id, TagID: byName["动作"].ID, Page: 1, Size: 20})
+	only, _, err := listVideosForTest(st.Videos, repository.VideoQuery{SourceID: id, TagID: byName["动作"].ID, Page: 1, Size: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestCrawlSavesTagsAndFilters(t *testing.T) {
 	}
 
 	// 无标签影片不应被任何标签筛选命中，但仍在全量列表里。
-	if _, total, _ := st.Videos.ListVideos(repository.NewVideoQuery(id, "", 1, 20)); total != 3 {
+	if _, total, _ := listVideosForTest(st.Videos, repository.NewVideoQuery(id, "", 1, 20)); total != 3 {
 		t.Fatalf("全量列表应有 3 条，实际 %d", total)
 	}
 }

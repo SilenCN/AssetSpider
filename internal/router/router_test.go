@@ -269,13 +269,12 @@ func TestSourceAndCrawlAPI(t *testing.T) {
 		t.Fatalf("视频查询失败: %d %s", w.Code, w.Body.String())
 	}
 	var videos struct {
-		Total int           `json:"total"`
 		Items []model.Video `json:"items"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &videos); err != nil {
 		t.Fatal(err)
 	}
-	if videos.Total != 1 || len(videos.Items) != 1 || videos.Items[0].VodID != "101" {
+	if len(videos.Items) != 1 || videos.Items[0].VodID != "101" {
 		t.Fatalf("入库数据异常: %+v", videos)
 	}
 
@@ -328,7 +327,7 @@ func TestSourceAndCrawlAPI(t *testing.T) {
 	}
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1", nil))
-	if !strings.Contains(w.Body.String(), `"total":0`) {
+	if got := listItemCount(t, w.Body.Bytes()); got != 0 {
 		t.Fatalf("删除站点后影片未级联清理: %s", w.Body.String())
 	}
 }
@@ -544,7 +543,7 @@ func TestCategoryAPI(t *testing.T) {
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, authReq(http.MethodGet,
 		"/api/videos/v1?category_id="+strconv.Itoa(int(cats[0].ID)), nil))
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"total":1`) {
+	if w.Code != http.StatusOK || listItemCount(t, w.Body.Bytes()) != 1 {
 		t.Fatalf("按分类筛选影片异常: %d %s", w.Code, w.Body.String())
 	}
 }
@@ -623,7 +622,7 @@ func TestCategoryTreeEndpoint(t *testing.T) {
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, authReq(http.MethodGet,
 		"/api/videos/v1?category_id="+strconv.Itoa(int(root.ID)), nil))
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"total":3`) {
+	if w.Code != http.StatusOK || listItemCount(t, w.Body.Bytes()) != 3 {
 		t.Fatalf("按一级分类筛选应命中 3 部影片: %d %s", w.Code, w.Body.String())
 	}
 }
@@ -793,7 +792,6 @@ func TestVideoAreasAndSortEndpoint(t *testing.T) {
 	// 年份筛选（get 在下方定义，见「地域筛选」位置）
 	type listResp struct {
 		Items []model.Video `json:"items"`
-		Total int64         `json:"total"`
 	}
 	get := func(qs string) listResp {
 		w := httptest.NewRecorder()
@@ -806,14 +804,14 @@ func TestVideoAreasAndSortEndpoint(t *testing.T) {
 	}
 
 	// 地域筛选（按 area_id，走 video_areas 连接表）
-	if got := get("area_id=" + strconv.Itoa(int(areaID["大陆"]))); got.Total != 1 || got.Items[0].VodName != "测试影片A" {
+	if got := get("area_id=" + strconv.Itoa(int(areaID["大陆"]))); len(got.Items) != 1 || got.Items[0].VodName != "测试影片A" {
 		t.Errorf("按地域筛选异常: %+v", got)
 	}
 	// 年份筛选：等值匹配，不存在的年份返回空
-	if got := get("year=2024"); got.Total != 1 || got.Items[0].VodName != "测试影片A" {
+	if got := get("year=2024"); len(got.Items) != 1 || got.Items[0].VodName != "测试影片A" {
 		t.Errorf("按年份筛选异常: %+v", got)
 	}
-	if got := get("year=1999"); got.Total != 0 {
+	if got := get("year=1999"); len(got.Items) != 0 {
 		t.Errorf("不存在的年份应无结果，实际 %+v", got)
 	}
 	// 按更新时间倒序：B 的 vod_time 更晚
@@ -829,7 +827,7 @@ func TestVideoAreasAndSortEndpoint(t *testing.T) {
 		t.Errorf("按评分升序异常: %+v", got.Items)
 	}
 	// 名称检索
-	if got := get("q=影片A"); got.Total != 1 || got.Items[0].VodName != "测试影片A" {
+	if got := get("q=影片A"); len(got.Items) != 1 || got.Items[0].VodName != "测试影片A" {
 		t.Errorf("名称检索异常: %+v", got)
 	}
 }

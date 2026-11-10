@@ -23,11 +23,15 @@ func NewHealthService(sources repository.SourceRepository, videos repository.Vid
 
 func (s *HealthService) Status() HealthStatus {
 	srcs, _ := s.sources.ListSources()
-	_, total, _ := s.videos.ListVideos(repository.VideoQuery{Page: 1, Size: 1})
+	// 影片总数直接累加站点表上的快照，避免为了一个概览数字对 videos 做 COUNT 全表扫描。
+	var videos int64
+	for _, src := range srcs {
+		videos += src.VideoCount
+	}
 	return HealthStatus{
 		Status:   "ok",
 		Database: s.dbPath,
 		Sources:  len(srcs),
-		Videos:   total,
+		Videos:   videos,
 	}
 }

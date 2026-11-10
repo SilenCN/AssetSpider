@@ -161,12 +161,12 @@ func TestCategoryVideoCountAndFilter(t *testing.T) {
 	if err != nil || counts[action] != 2 || counts[comedy] != 1 {
 		t.Fatalf("分类影片数统计异常: %v %+v", err, counts)
 	}
-	items, total, err := r.Videos.ListVideos(VideoQuery{CategoryID: action, Page: 1, Size: 20})
+	items, total, err := listVideosForTest(r.Videos, VideoQuery{CategoryID: action, Page: 1, Size: 20})
 	if err != nil || total != 2 || len(items) != 2 {
 		t.Fatalf("按分类筛选影片异常: %v total=%d items=%d", err, total, len(items))
 	}
 	// 站点 + 分类组合过滤
-	_, total, err = r.Videos.ListVideos(VideoQuery{SourceID: 2, CategoryID: action, Page: 1, Size: 20})
+	_, total, err = listVideosForTest(r.Videos, VideoQuery{SourceID: 2, CategoryID: action, Page: 1, Size: 20})
 	if err != nil || total != 0 {
 		t.Fatalf("组合过滤异常: %v total=%d", err, total)
 	}

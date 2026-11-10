@@ -19,12 +19,9 @@ func TestSourceClearDataAPI(t *testing.T) {
 		map[string]string{"mode": "full"}); w.Code != http.StatusOK {
 		t.Fatalf("采集失败: %d %s", w.Code, w.Body.String())
 	}
-	var before struct {
-		Total int64 `json:"total"`
-	}
-	decode(t, authCall(r, http.MethodGet, "/api/videos/v1?source_id="+strconv.Itoa(int(id)), testToken, nil), &before)
-	if before.Total != 2 {
-		t.Fatalf("采集后应有 2 部影片，实际 %d", before.Total)
+	before := authCall(r, http.MethodGet, "/api/videos/v1?source_id="+strconv.Itoa(int(id)), testToken, nil)
+	if got := listItemCount(t, before.Body.Bytes()); got != 2 {
+		t.Fatalf("采集后应有 2 部影片，实际 %d", got)
 	}
 
 	// 普通用户无权清空。
@@ -50,12 +47,9 @@ func TestSourceClearDataAPI(t *testing.T) {
 	}
 
 	// 数据清空。
-	var after struct {
-		Total int64 `json:"total"`
-	}
-	decode(t, authCall(r, http.MethodGet, "/api/videos/v1?source_id="+strconv.Itoa(int(id)), testToken, nil), &after)
-	if after.Total != 0 {
-		t.Fatalf("清空后影片应为 0，实际 %d", after.Total)
+	after := authCall(r, http.MethodGet, "/api/videos/v1?source_id="+strconv.Itoa(int(id)), testToken, nil)
+	if got := listItemCount(t, after.Body.Bytes()); got != 0 {
+		t.Fatalf("清空后影片应为 0，实际 %d", got)
 	}
 	var jobs []jsonRaw
 	decode(t, authCall(r, http.MethodGet, "/api/jobs/v1?source_id="+strconv.Itoa(int(id)), testToken, nil), &jobs)

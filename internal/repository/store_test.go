@@ -41,7 +41,7 @@ func TestOpenMigratesAndAssemblesRepositories(t *testing.T) {
 	if _, err := r.Sources.ListSources(); err != nil {
 		t.Fatalf("sources 表未迁移: %v", err)
 	}
-	if _, _, err := r.Videos.ListVideos(NewVideoQuery(0, "", 1, 1)); err != nil {
+	if _, _, err := listVideosForTest(r.Videos, NewVideoQuery(0, "", 1, 1)); err != nil {
 		t.Fatalf("videos 表未迁移: %v", err)
 	}
 	if _, err := r.Categories.List(0); err != nil {

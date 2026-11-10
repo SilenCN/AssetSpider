@@ -42,7 +42,7 @@ func TestVideoKeywordSearchBothPaths(t *testing.T) {
 		{"不存在的片名", 0, "FTS 无命中"},
 	}
 	for _, c := range cases {
-		_, total, err := r.Videos.ListVideos(VideoQuery{Keyword: c.keyword, Page: 1, Size: 20})
+		_, total, err := listVideosForTest(r.Videos, VideoQuery{Keyword: c.keyword, Page: 1, Size: 20})
 		if err != nil {
 			t.Fatalf("%s 检索 %q 报错: %v", c.path, c.keyword, err)
 		}
@@ -61,7 +61,7 @@ func TestVideoKeywordSearchEscapesFTSSyntax(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, kw := range []string{`复仇者 "终局`, `复仇 AND 联盟`, `联盟 OR 复仇`, `复仇 -联盟`, `联盟*`, `"复仇"`} {
-		if _, _, err := r.Videos.ListVideos(VideoQuery{Keyword: kw, Page: 1, Size: 20}); err != nil {
+		if _, _, err := listVideosForTest(r.Videos, VideoQuery{Keyword: kw, Page: 1, Size: 20}); err != nil {
 			t.Errorf("关键词 %q 不应报错: %v", kw, err)
 		}
 	}
@@ -78,7 +78,7 @@ func TestVideoSearchFollowsUpsert(t *testing.T) {
 		}
 	}
 	search := func(kw string) int64 {
-		_, total, err := r.Videos.ListVideos(VideoQuery{Keyword: kw, Page: 1, Size: 20})
+		_, total, err := listVideosForTest(r.Videos, VideoQuery{Keyword: kw, Page: 1, Size: 20})
 		if err != nil {
 			t.Fatalf("检索 %q 报错: %v", kw, err)
 		}
@@ -114,13 +114,13 @@ func TestVideoSearchFollowsSourceClear(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, total, err := r.Videos.ListVideos(VideoQuery{Keyword: "被清空的纪录片", Page: 1, Size: 20}); err != nil || total != 1 {
+	if _, total, err := listVideosForTest(r.Videos, VideoQuery{Keyword: "被清空的纪录片", Page: 1, Size: 20}); err != nil || total != 1 {
 		t.Fatalf("清空前应能检索到: total=%d err=%v", total, err)
 	}
 	if _, err := r.Sources.ClearSourceData(src.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, total, err := r.Videos.ListVideos(VideoQuery{Keyword: "被清空的纪录片", Page: 1, Size: 20}); err != nil || total != 0 {
+	if _, total, err := listVideosForTest(r.Videos, VideoQuery{Keyword: "被清空的纪录片", Page: 1, Size: 20}); err != nil || total != 0 {
 		t.Fatalf("清空后不应再有命中: total=%d err=%v", total, err)
 	}
 }
@@ -164,14 +164,15 @@ func TestVideoSearchRebuildsExistingData(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer upgraded.Close()
-	_, total, err := upgraded.Videos.ListVideos(VideoQuery{Keyword: "老库里的经典影片", Page: 1, Size: 20})
+	_, total, err := listVideosForTest(upgraded.Videos, VideoQuery{Keyword: "老库里的经典影片", Page: 1, Size: 20})
 	if err != nil || total != 1 {
 		t.Fatalf("升级后应能检索到历史数据: total=%d err=%v", total, err)
 	}
 }
 
-// 分页次数的优化：第一页没取满时直接返回本页条数，不再额外 Count 一次。
-func TestListVideosShortFirstPageSkipsCount(t *testing.T) {
+// 列表接口不再返回总数 / hasMore：每页只返回本页数据，前端按「本页条数 >= size」
+// 判断还有下一页。这里验证分页边界（满页 → 还有、不满 → 到底、再翻一页为空）。
+func TestListVideosPaginationWithoutTotal(t *testing.T) {
 	r := newTestRepos(t)
 	items := make([]model.Video, 0, 3)
 	for i := 1; i <= 3; i++ {
@@ -183,18 +184,28 @@ func TestListVideosShortFirstPageSkipsCount(t *testing.T) {
 	if _, err := r.Videos.UpsertVideos(items); err != nil {
 		t.Fatal(err)
 	}
-	list, total, err := r.Videos.ListVideos(VideoQuery{Page: 1, Size: 20})
-	if err != nil || total != 3 || len(list) != 3 {
-		t.Fatalf("首页不足一页时 total 应等于实际条数: total=%d len=%d err=%v", total, len(list), err)
+	// 一页就能装下：本页 3 条 < size 20，前端据此判定到底。
+	all, err := r.Videos.ListVideos(VideoQuery{Page: 1, Size: 20})
+	if err != nil || len(all) != 3 {
+		t.Fatalf("首页应返回 3 条: len=%d err=%v", len(all), err)
 	}
-	// 取满一页时仍然要给出精确总数。
-	list, total, err = r.Videos.ListVideos(VideoQuery{Page: 1, Size: 2})
-	if err != nil || total != 3 || len(list) != 2 {
-		t.Fatalf("取满一页时 total 应为 3: total=%d len=%d err=%v", total, len(list), err)
+	// 每页 2 条：第 1 页取满 → 继续翻页。
+	first, err := r.Videos.ListVideos(VideoQuery{Page: 1, Size: 2})
+	if err != nil || len(first) != 2 {
+		t.Fatalf("第 1 页应取满 2 条: len=%d err=%v", len(first), err)
 	}
-	// 第二页即使取不满，total 也必须是全量条数而不是本页条数。
-	list, total, err = r.Videos.ListVideos(VideoQuery{Page: 2, Size: 2})
-	if err != nil || total != 3 || len(list) != 1 {
-		t.Fatalf("第二页 total 应为 3: total=%d len=%d err=%v", total, len(list), err)
+	// 第 2 页不满 → 到底。
+	second, err := r.Videos.ListVideos(VideoQuery{Page: 2, Size: 2})
+	if err != nil || len(second) != 1 {
+		t.Fatalf("第 2 页应剩 1 条: len=%d err=%v", len(second), err)
+	}
+	// 数据刚好整页时，前端会多发一次请求，拿到空页即停。
+	four := model.Video{SourceID: 1, VodID: "4", VodName: "影片 4", Hash: "h4", VodTime: "2026-11-09 10:00:00"}
+	if _, err := r.Videos.UpsertVideos([]model.Video{four}); err != nil {
+		t.Fatal(err)
+	}
+	third, err := r.Videos.ListVideos(VideoQuery{Page: 3, Size: 2})
+	if err != nil || len(third) != 0 {
+		t.Fatalf("超出末页应返回空: len=%d err=%v", len(third), err)
 	}
 }

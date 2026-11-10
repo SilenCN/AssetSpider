@@ -93,7 +93,7 @@ func TestTagAPI(t *testing.T) {
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, authReq(http.MethodGet,
 		"/api/videos/v1?tag_id="+strconv.Itoa(int(scifiID)), nil))
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"total":2`) {
+	if w.Code != http.StatusOK || listItemCount(t, w.Body.Bytes()) != 2 {
 		t.Fatalf("按标签筛选影片异常: %d %s", w.Code, w.Body.String())
 	}
 }

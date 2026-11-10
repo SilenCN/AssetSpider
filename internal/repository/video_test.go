@@ -29,17 +29,17 @@ func TestUpsertVideosDedup(t *testing.T) {
 		t.Fatalf("内容变化应被更新: %+v %v", stats, err)
 	}
 
-	items, total, err := r.Videos.ListVideos(NewVideoQuery(0, "", 1, 20))
+	items, total, err := listVideosForTest(r.Videos, NewVideoQuery(0, "", 1, 20))
 	if err != nil || total != 1 || len(items) != 1 {
 		t.Fatalf("去重后应只有 1 条: %v total=%d", err, total)
 	}
 	if items[0].VodName != "测试片 更新版" || items[0].FirstSeenAt.IsZero() {
 		t.Fatalf("更新后内容异常: %+v", items[0])
 	}
-	if _, total, _ = r.Videos.ListVideos(NewVideoQuery(0, "不存在", 1, 20)); total != 0 {
+	if _, total, _ = listVideosForTest(r.Videos, NewVideoQuery(0, "不存在", 1, 20)); total != 0 {
 		t.Errorf("关键词过滤异常: total=%d", total)
 	}
-	if _, total, _ = r.Videos.ListVideos(NewVideoQuery(2, "", 1, 20)); total != 0 {
+	if _, total, _ = listVideosForTest(r.Videos, NewVideoQuery(2, "", 1, 20)); total != 0 {
 		t.Errorf("站点过滤异常: total=%d", total)
 	}
 	counts, err := r.Videos.CountVideosBySource()
@@ -109,7 +109,7 @@ func TestUpsertVideosBackfillsPlayListWhenUnchanged(t *testing.T) {
 	if err != nil || stats.Unchanged != 1 {
 		t.Fatalf("指纹未变应判定未变化: %+v %v", stats, err)
 	}
-	items, _, err := r.Videos.ListVideos(NewVideoQuery(0, "", 1, 20))
+	items, _, err := listVideosForTest(r.Videos, NewVideoQuery(0, "", 1, 20))
 	if err != nil || len(items) != 1 {
 		t.Fatalf("查询异常: %v n=%d", err, len(items))
 	}
@@ -128,7 +128,7 @@ func TestUpsertVideosUpdatesAllFields(t *testing.T) {
 		t.Fatalf("全字段内容变化应触发更新: %+v %v", stats, err)
 	}
 
-	items, total, err := r.Videos.ListVideos(NewVideoQuery(0, "", 1, 20))
+	items, total, err := listVideosForTest(r.Videos, NewVideoQuery(0, "", 1, 20))
 	if err != nil || total != 1 {
 		t.Fatalf("总数异常: %v total=%d", err, total)
 	}
@@ -154,7 +154,7 @@ func TestUpsertVideosUpdatesAllFields(t *testing.T) {
 		t.Errorf("不存在的影片应返回 ErrNotFound，实际 %v", err)
 	}
 	// 多字段搜索：演员、导演、分类也应可检索
-	if _, total, _ := r.Videos.ListVideos(NewVideoQuery(0, "second_vod_actor", 1, 20)); total != 1 {
+	if _, total, _ := listVideosForTest(r.Videos, NewVideoQuery(0, "second_vod_actor", 1, 20)); total != 1 {
 		t.Error("按演员字段搜索未命中")
 	}
 }

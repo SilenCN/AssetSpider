@@ -93,7 +93,7 @@ func TestAreaEnsureAndLink(t *testing.T) {
 	}
 
 	// 按地域筛选：美国应命中 a、b 两条。
-	_, total, err := r.Videos.ListVideos(VideoQuery{SourceID: src.ID, AreaID: usa.ID, Page: 1, Size: 20})
+	_, total, err := listVideosForTest(r.Videos, VideoQuery{SourceID: src.ID, AreaID: usa.ID, Page: 1, Size: 20})
 	if err != nil {
 		t.Fatal(err)
 	}

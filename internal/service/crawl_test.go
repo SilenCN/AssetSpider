@@ -199,10 +199,10 @@ func TestCrawlServiceFullIncrementalAndDedup(t *testing.T) {
 	if res.Status != model.JobSuccess || res.Fetched != 3 || res.New != 3 || res.Pages != 2 || res.Total != 3 {
 		t.Fatalf("全量采集结果异常: %+v", res)
 	}
-	if _, total, _ := st.Videos.ListVideos(repository.NewVideoQuery(0, "", 1, 20)); total != 3 {
+	if _, total, _ := listVideosForTest(st.Videos, repository.NewVideoQuery(0, "", 1, 20)); total != 3 {
 		t.Fatalf("入库条数应为 3，实际 %d", total)
 	}
-	vids, _, _ := st.Videos.ListVideos(repository.NewVideoQuery(0, "影片A", 1, 20))
+	vids, _, _ := listVideosForTest(st.Videos, repository.NewVideoQuery(0, "影片A", 1, 20))
 	if len(vids) != 1 || vids[0].VodID != "1" || !strings.Contains(vids[0].VodPlayURL, "a.m3u8") {
 		t.Fatalf("数字型 vod_id 或播放地址解析异常: %+v", vids)
 	}
@@ -223,7 +223,7 @@ func TestCrawlServiceFullIncrementalAndDedup(t *testing.T) {
 	if len(cats) != 1 || cats[0].Name != "动作片" || cats[0].TypeID != "6" || cats[0].SourceID != id {
 		t.Fatalf("未按视频分类自动建分类: %+v", cats)
 	}
-	allVids, _, _ := st.Videos.ListVideos(repository.NewVideoQuery(0, "", 1, 20))
+	allVids, _, _ := listVideosForTest(st.Videos, repository.NewVideoQuery(0, "", 1, 20))
 	for _, v := range allVids {
 		if v.CategoryID != cats[0].ID {
 			t.Errorf("影片 %s 未关联分类: categoryId=%d want=%d", v.VodID, v.CategoryID, cats[0].ID)
@@ -266,7 +266,7 @@ func TestCrawlServiceFullIncrementalAndDedup(t *testing.T) {
 	if res.Fetched != 1 || res.New != 1 {
 		t.Fatalf("增量应只处理游标之后的新数据: %+v", res)
 	}
-	if _, total, _ := st.Videos.ListVideos(repository.NewVideoQuery(0, "", 1, 20)); total != 4 {
+	if _, total, _ := listVideosForTest(st.Videos, repository.NewVideoQuery(0, "", 1, 20)); total != 4 {
 		t.Fatalf("增量入库后总数应为 4，实际 %d", total)
 	}
 	queries := m.snapshot()
@@ -324,7 +324,7 @@ func TestCrawlServiceRunAllOnlyEnabled(t *testing.T) {
 	if len(results) != 1 || results[0].SourceID != good || results[0].New != 1 {
 		t.Fatalf("批量采集应只处理启用站点: %+v", results)
 	}
-	if _, total, _ := st.Videos.ListVideos(repository.NewVideoQuery(0, "", 1, 20)); total != 1 {
+	if _, total, _ := listVideosForTest(st.Videos, repository.NewVideoQuery(0, "", 1, 20)); total != 1 {
 		t.Fatalf("入库总数应为 1，实际 %d", total)
 	}
 }
@@ -383,7 +383,7 @@ func TestCrawlStoresPlayGroups(t *testing.T) {
 	if _, err := svc.RunOne(context.Background(), id, model.ModeFull); err != nil {
 		t.Fatal(err)
 	}
-	vids, _, _ := st.Videos.ListVideos(repository.NewVideoQuery(0, "带播放组", 1, 20))
+	vids, _, _ := listVideosForTest(st.Videos, repository.NewVideoQuery(0, "带播放组", 1, 20))
 	if len(vids) != 1 {
 		t.Fatalf("应入库 1 条，实际 %d", len(vids))
 	}
@@ -463,7 +463,7 @@ func TestCrawlPlayURLCompatAndAutoDetect(t *testing.T) {
 	if !strings.Contains(res.Message, "ac=detail") {
 		t.Errorf("任务消息应说明自动切换，实际 %q", res.Message)
 	}
-	vids, _, err := st.Videos.ListVideos(repository.NewVideoQuery(0, "", 1, 20))
+	vids, _, err := listVideosForTest(st.Videos, repository.NewVideoQuery(0, "", 1, 20))
 	if err != nil {
 		t.Fatal(err)
 	}

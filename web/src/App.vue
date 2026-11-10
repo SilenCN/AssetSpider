@@ -102,18 +102,20 @@ const areaGroups = computed(() => {
 })
 const videoPage = ref(1)
 const videoSize = ref(24)
-const videoTotal = ref(0)
+// 列表接口只返回 items/page/size：不返回总数、也不返回 hasMore。
+// 前端按「本页条数 >= 分页条数」认为还有下一页；正好整除时会多发一次空页请求为止。
+const videoHasMore = ref(true)
 // 资源库改成「底部无限滚动」：列表是累计的，这里记已经加载到第几页、是否还有下一页。
 const videoLoading = ref(false)     // 首屏 / 搜索 / 切筛选：整表重载
 const videoLoadingMore = ref(false) // 滚到底加载下一页
-const videoEnd = computed(() => videos.value.length >= videoTotal.value)
+const videoEnd = computed(() => !videoHasMore.value)
 // 请求序号：搜索词或筛选条件连续变化时，只认最后一次请求的结果，
 // 避免先发后到的旧响应把新结果覆盖掉。
 let videoSeq = 0
 
-// 页面头部的「可见影片」直接累加站点表上的影片数快照（videoCount），
-// 不再依赖资源库列表接口返回的 total——那样每次刷新都要对 videos 表做一次 COUNT。
-// 它与「可见站点」同源，因此资源库里的搜索/分类/标签筛选不会改变这个总数。
+// 「可见影片」与资源库页签的计数徽标都取站点表上的影片数快照（videoCount）：
+// 列表接口不返回总数，也就不需要对 videos 表做 COUNT。
+// 它与「可见站点」同源，因此资源库里的搜索/分类/标签筛选不会改变这个数值。
 const visibleVideoTotal = computed(() =>
   sources.value.reduce((n, s) => n + (Number(s.videoCount) || 0), 0)
 )
@@ -154,9 +156,10 @@ async function loadSources() {
   sources.value = (await request('/api/sources/v1')) || []
 }
 // 拉取一页影片。append=true 时追加到现有列表（无限滚动），否则整表替换（搜索/筛选/刷新）。
-// 计数沿用后端语义：第一页没取满时 total 就是本页条数，省一次 COUNT。
+// 接口只返回 items / page / size，是否还有下一页由本页条数与分页条数推导。
 async function fetchVideos(page, append) {
   const seq = ++videoSeq
+  const requestedSize = videoSize.value
   if (append) {
     videoLoadingMore.value = true
   } else {
@@ -177,9 +180,8 @@ async function fetchVideos(page, append) {
     if (seq !== videoSeq) return // 已经有更新的请求在跑，丢弃这次结果
     const items = d.items || []
     videos.value = append ? videos.value.concat(items) : items
-    videoTotal.value = d.total || 0
-    // 兜底：追加到空页说明确实到底了，防止 total 口径偏差导致反复请求
-    if (append && !items.length) videoTotal.value = videos.value.length
+    // 本页取满就认为还有下一页；不足一页（含空页）即到底。
+    videoHasMore.value = items.length >= requestedSize
     videoPage.value = d.page || page
     videoSize.value = d.size || 24
   } finally {
@@ -207,7 +209,7 @@ function loadVideos() {
 // 底部哨兵进入视口时加载下一页（已加载完或正在加载则忽略）。
 function loadMoreVideos() {
   if (videoLoading.value || videoLoadingMore.value) return Promise.resolve()
-  if (videos.value.length >= videoTotal.value) return Promise.resolve()
+  if (!videoHasMore.value) return Promise.resolve()
   return fetchVideos(videoPage.value + 1, true)
 }
 async function loadAreas() {
@@ -1260,7 +1262,7 @@ function toggleSidebar() {
 // 导航项：按权限过滤，并带上各页面的实时计数徽标。
 const navItems = computed(() => {
   const counts = {
-    videos: videoTotal.value, sources: sources.value.length,
+    videos: visibleVideoTotal.value, sources: sources.value.length,
     categories: catTotal.value, jobs: jobs.value.length, users: users.value.length,
   }
   return navItemsFor(isAdmin.value).map(i => ({ ...i, count: counts[i.key] || 0 }))

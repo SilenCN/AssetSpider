@@ -71,7 +71,7 @@ func TestSourceRepositoryCRUDAndCascade(t *testing.T) {
 	if err := r.Sources.DeleteSource(src.ID); err != nil {
 		t.Fatal(err)
 	}
-	items, total, err := r.Videos.ListVideos(NewVideoQuery(0, "", 1, 20))
+	items, total, err := listVideosForTest(r.Videos, NewVideoQuery(0, "", 1, 20))
 	if err != nil || total != 0 || len(items) != 0 {
 		t.Fatalf("删除站点后影片未清理: %v total=%d", err, total)
 	}
@@ -163,7 +163,7 @@ func TestSourceClearData(t *testing.T) {
 	}
 
 	// 1) 数据被清空。
-	if _, total, err := r.Videos.ListVideos(NewVideoQuery(a.ID, "", 1, 20)); err != nil || total != 0 {
+	if _, total, err := listVideosForTest(r.Videos, NewVideoQuery(a.ID, "", 1, 20)); err != nil || total != 0 {
 		t.Fatalf("站 A 影片未清空: total=%d err=%v", total, err)
 	}
 	if cats, err := r.Categories.List(a.ID); err != nil || len(cats) != 0 {
@@ -203,7 +203,7 @@ func TestSourceClearData(t *testing.T) {
 	}
 
 	// 3) 其它站点不受影响。
-	if _, total, err := r.Videos.ListVideos(NewVideoQuery(b.ID, "", 1, 20)); err != nil || total != 2 {
+	if _, total, err := listVideosForTest(r.Videos, NewVideoQuery(b.ID, "", 1, 20)); err != nil || total != 2 {
 		t.Fatalf("站 B 影片不应受影响: total=%d err=%v", total, err)
 	}
 	if cats, err := r.Categories.List(b.ID); err != nil || len(cats) != 2 {
