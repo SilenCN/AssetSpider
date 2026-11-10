@@ -8,7 +8,7 @@ const {
   openDetail, posterOf, scoreOf, searchVideos, sources, tagListOf,
   tagSelectLabel, tags, videoAreaId, videoCategory, videoEnd, videoLoading,
   videoLoadingMore, videoQuery, videoSentinel, videoSort, videoSource, videoTag,
-  videoTotal, videoYear, videos, visibleAreas, visibleCategories, visibleTags, years
+  videoYear, videos, visibleAreas, visibleCategories, visibleTags, years
 } = inject('app')
 </script>
 
@@ -56,7 +56,6 @@ const {
             <button class="ghost btn-clear" :disabled="!hasActiveFilters"
               @click="clearAllFilters" title="清空搜索词与全部分类、标签、地域、年份、站点条件">清空筛选</button>
           </div>
-          <span class="muted res-total">共 <b>{{ videoTotal }}</b> 条</span>
         </div>
         <div class="res-body">
           <p v-if="!videos.length && !videoLoading" class="empty">{{ isAdmin ? '暂无采集数据，可到「站点配置」执行一次全量采集。' : '暂无可见的采集数据。' }}</p>
@@ -90,7 +89,7 @@ const {
             <template v-if="videoLoadingMore">
               <span class="spinner"></span><span>加载更多…</span>
             </template>
-            <span v-else-if="videos.length && videoEnd" class="res-more-end">已经到底了 · 共 {{ videoTotal }} 条</span>
+            <span v-else-if="videos.length && videoEnd" class="res-more-end">已经到底了</span>
           </div>
         </div>
       </section>

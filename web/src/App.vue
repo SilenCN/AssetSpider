@@ -1345,7 +1345,7 @@ provide('app', {
   categoryTree, tags, jobs, tasks, users, capacity, maxConcurrent, capacityDirty,
   error, notice, videoQuery, videoSource, videoCategory, videoTag, videoAreaId, videoYear, videoSort,
   areas, years, visibleCategories, visibleTags, visibleAreas, hasActiveFilters, areaGroups, videoPage, videoSize,
-  videoTotal, videoLoading, videoLoadingMore, videoEnd, videoSeq, visibleVideoTotal, noticeTimer, notify,
+  videoLoading, videoLoadingMore, videoEnd, videoSeq, visibleVideoTotal, noticeTimer, notify,
   request, jsonOptions, loadHealth, loadSources, fetchVideos, kickSentinel, loadVideos, loadMoreVideos,
   loadAreas, loadYears, loadJobs, loadTasks, loadCategories, loadCategoryTree, loadTags, loadUsers, refresh,
   categoryName, activeTaskOf, queuedCountOf, showCategoryVideos, filterByTag, catCollapsed, isCatCollapsed, toggleCat,
@@ -1769,8 +1769,6 @@ tbody tr:hover td { background: #f8faff; }
 .search-box input { flex: 1 1 auto; }
 .filters { display: flex; gap: 8px; flex-wrap: wrap; }
 .filters .btn-clear { border: 1px solid var(--border-strong); }
-.res-total { margin-left: auto; font-size: 12px; }
-.res-total b { color: var(--text); font-size: 13px; }
 
 /* 实时进度条（任务列表 / 采集记录） */
 .prog-col { min-width: 220px; white-space: normal; }
@@ -2009,7 +2007,6 @@ tbody tr:hover td { background: #f8faff; }
   .filters { flex: 1 1 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .filters select { width: 100%; }
   .filters .btn-clear { grid-column: 1 / -1; }
-  .res-total { margin-left: 0; flex: 1 1 100%; }
 
   /* 表格横滚 + 隐藏次要列；再压一档内边距与字号，尽量让常用列在窄屏一次看全 */
   .table-wrap { -webkit-overflow-scrolling: touch; max-height: none; border-radius: 10px; }
