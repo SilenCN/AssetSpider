@@ -16,6 +16,11 @@ type stubActiveTasks struct {
 
 func (s stubActiveTasks) HasActiveTask(uint) bool { return s.active }
 
+// 满足 SourceCollector 接口：测试里只用到 HasActiveTask，StartTask 留空即可。
+func (s stubActiveTasks) StartTask(uint, string, ...Principal) (*TaskView, error) {
+	return nil, nil
+}
+
 // TestSourceClearRefusesWhileCrawling 验证：站点还有排队/运行中的采集任务时，
 // 清空数据返回冲突错误且不删除任何数据。
 func TestSourceClearRefusesWhileCrawling(t *testing.T) {

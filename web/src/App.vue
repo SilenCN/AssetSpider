@@ -930,10 +930,14 @@ async function saveSource() {
   }
   try {
     const payload = sourcePayload(form)
-    if (form.id) await request(`/api/sources/v1/${form.id}`, jsonOptions('PUT', payload))
-    else await request('/api/sources/v1', jsonOptions('POST', payload))
+    if (form.id) {
+      await request(`/api/sources/v1/${form.id}`, jsonOptions('PUT', payload))
+      notify('站点配置已保存')
+    } else {
+      await request('/api/sources/v1?autostart=1', jsonOptions('POST', payload))
+      notify('站点已添加，已自动发起一次全量采集')
+    }
     closeSourceForm()
-    notify('站点配置已保存')
     await refresh()
   } catch (e) {
     error.value = e.message

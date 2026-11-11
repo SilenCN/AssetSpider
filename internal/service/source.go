@@ -144,27 +144,29 @@ type ClearResult struct {
 	Jobs       int64 `json:"jobs"`
 }
 
-// ActiveTaskChecker 让站点服务在清空数据前询问调度层：该站点是否还有
-// 排队中 / 运行中的采集任务。
+// SourceCollector 是采集调度层对站点服务暴露的能力集合：
+//   - HasActiveTask：清空数据前询问该站点是否还有排队中 / 运行中的采集任务；
+//   - StartTask：新建站点后自动发起一次全量采集。
 //
 // 清空与采集并发执行会互相破坏数据（采集刚把影片与标签写回来，清空又按快照
-// 删掉分类），因此有任务在跑时必须拒绝，由用户先暂停或等待结束。
-type ActiveTaskChecker interface {
+// 删掉分类），因此清空前有任务在跑时必须拒绝，由用户先暂停或等待结束。
+type SourceCollector interface {
 	HasActiveTask(sourceID uint) bool
+	StartTask(sourceID uint, mode string, p ...Principal) (*TaskView, error)
 }
 
 // SourceService 处理站点配置的校验、默认值与读写编排。
 type SourceService struct {
-	sources repository.SourceRepository
-	active  ActiveTaskChecker // 可选：未注入时不做采集冲突检查
+	sources  repository.SourceRepository
+	collector SourceCollector // 可选：未注入时不做采集冲突检查，也不自动采集
 }
 
-// NewSourceService 构造站点服务；active 是可选依赖（采集调度层），
-// 只有需要「清空数据前检查在跑任务」时才有意义。
-func NewSourceService(sources repository.SourceRepository, active ...ActiveTaskChecker) *SourceService {
+// NewSourceService 构造站点服务；collector 是可选依赖（采集调度层），
+// 只有需要「清空数据前检查在跑任务」「新建站点后自动全量采集」时才有意义。
+func NewSourceService(sources repository.SourceRepository, collector ...SourceCollector) *SourceService {
 	svc := &SourceService{sources: sources}
-	if len(active) > 0 {
-		svc.active = active[0]
+	if len(collector) > 0 {
+		svc.collector = collector[0]
 	}
 	return svc
 }
@@ -183,7 +185,11 @@ func (s *SourceService) List(p ...Principal) ([]SourceView, error) {
 	return out, nil
 }
 
-func (s *SourceService) Create(in SourceInput) (*model.Source, error) {
+// Create 新建一个站点配置。autostart 为真且注入了采集能力时，会在站点落库后
+// 自动发起一次全量采集（仅对启用的站点），让「新增站点」立即有数据可看。
+// 批量导入（Import）不传 autostart，避免一次导入触发大量并发采集任务。
+// 自动采集只是尽力而为：即便起任务失败，站点已经创建成功，不会回滚。
+func (s *SourceService) Create(in SourceInput, autostart ...bool) (*model.Source, error) {
 	if err := in.validate(); err != nil {
 		return nil, err
 	}
@@ -195,6 +201,13 @@ func (s *SourceService) Create(in SourceInput) (*model.Source, error) {
 	src := in.apply(&model.Source{})
 	if err := s.sources.CreateSource(src); err != nil {
 		return nil, wrapRepo(err)
+	}
+	if len(autostart) > 0 && autostart[0] && s.collector != nil && src.Enabled {
+		// 起任务失败不回滚站点创建：记录日志后继续，站点已落库，用户可手动重试。
+		if _, err := s.collector.StartTask(src.ID, model.ModeFull); err != nil {
+			// StartTask 仅在极少见情况下（如落库任务记录失败）报错，这里仅记录。
+			fmt.Printf("新增站点 %q 后自动全量采集启动失败: %v\n", src.Name, err)
+		}
 	}
 	return src, nil
 }
@@ -240,7 +253,7 @@ func (s *SourceService) Delete(id uint) error {
 //
 // 该站点还有排队中 / 运行中的采集任务时拒绝执行：二者并发会互相覆盖。
 func (s *SourceService) Clear(id uint) (ClearResult, error) {
-	if s.active != nil && s.active.HasActiveTask(id) {
+	if s.collector != nil && s.collector.HasActiveTask(id) {
 		return ClearResult{}, conflict("站点正在采集中，请先暂停采集或等待其结束再清空数据")
 	}
 	stats, err := s.sources.ClearSourceData(id)

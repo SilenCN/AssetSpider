@@ -36,7 +36,9 @@ func (s *SourceController) Create(c *gin.Context) {
 		badRequest(c, err.Error())
 		return
 	}
-	created, err := s.svc.Create(in)
+	// 新增站点默认不自动采集；前端「新增站点」会带 autostart=1 让站点落库后
+	// 立即跑一次全量，方便用户马上看到数据。导入 / API 直连不传则保持手动。
+	created, err := s.svc.Create(in, c.Query("autostart") == "1")
 	if err != nil {
 		writeError(c, err)
 		return
