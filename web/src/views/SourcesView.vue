@@ -27,7 +27,7 @@ const {
         <div v-else class="table-wrap">
           <table>
             <thead>
-              <tr><th class="hide-sm">任务</th><th>站点</th><th>模式</th><th>状态</th><th class="prog-col">实时进度</th><th title="拉取 / 新增 / 更新 / 未变">拉取/新增/更新/未变</th><th class="hide-sm">速率</th><th class="hide-sm">已运行</th><th>操作</th></tr>
+              <tr><th class="hide-sm">任务</th><th>站点</th><th>模式</th><th>状态</th><th class="prog-col">实时进度</th><th title="拉取 / 新增 / 更新 / 未变">拉取/新增/更新/未变</th><th class="hide-sm">速率</th><th class="hide-sm">启动时间</th><th class="hide-sm">已运行</th><th>操作</th></tr>
             </thead>
             <tbody>
               <tr v-for="t in tasks" :key="t.jobId">
@@ -57,6 +57,7 @@ const {
                   {{ t.fetched }} / <span class="up">{{ t.new }}</span> / {{ t.updated }} / <span class="muted">{{ t.unchanged }}</span>
                 </td>
                 <td class="mono muted hide-sm">{{ t.itemsPerSecond > 0 ? t.itemsPerSecond.toFixed(1) + ' 条/秒' : '-' }}</td>
+                <td class="mono muted hide-sm" :title="'启动时间：' + formatTime(t.startedAt)">{{ formatTime(t.startedAt) }}</td>
                 <td class="muted hide-sm">{{ t.elapsedSeconds }}s</td>
                 <td class="ops">
                   <button v-if="t.status === 'running' || t.status === 'queued'"

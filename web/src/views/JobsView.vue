@@ -16,7 +16,7 @@ const {
         <div v-else class="table-wrap">
           <table>
             <thead>
-              <tr><th>ID</th><th>站点</th><th class="hide-sm">模式</th><th>状态</th><th>页数</th><th>拉取</th><th>新增</th><th>更新</th><th>未变</th><th class="hide-sm">开始时间</th><th class="hide-sm">说明</th><th>操作</th></tr>
+              <tr><th>ID</th><th>站点</th><th class="hide-sm">模式</th><th>状态</th><th>页数</th><th>拉取</th><th>新增</th><th>更新</th><th>未变</th><th class="hide-sm">开始时间</th><th class="hide-sm">结束时间</th><th class="hide-sm">说明</th><th>操作</th></tr>
             </thead>
             <tbody>
               <tr v-for="j in jobs" :key="j.id">
@@ -47,6 +47,7 @@ const {
                 <td class="mono">{{ stat(j, 'updated') }}</td>
                 <td class="mono muted">{{ stat(j, 'unchanged') }}</td>
                 <td class="muted hide-sm">{{ formatTime(j.startedAt) }}</td>
+                <td class="muted hide-sm" :class="{ mono: !j.finishedAt }">{{ j.finishedAt ? formatTime(j.finishedAt) : (j.status === 'running' || j.status === 'queued' ? '进行中' : '-') }}</td>
                 <td class="muted msg hide-sm" :title="jobMessage(j)">{{ short(jobMessage(j), 30) }}</td>
                 <td class="ops">
                   <template v-if="j.status === 'running' || j.status === 'queued'">
