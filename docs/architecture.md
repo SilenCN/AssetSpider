@@ -68,6 +68,9 @@ router  →  controller  →  service  →  repository
 │   │   ├── asset.go / source.go / video.go / category.go / job.go / health.go / meta.go
 │   │   ├── auth.go               # Principal（登录主体/可见站点）、认证与用户管理业务规则
 │   │   ├── crawl.go              # 全量 / 增量采集编排、分类归档、游标与去重
+│   │   ├── task.go               # 任务对外 API：入队 / 暂停 / 继续 / 重试 / 重跑 / 列表 / 容量
+│   │   ├── task_state.go         # crawlTask 运行时状态机（协作式暂停、进度快照）
+│   │   ├── task_run.go           # 任务执行：分页抓取、失败退避重试、进度落库、站点串行闸门
 │   │   ├── scheduler.go          # 按站点 cron 到点触发增量任务
 │   │   ├── settings.go           # 系统设置：采集运行时配置的读写编排
 │   │   ├── errors.go             # 业务错误语义
