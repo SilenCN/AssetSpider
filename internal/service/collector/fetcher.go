@@ -161,9 +161,8 @@ type TypeItem struct {
 // 因此两种载体都要收，class 优先。
 //
 // PageCount 是苹果CMS 的分类分页总页数：typelist 接口默认每页约 20 条、上限 100，
-// 分类很多的站点（如「巨量资源」这类大资源站）pagecount > 1，只拉第 1 页会丢掉
-// 后续页的分类（含落在后页的一级分类），导致一级分类「拿不到」。FetchTypeList 必须
-// 翻完所有页再合并。
+// 分类较多的站点 pagecount > 1，只拉第 1 页会丢掉后续页的分类（含落在后页的一级
+// 分类）。FetchTypeList 按页翻取再合并，为避免异常 pagecount 空转设 3 页硬上限。
 type TypeListResponse struct {
 	Code      flexInt    `json:"code"`
 	Msg       flexString `json:"msg"`
@@ -210,18 +209,40 @@ func BuildTypeListURL(src model.Source, cfg ...config.CollectorConfig) (string, 
 	return u.String(), nil
 }
 
-// FetchTypeList 请求苹果CMS 的分类定义接口（ac=typelist）并解析。
+// FetchTypeList 返回本站的分类定义（type_id / type_name / type_pid），
+// 供采集结束后补全一级分类名称、校正父子层级。全程协议级通用逻辑，不含任何站点特判。
 //
-// 关键点：typelist 是分页接口（默认 pagesize 约 20、上限 100）。分类很多的站点
-// pagecount > 1，只拉第 1 页会丢掉后续页的分类——含落在后页的一级分类，使一级分类
-// 永远「拿不到」。因此这里按 pagecount 翻完所有页，合并各页的 list[] 与 class[]。
-// 翻页以 type_id 去重，避免站点分页实现异常（各页返回重复首项）时无限膨胀。
+// 分类定义有两个通用来源，按可靠性依次尝试：
+//  1. 专用接口 ac=typelist（list[] / class[]），分页翻取，最多尝试 3 页；
+//  2. 仅当该接口**不可用**（HTTP 非 200 / code != 1 / 网络或解析错误）时，降级探测
+//     标准列表动作（见 fetchClassFallback），只取响应里的 class[] —— 苹果CMS 在
+//     列表响应里普遍附带本站全部分类定义。
 //
-// 返回失败（网络错误、非 200、code != 1、JSON 解析失败）由调用方按「非致命」处理：
-// 拿不到分类定义时，分类名称退回由 videolist 提供或 type_id 兜底，采集不阻断。
-// 仅第 1 页失败视为「接口整体不可用」直接报错；后续页失败只停止翻页（已拿到的不丢）。
+// 降级只在「接口层失败」时触发，不在「成功返回空列表」时触发：站点以 code=1 +
+// 空列表明确作答，视为有效应答（它可能确实没有独立分类定义，交由采集循环的
+// class[] 与 type_id 兜底），避免对正常站点多做一次无谓探测。
+//
+// 两类来源都拿不到时按「非致命」处理：返回错误或空结果，调用方据此退回
+// videolist 自带分类 / type_id 兜底，采集不阻断。
 func (f *Fetcher) FetchTypeList(ctx context.Context, src model.Source) (*TypeListResponse, error) {
 	cfg := f.current()
+	primary, perr := f.fetchTypeListPrimary(ctx, src, cfg)
+	if perr == nil {
+		return primary, nil // 接口正常应答（含空列表）：不降级
+	}
+	// 专用分类接口不可用：降级从标准列表响应的 class[] 取权威分类定义。
+	if fb := f.fetchClassFallback(ctx, src); fb != nil && len(fb.Class) > 0 {
+		return fb, nil
+	}
+	return nil, perr
+}
+
+// fetchTypeListPrimary 请求专用分类接口 ac=typelist 并翻页合并各页的 list[] / class[]。
+// typelist 是分页接口；按站点 pagecount 翻取，但最多尝试 3 页，避免分类巨多或
+// pagecount 异常时反复翻页拖慢采集（缺失部分由 fetchClassFallback 的 class[] 补齐）。
+// 翻页以 type_id + type_pid 去重，避免站点分页异常（各页重复首项）时无限膨胀。
+// 仅第 1 页失败视为「接口整体不可用」并报错，交由 FetchTypeList 决定是否降级。
+func (f *Fetcher) fetchTypeListPrimary(ctx context.Context, src model.Source, cfg config.CollectorConfig) (*TypeListResponse, error) {
 	merged := &TypeListResponse{}
 	seenList := make(map[string]bool)
 	seenClass := make(map[string]bool)
@@ -233,7 +254,7 @@ func (f *Fetcher) FetchTypeList(ctx context.Context, src model.Source) (*TypeLis
 	} else if pageSize > 100 {
 		pageSize = 100 // 苹果CMS typelist 的 pagesize 上限为 100
 	}
-	const maxTypePages = 200 // 翻页硬上限，防止站点 pagecount 异常导致死循环
+	const maxTypePages = 3 // 分类接口分页硬上限：最多尝试 3 页（含第 1 页）
 
 	for pg := 1; pg <= maxTypePages; pg++ {
 		rawURL, err := BuildTypeListURL(src, cfg)
@@ -326,6 +347,114 @@ func (f *Fetcher) FetchTypeList(ctx context.Context, src model.Source) (*TypeLis
 		}
 	}
 	return merged, nil
+}
+
+// fetchClassFallback 是专用分类接口不可用时的通用降级来源。
+//
+// 苹果CMS V10 的列表接口（ac=list / ac=videolist / 站点自身 ac）在返回影片的同时，
+// 普遍会在 class[] 里顺带给出「本站全部分类定义」（含 type_id / type_name /
+// type_pid）。本函数按 typeProbeActions 给出的通用动作序列逐个探测，每个动作只取
+// 第 1 页，遇到第一个返回了非空 class[] 的动作即返回。
+//
+// 正确性要点：列表动作的 list[] 是**影片**，绝不能当分类定义；因此这里用 ParseList
+// 解析并只取 Class 字段，从源头上避免把影片 type_id 误建成一级分类。
+//
+// 全部逻辑基于协议通用约定，不含任何站点名称 / 域名 / ID 判断。拿不到时返回 nil，
+// 由 FetchTypeList 按「非致命」语义处理。
+func (f *Fetcher) fetchClassFallback(ctx context.Context, src model.Source) *TypeListResponse {
+	for _, action := range typeProbeActions(src) {
+		rawURL, err := buildTypeProbeURL(src, action)
+		if err != nil {
+			continue
+		}
+		reqCtx, cancel := f.requestContext(ctx)
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			cancel()
+			continue
+		}
+		req.Header.Set("User-Agent", f.userAgent())
+		req.Header.Set("Accept", "application/json, */*")
+		resp, err := f.client.Do(req)
+		if err != nil {
+			cancel()
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		code := resp.StatusCode
+		resp.Body.Close()
+		cancel()
+		if code != http.StatusOK || readErr != nil {
+			continue
+		}
+		// 列表动作响应：只认 class[]，list[] 是影片，绝不参与分类定义。
+		lr, err := ParseList(body)
+		if err != nil || len(lr.Class) == 0 {
+			continue
+		}
+		return &TypeListResponse{Code: 1, PageCount: 1, Class: lr.Class}
+	}
+	return nil
+}
+
+// typeProbeActions 给出降级探测用的 ac 动作序列，完全由站点自身配置与协议标准动作
+// 推导，不含任何站点特判：
+//  1. 站点在 APIBase 或 ExtraParams 里显式指定的 ac（尊重站点已配置的接口形态）；
+//  2. 协议标准的 list、videolist 动作兜底。
+//
+// 去重并跳过 typelist（它已在主路径 fetchTypeListPrimary 里试过）。
+func typeProbeActions(src model.Source) []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(ac string) {
+		ac = strings.TrimSpace(ac)
+		if ac == "" || strings.EqualFold(ac, "typelist") || seen[ac] {
+			return
+		}
+		seen[ac] = true
+		out = append(out, ac)
+	}
+	if u, err := url.Parse(strings.TrimSpace(src.APIBase)); err == nil {
+		add(u.Query().Get("ac"))
+	}
+	if extra := strings.TrimPrefix(strings.TrimSpace(src.ExtraParams), "?"); extra != "" {
+		if q, err := url.ParseQuery(extra); err == nil {
+			add(q.Get("ac"))
+		}
+	}
+	add("list")
+	add("videolist")
+	return out
+}
+
+// buildTypeProbeURL 为分类降级探测构造请求地址：保留站点地址与附加参数（含可能的
+// 认证参数），强制 ac=action，并移除与时间窗 / 分页相关的参数（h / pg / page /
+// pagesize / limit）——分类定义与这些无关，且部分站点带增量时间窗 h 时不再附带
+// class[]。只取第 1 页即可拿到全量 class[]，故不设置页码。
+func buildTypeProbeURL(src model.Source, action string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(src.APIBase))
+	if err != nil {
+		return "", fmt.Errorf("站点地址无效: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {
+		return "", fmt.Errorf("站点地址需为完整 http(s) URL: %q", src.APIBase)
+	}
+	q := u.Query()
+	if extra := strings.TrimPrefix(strings.TrimSpace(src.ExtraParams), "?"); extra != "" {
+		pairs, err := url.ParseQuery(extra)
+		if err != nil {
+			return "", fmt.Errorf("站点附加参数无效: %w", err)
+		}
+		for k, vs := range pairs {
+			q[k] = vs
+		}
+	}
+	for _, k := range []string{"h", "pg", "page", "pagesize", "limit"} {
+		q.Del(k)
+	}
+	q.Set("ac", action)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
 
 // ParseTypeList 解析 ac=typelist 的 JSON 响应。
