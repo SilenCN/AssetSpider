@@ -71,10 +71,16 @@ func dropTrimmedVideoColumns(db *gorm.DB) {
 	// 峰值需要约 1~2 倍数据库文件大小的临时空间。磁盘紧张时若强行开删，会先
 	// 写满盘、反过来让服务自身的读写（含启动时的 AutoMigrate / 统计回灌）失败。
 	// 可用空间不足就整体跳过，记警告；下次启动磁盘宽裕时会重新扫描并续做。
-	// 拿不到路径 / 空间信息时不拦截（保守地照常尝试，交由 SQLite 报错与幂等兜底）。
-	if free, dbSize, ok := trimSpaceBudget(db); ok && trimShouldSkip(free, dbSize) {
-		log.Printf("跳过 videos 裁剪列清理：可用空间 %.1f MB 不足（需约 %.1f MB：数据库 %.1f MB ×2 供逐列重写与 VACUUM）；磁盘宽裕后启动会自动续做，期间程序功能不受影响",
-			float64(free)/1024/1024, float64(dbSize*2)/1024/1024, float64(dbSize)/1024/1024)
+	// 拿不到路径 / 空间信息时同样保守跳过——删列会重写整库，宁可暂不裁剪
+	// （幂等自愈、程序功能不受影响），也绝不在磁盘状况不明时写满盘反过来拖垮服务。
+	free, dbSize, ok := trimSpaceBudget(db)
+	if !ok || trimShouldSkip(free, dbSize) {
+		if ok {
+			log.Printf("跳过 videos 裁剪列清理：可用空间 %.1f MB 不足（需约 %.1f MB：数据库 %.1f MB ×2 供逐列重写与 VACUUM）；磁盘宽裕后启动会自动续做，期间程序功能不受影响",
+				float64(free)/1024/1024, float64(dbSize*2)/1024/1024, float64(dbSize)/1024/1024)
+		} else {
+			log.Printf("跳过 videos 裁剪列清理：无法取得数据库路径 / 可用空间信息，保守起见不执行整表重写；下次启动会重试")
+		}
 		return
 	}
 
@@ -131,21 +137,43 @@ func trimShouldSkip(free, dbSize int64) bool {
 // trimSpaceBudget 返回（数据库所在卷可用字节数, 数据库文件字节数, 是否取得）。
 // 任何一步拿不到都返回 ok=false，让调用方跳过预检、照常尝试迁移（不误伤正常环境）。
 func trimSpaceBudget(db *gorm.DB) (int64, int64, bool) {
-	var list []struct {
-		Seq  int
-		Name string
-		File string
+	// 用 Rows() 按列位置读，避免依赖 GORM 对 PRAGMA 伪表列名的结构体映射。
+	rows, err := db.Raw("PRAGMA database_list").Rows()
+	if err != nil {
+		log.Printf("空间预检：读 database_list 失败: %v", err)
+		return 0, 0, false
 	}
-	if err := db.Raw("PRAGMA database_list").Scan(&list).Error; err != nil || len(list) == 0 || list[0].File == "" {
-		return 0, 0, false // 内存库等无文件路径
+	defer rows.Close()
+	var path string
+	for rows.Next() {
+		var seq int
+		var name, file string
+		if err := rows.Scan(&seq, &name, &file); err != nil {
+			log.Printf("空间预检：解析 database_list 失败: %v", err)
+			return 0, 0, false
+		}
+		if name == "main" { // 主数据库文件；temp/memory 的 file 为空
+			path = file
+			break
+		}
 	}
-	path := list[0].File
+	if path == "" {
+		log.Printf("空间预检：database_list 未给出主库文件路径（内存库?）")
+		return 0, 0, false
+	}
 	info, err := os.Stat(path)
 	if err != nil || info.Size() <= 0 {
+		log.Printf("空间预检：os.Stat(%q) 失败或空文件: size=%v err=%v", path, func() int64 {
+			if info != nil {
+				return info.Size()
+			}
+			return 0
+		}(), err)
 		return 0, 0, false
 	}
 	free, err := availableDiskSpace(path)
 	if err != nil {
+		log.Printf("空间预检：availableDiskSpace(%q) 失败: %v", path, err)
 		return 0, 0, false
 	}
 	return free, info.Size(), true
