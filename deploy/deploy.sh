@@ -10,6 +10,7 @@
 #  · 无 systemd 的环境（容器 / 本地验证）自动降级为 nohup 进程模式
 #
 # 可用环境变量：DEPLOY_PATH / SERVICE_NAME / DEPLOY_MODE / HEALTH_URL /
+#              HEALTH_TIMEOUT（秒，默认 180）/ HEALTH_RETRIES（次数，兼容旧用法）/
 #              KEEP_RELEASES / ASSETSPIDER_SERVER_ADDR（process 模式）
 set -Eeuo pipefail
 
@@ -132,6 +133,9 @@ if [ -f "$DEPLOY_PATH/bin/assetspider" ]; then
   if [ -d "$DEPLOY_PATH/web/dist" ]; then
     cp -a "$DEPLOY_PATH/web/dist" "$BACKUP/dist"
   fi
+  # VERSION 一并备份，回滚时恢复，否则 file 显示的是「失败的新版本」，
+  # 排查时会误判线上到底跑的是哪个提交。
+  [ -f "$DEPLOY_PATH/VERSION" ] && cp -a "$DEPLOY_PATH/VERSION" "$BACKUP/VERSION"
   log "已备份旧版本: $BACKUP"
 fi
 
@@ -184,11 +188,24 @@ start_service() {
 }
 
 wait_health() {
-  local i
-  # HEALTH_RETRIES 可用环境变量覆盖，便于慢启动机器或本地快速验证。
-  for i in $(seq 1 "${HEALTH_RETRIES:-30}"); do
+  local i limit
+  # 首次启动可能需要跑一次性数据迁移 / 整库 ANALYZE（大库十几秒到数分钟），
+  # 窗口必须留够，否则会把「正在迁移」误判成「启动失败」并回滚——而回滚会
+  # kill 掉迁移，使迁移永远无法完成，形成每次部署都失败的死循环。
+  # HEALTH_RETRIES（次数，兼容旧用法）优先；否则用 HEALTH_TIMEOUT（秒）。
+  limit="${HEALTH_RETRIES:-${HEALTH_TIMEOUT:-180}}"
+  log "等待健康检查（最多 ${limit}s）: $HEALTH_URL"
+  for i in $(seq 1 "$limit"); do
     if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$HEALTH_URL" || true)" = "200" ]; then
+      [ "$i" -gt 1 ] && log "健康检查通过（等待 ${i}s）"
       return 0
+    fi
+    # systemd 模式下若单元已进入 failed（而不是重启中），不必再空等。
+    if [ "$DEPLOY_MODE" = "systemd" ] && [ "$i" -ge 10 ]; then
+      if [ "$($SUDO systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)" = "failed" ]; then
+        warn "服务已进入 failed 状态，提前结束等待"
+        return 1
+      fi
     fi
     sleep 1
   done
@@ -203,6 +220,7 @@ rollback() {
   local old_dist=""
   [ -d "$BACKUP/dist" ] && old_dist="$BACKUP/dist"
   install_version "$BACKUP/assetspider" "$old_dist"
+  [ -f "$BACKUP/VERSION" ] && cp -f "$BACKUP/VERSION" "$DEPLOY_PATH/VERSION"
   start_service
   if wait_health; then
     die "新版本启动失败，已回滚到上一版本；日志: $DEPLOY_PATH/logs/assetspider.log"

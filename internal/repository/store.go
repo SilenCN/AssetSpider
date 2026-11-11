@@ -42,18 +42,17 @@ import (
 //	4 → 年份筛选新增 idx_videos_vod_year
 //	5 → 补建缺失的一级分类（按 videos.type_id_1 / categories.type_pid 重建父子关系）
 //	6 → 站点增加定时增量配置列（schedule_enabled / schedule_cron / schedule_last_at）
-//	7 → 占位（曾经用于物理删除 videos 表的 23 个已裁剪列，该迁移已回滚，见下）
 //
-// 关于 v7：曾用 ALTER TABLE DROP COLUMN + VACUUM 物理删除实体已裁剪的 23 个
-// 后台管理字段列，以便让库结构与实体对齐、回收空间。该迁移在真实大库上会让
-// 启动时重写整库（2.1GB 库约 5~6 分钟、且峰值需约 2 倍临时空间），运维风险
-// 高于收益，已整体回滚：不再删列，历史库里这些列及其数据原样保留。
-//
-// 版本号仍保留为 7 而不回退到 6，原因：已经跑过 v7 的库 user_version=7，若把
-// 常量降为 6，将来真正需要迁移的 v7 会被这些库跳过。保留占位可避免版本号复用。
+// 关于曾短暂出现过的 v7：它用 ALTER TABLE DROP COLUMN + VACUUM 物理删除实体已
+// 裁剪的 23 个后台管理字段列，在真实大库上会让启动重写整库（3.9GB 库数分钟、
+// 峰值需约 2 倍临时空间），运维风险高于收益，已整体回滚：不再删列，历史库里
+// 这些列及其数据原样保留。该版本**从未在任何库上成功提交**（迁移总在 ANALYZE
+// 阶段被部署健康检查的 kill 打断，user_version 因此停在 6），故号段直接回收，
+// 不保留占位——否则 version=6 的库每次启动都会重跑整库回灌 + ANALYZE，永远
+// 升不上去，形成「每次启动都慢、每次部署都失败」的死循环。
 //
 // 新增索引 / 改变索引列 / 增加需要回灌的数据迁移时把它 +1。
-const schemaVersion = 7
+const schemaVersion = 6
 
 // Repositories 是各实体仓储的容器。
 // 它只是装配结果，不是「大杂烩仓储」：任何实体读写都必须走对应的那个对象。
@@ -156,11 +155,14 @@ func prepareDatabase(db *gorm.DB) {
 		// 老库上把它删掉；新库本来就没有。
 		db.Exec("DROP INDEX IF EXISTS idx_videos_vod_area")
 		db.Exec("DROP INDEX IF EXISTS idx_videos_area")
-		if err := db.Exec("ANALYZE").Error; err != nil {
-			log.Printf("重建统计信息失败（不影响数据，仅影响查询计划选择）: %v", err)
-			return
-		}
+		// 先推进版本号再 ANALYZE：ANALYZE 只影响查询计划选择，失败（磁盘紧张、
+		// 被 kill、超时）不该让迁移「永远没完成」——否则下次启动会重跑上面那堆
+		// 整表回灌 + 全库分析，在大库上每次都要几十秒，把带健康检查的部署拖死。
+		// 统计信息后续由每次启动的 PRAGMA optimize 补齐。
 		db.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion))
+		if err := db.Exec("ANALYZE").Error; err != nil {
+			log.Printf("重建统计信息失败（不影响数据与启动，后续启动的 PRAGMA optimize 会补齐）: %v", err)
+		}
 		return
 	}
 	db.Exec("PRAGMA optimize")
