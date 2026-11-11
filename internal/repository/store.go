@@ -42,9 +42,10 @@ import (
 //	4 → 年份筛选新增 idx_videos_vod_year
 //	5 → 补建缺失的一级分类（按 videos.type_id_1 / categories.type_pid 重建父子关系）
 //	6 → 站点增加定时增量配置列（schedule_enabled / schedule_cron / schedule_last_at）
+//	7 → 物理删除 videos 表 23 个已裁剪的后台管理字段列并 VACUUM 回收空间
 //
 // 新增索引 / 改变索引列 / 增加需要回灌的数据迁移时把它 +1。
-const schemaVersion = 6
+const schemaVersion = 7
 
 // Repositories 是各实体仓储的容器。
 // 它只是装配结果，不是「大杂烩仓储」：任何实体读写都必须走对应的那个对象。
@@ -128,6 +129,12 @@ func (r *Repositories) Path() string { return r.path }
 // 不做 ANALYZE 的话，新建的复合索引在 sqlite_stat1 里没有记录，计划器仍会按旧索引
 // 估算行数，出现「有索引却仍全量排序」的情况。
 func prepareDatabase(db *gorm.DB) {
+	// v7：物理删除上一轮从实体裁剪掉的 23 个后台管理字段列。
+	// 无条件幂等调用（内部按实际列集合判断，只删仍存在的列）：不挂在下面的
+	// version 分支里，保证「上次删列/VACUUM 中途失败」或「旧二进制补回了列」时
+	// 下次启动都能自愈。必须在 ANALYZE 之前跑，让统计信息基于整理后的库。
+	dropTrimmedVideoColumns(db)
+
 	var version int
 	if err := db.Raw("PRAGMA user_version").Scan(&version).Error; err != nil {
 		return
