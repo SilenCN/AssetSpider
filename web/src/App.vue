@@ -741,6 +741,11 @@ async function showVideoDetail(v) {
   const gi = playGroups.value.findIndex(g => (g.episodes?.length || 0) > 0)
   activeGroup.value = gi >= 0 ? gi : 0
   activeEp.value = 0
+  // 进入详情后滚到页面顶部：详情是独立页面，不该继承资源库列表的滚动位置，
+  // 否则会停在页面中段、看不到标题与播放器，还得用户手动往上滚。
+  // 等详情 DOM 渲染后再滚，避免被列表卸载时的高度变化影响。
+  // 进入前的列表滚动位置已由 openDetail 存进 listScrollY，返回时再恢复。
+  nextTick(() => window.scrollTo(0, 0))
   if (!fieldMeta.value.fields?.length) await loadFieldMeta()
   mountPlayer() // 内部会 await nextTick() 等详情组件挂载出 <video>
 }
@@ -2046,16 +2051,9 @@ tbody tr:hover td { background: #f8faff; }
 .res-time { margin: 0; font-size: 11px; color: var(--muted-2); }
 .detail-tags { margin-top: 8px; }
 /* 详情播放器与线路 / 剧集选择 */
-/* 播放器在详情内容区水平居中，按 16:9 等比缩放、限制最大尺寸，
-   宽屏不再被拉成整宽的扁条；画面用 object-fit contain 保持比例不拉伸。 */
-.player-wrap { margin-top: 4px; display: flex; justify-content: center; }
-.player, .player-frame {
-  width: 100%; max-width: 746px; /* 746 × 9/16 ≈ 420 */
-  aspect-ratio: 16 / 9; height: auto; max-height: 420px;
-  margin-inline: auto; border-radius: 10px; background: #000; display: block;
-}
-.player { object-fit: contain; }
-.player-frame { border: 0; }
+.player-wrap { margin-top: 4px; }
+.player { width: 100%; max-height: 420px; background: #000; border-radius: 10px; display: block; }
+.player-frame { width: 100%; aspect-ratio: 16 / 9; max-height: 420px; border: 0; border-radius: 10px; background: #000; display: block; }
 .group-tabs, .ep-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .ep-chips { max-height: 168px; overflow-y: auto; padding: 2px; }
 .play-url { margin: 10px 0 0; font-size: 11px; color: var(--muted); word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
