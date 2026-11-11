@@ -113,7 +113,7 @@ const {
                 <td class="muted hide-sm">{{ formatTime(s.lastSyncAt) }}</td>
                 <td class="muted hide-sm">
                   <span class="badge" :class="s.lastStatus">{{ statusLabel(s.lastStatus) }}</span>
-                  <div class="mono tiny">{{ s.lastCursor || '-' }}</div>
+                  <div class="mono tiny">{{ formatTime(s.lastCursor) }}</div>
                 </td>
                 <td class="ops">
                   <template v-if="activeTaskOf(s.id)">
