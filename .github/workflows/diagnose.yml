@@ -1,0 +1,121 @@
+name: 只读诊断（生产服务器）
+
+# 仅在 Actions 页面手动触发：登录生产服务器收集服务状态与日志，
+# 不安装、不重启、不修改任何文件。排查部署健康检查失败用。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: 收集服务器状态与日志
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST || '140.238.43.173' }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'ubuntu' }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/assetspider' }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          KEY="$HOME/.ssh/assetspider_deploy_key"
+          KH="$HOME/.ssh/known_hosts"
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          : > "$KH"
+          if [ -n "${DEPLOY_KNOWN_HOSTS:-}" ]; then
+            printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$KH"
+          elif [ -f deploy/known_hosts ]; then
+            cp deploy/known_hosts "$KH"
+          else
+            ssh-keyscan -T 15 -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> "$KH" 2>/dev/null
+          fi
+          chmod 600 "$KH"
+          echo "KEY=$KEY" >> "$GITHUB_ENV"
+          echo "KH=$KH" >> "$GITHUB_ENV"
+
+      - name: 收集诊断信息
+        run: |
+          set -uo pipefail
+          SSH_BASE=(-i "$KEY" -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KH"
+                    -o ConnectTimeout=20 -o BatchMode=yes)
+          ssh "${SSH_BASE[@]}" -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "DEPLOY_PATH=$DEPLOY_PATH bash -s" <<'REMOTE'
+          set -uo pipefail
+          P="${DEPLOY_PATH}"
+          sec() { printf '\n===== %s =====\n' "$*"; }
+
+          sec "时间 / 负载"
+          date -Is; uptime
+
+          sec "服务状态"
+          systemctl is-active assetspider 2>&1 || true
+          systemctl status assetspider --no-pager -l 2>&1 | head -40
+
+          sec "unit 内容"
+          systemctl cat assetspider 2>&1 | head -60
+
+          sec "环境变量文件"
+          cat /etc/assetspider.env 2>&1 || true
+
+          sec "二进制 / VERSION"
+          ls -la "$P/bin" 2>&1
+          "$P/bin/assetspider" -version 2>&1 || true
+          cat "$P/VERSION" 2>&1 || true
+
+          sec "releases"
+          ls -1dt "$P"/releases/* 2>&1 | head -10
+
+          sec "数据目录 / 磁盘"
+          ls -la "$P/data" 2>&1
+          df -h "$P" 2>&1
+          df -i "$P" 2>&1
+
+          sec "端口监听"
+          (ss -lptn 2>/dev/null || netstat -lptn 2>/dev/null) | head -20
+
+          sec "健康检查（当前）"
+          curl -s -m 5 -w '\nhttp_code=%{http_code}\n' http://127.0.0.1:8080/api/system/v1/health 2>&1 || true
+
+          sec "应用日志 tail 120"
+          tail -n 120 "$P/logs/assetspider.log" 2>&1 || true
+
+          sec "应用日志：迁移 / 错误相关"
+          grep -inE 'migrat|迁移|error|错误|失败|panic|fatal|locked|disk|磁盘|ANALYZE|VACUUM|DROP COLUMN' \
+            "$P/logs/assetspider.log" 2>/dev/null | tail -80 || true
+
+          sec "journalctl 最近 80 行"
+          sudo -n journalctl -u assetspider -n 80 --no-pager 2>&1 | tail -80 || echo "（无 sudo / 无 journal）"
+
+          sec "数据库结构概览"
+          python3 - "$P/data/assetspider.db" <<'PY' 2>&1 || true
+          import sqlite3, sys, os
+          p = sys.argv[1]
+          print("db:", p, "size:", os.path.getsize(p) if os.path.exists(p) else "MISSING")
+          c = sqlite3.connect("file:%s?mode=ro" % p, uri=True)
+          print("user_version:", c.execute("PRAGMA user_version").fetchone()[0])
+          print("journal_mode:", c.execute("PRAGMA journal_mode").fetchone()[0])
+          cols = [r[1] for r in c.execute("PRAGMA table_info(videos)")]
+          print("videos 列数:", len(cols))
+          print("videos 列:", ",".join(cols))
+          print("索引:", [r[1] for r in c.execute("PRAGMA index_list(videos)")])
+          print("表:", [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")])
+          print("触发器:", [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='trigger'")])
+          try:
+              print("sources:", c.execute("SELECT count(*) FROM sources").fetchone()[0])
+          except Exception as e:
+              print("sources count 失败:", e)
+          PY
+          REMOTE
