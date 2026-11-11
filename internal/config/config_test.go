@@ -117,6 +117,38 @@ func TestCollectorValidation(t *testing.T) {
 	if _, err := Load(""); err == nil {
 		t.Fatal("progress_save_seconds=0 应校验失败")
 	}
+	t.Setenv("ASSETSPIDER_COLLECTOR_PROGRESS_SAVE", "60")
+	t.Setenv("ASSETSPIDER_COLLECTOR_PAGE_INTERVAL", "-1")
+	if _, err := Load(""); err == nil {
+		t.Fatal("page_interval_ms=-1 应校验失败")
+	}
+	t.Setenv("ASSETSPIDER_COLLECTOR_PAGE_INTERVAL", "60001")
+	if _, err := Load(""); err == nil {
+		t.Fatal("page_interval_ms 超过 60000 应校验失败")
+	}
+}
+
+// TestPageIntervalDefaultAndEnv 验证每页间隔默认 0（不限速）、可被环境变量覆盖，
+// 且覆盖会被记为 env 锁定字段（页面只读）。
+func TestPageIntervalDefaultAndEnv(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Collector.PageIntervalMs != 0 {
+		t.Fatalf("page_interval_ms 默认应为 0（不限速），实际 %d", cfg.Collector.PageIntervalMs)
+	}
+	t.Setenv("ASSETSPIDER_COLLECTOR_PAGE_INTERVAL", "800")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Collector.PageIntervalMs != 800 {
+		t.Fatalf("环境变量未生效，实际 %d", cfg.Collector.PageIntervalMs)
+	}
+	if !cfg.envKeys["page_interval_ms"] {
+		t.Fatal("page_interval_ms 被环境变量覆盖后应记为锁定字段")
+	}
 }
 
 func TestLoadMissingFile(t *testing.T) {

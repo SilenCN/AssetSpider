@@ -175,6 +175,25 @@ func (s *CrawlService) collectorCfg() config.CollectorConfig {
 	return s.cfg
 }
 
+// waitPageInterval 在相邻两页之间等待配置的时间间隔。
+// 每次调用都读最新的 page_interval_ms，因此设置页改间隔后运行中的任务从下一页即生效。
+// 0（含未配置）表示不限速、立即返回。ctx 被取消（暂停 / 停机）时立即返回 ctx.Err()，
+// 不会让任务在定时器上空等——由调用方按暂停语义接手续采页。
+func (s *CrawlService) waitPageInterval(ctx context.Context) error {
+	ms := s.collectorCfg().PageIntervalMs
+	if ms <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(time.Duration(ms) * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // SetStore 在运行期注入配置源（装配层用）；注入后配置读取自动切到最新值。
 func (s *CrawlService) SetStore(store *config.Store) {
 	if store == nil {
@@ -442,8 +461,19 @@ func (s *CrawlService) crawl(
 		res.Unchanged += stats.Unchanged
 		task.progress(res, pageCount, page+1) // 让任务列表实时看到进度与总页数
 
+		// 已到末页：无需再等间隔，直接结束。
 		if pageCount > 0 && page >= pageCount {
 			break
+		}
+		// 还有下一页：按当前配置等待页间间隔，降低对站点的请求频率。
+		// 每轮都重新读配置，设置页改动从下一页起立即生效；暂停 / 取消会取消 ctx，
+		// 下面的 select 立即醒来返回（不傻等整个间隔），与循环顶部的暂停语义保持一致。
+		if err := s.waitPageInterval(ctx); err != nil {
+			res.ResumePage = page + 1 // 间隔被打断（暂停 / 取消）时，下一页就是续采页
+			if task.paused() {
+				return ErrPaused
+			}
+			return err
 		}
 	}
 	// 正常结束（或按 maxPages 上限结束）：下次从头开始。

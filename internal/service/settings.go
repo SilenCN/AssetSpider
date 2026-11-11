@@ -43,6 +43,7 @@ var settingsFields = []SettingField{
 	{Key: "retryTimes", YAMLKey: "retry_times", Label: "失败自动重试次数", Help: "0 表示不自动重试；重试从失败页续采，不会从头再来。", Min: 0, Max: 10, Unit: "次"},
 	{Key: "retryBackoffSeconds", YAMLKey: "retry_backoff_seconds", Label: "重试首次退避", Help: "首次失败后的等待秒数，之后按 2 倍退避、上限 30 秒。", Min: 1, Max: 30, Unit: "秒"},
 	{Key: "progressSaveSeconds", YAMLKey: "progress_save_seconds", Label: "进度落库间隔", Help: "运行中把已完成页数与统计写库的频率，越小越不易丢进度但写库更频繁。", Min: 1, Max: 3600, Unit: "秒"},
+	{Key: "pageIntervalMs", YAMLKey: "page_interval_ms", Label: "每页间隔", Help: "相邻两页之间的等待时间，用于降低对站点的请求频率、避免被限流或封禁。0 表示不限速（全速采集）；修改后运行中的任务从下一页起立即生效。范围 0..60000。", Min: 0, Max: 60000, Unit: "毫秒"},
 	{Key: "userAgent", YAMLKey: "user_agent", Label: "请求 UA", Help: "采集接口的 User-Agent，可伪装浏览器绕过部分站点的拦截。", Unit: "字符串"},
 }
 

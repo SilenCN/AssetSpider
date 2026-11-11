@@ -464,6 +464,8 @@ const fieldMeta = ref({ groups: [], fields: [], total: 0 })
 const detail = ref(null)
 const detailTab = ref('fields')
 const onlyNonEmpty = ref(true)
+// 从资源库点开影片前的滚动位置，返回时恢复到原处（避免回到顶部丢失浏览进度）。
+const listScrollY = ref(0)
 
 async function loadFieldMeta() {
   try { fieldMeta.value = await request('/api/meta/v1/fields') } catch (e) { /* 元数据不影响主流程 */ }
@@ -714,11 +716,20 @@ function leaveDetail() {
   detail.value = null
 }
 
+// 返回资源库后把滚动位置恢复到点开影片前的原处。等详情 DOM 卸载、列表重新铺开
+// 再滚动，否则列表高度还没恢复，浏览器会把目标位置夹到错误的地方。
+function restoreListScroll() {
+  nextTick(() => window.scrollTo(0, listScrollY.value))
+}
+
 // 详情页「返回资源库」：写回列表 hash，hashchange 会同步清掉详情。
 function closeDetail() {
   leaveDetail()
   const h = tabToHash(DEFAULT_TAB)
   if (location.hash !== h) location.hash = h
+  // 注意：上面改 hash 会触发 onHashChange，但那时 detail 已被 leaveDetail 清空，
+  // onHashChange 的「离开详情」分支据此不会重复恢复。这里显式恢复一次即可。
+  restoreListScroll()
 }
 
 // 把影片对象渲染成详情页面（初始化逻辑与弹窗时期一致）。
@@ -737,6 +748,9 @@ async function showVideoDetail(v) {
 // 从资源库点开影片：作为一次页面跳转，pushState 让浏览器后退能回到列表。
 // 已在详情页时改用 replaceState，避免历史栈里堆一串影片。
 async function openDetail(v) {
+  // 仅在「从资源库列表首次下钻」时记录滚动位置；已在详情页内切换影片时不覆盖，
+  // 这样连续翻看多部影片后返回，仍回到最初进入列表时的位置。
+  if (!detail.value && tab.value === 'videos') listScrollY.value = window.scrollY
   const h = detailHash(v.id)
   if (detailIdFromHash(location.hash) == null) history.pushState(null, '', h)
   else if (location.hash !== h) history.replaceState(null, '', h)
@@ -1350,8 +1364,13 @@ function onHashChange() {
     return
   }
   // 离开详情页（返回按钮、浏览器后退、切到别的页面）。
+  // 只有「确实从详情页退回资源库」才恢复滚动位置：closeDetail 会先 leaveDetail
+  // 把 detail 置空、其触发的 hashchange 因此不会走进来；切菜单离开详情也会先把
+  // detail 置空。故这里 detail 非空即代表浏览器后退，需要恢复。
+  const leavingDetail = !!detail.value
   leaveDetail()
   const k = normalizeTab(location.hash)
+  if (leavingDetail && k === 'videos') restoreListScroll()
   if (!k) {
     // 无效 hash：地址栏纠正回当前页，页面保持不变（不把用户踢走）。
     if (location.hash !== tabToHash(tab.value)) history.replaceState(null, '', tabToHash(tab.value))
@@ -2027,9 +2046,16 @@ tbody tr:hover td { background: #f8faff; }
 .res-time { margin: 0; font-size: 11px; color: var(--muted-2); }
 .detail-tags { margin-top: 8px; }
 /* 详情播放器与线路 / 剧集选择 */
-.player-wrap { margin-top: 4px; }
-.player { width: 100%; max-height: 420px; background: #000; border-radius: 10px; display: block; }
-.player-frame { width: 100%; aspect-ratio: 16 / 9; max-height: 420px; border: 0; border-radius: 10px; background: #000; display: block; }
+/* 播放器在详情内容区水平居中，按 16:9 等比缩放、限制最大尺寸，
+   宽屏不再被拉成整宽的扁条；画面用 object-fit contain 保持比例不拉伸。 */
+.player-wrap { margin-top: 4px; display: flex; justify-content: center; }
+.player, .player-frame {
+  width: 100%; max-width: 746px; /* 746 × 9/16 ≈ 420 */
+  aspect-ratio: 16 / 9; height: auto; max-height: 420px;
+  margin-inline: auto; border-radius: 10px; background: #000; display: block;
+}
+.player { object-fit: contain; }
+.player-frame { border: 0; }
 .group-tabs, .ep-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .ep-chips { max-height: 168px; overflow-y: auto; padding: 2px; }
 .play-url { margin: 10px 0 0; font-size: 11px; color: var(--muted); word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }

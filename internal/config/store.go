@@ -25,6 +25,7 @@ var EnvOverrides = map[string]string{
 	"ASSETSPIDER_COLLECTOR_RETRY_TIMES":    "retry_times",
 	"ASSETSPIDER_COLLECTOR_RETRY_BACKOFF":  "retry_backoff_seconds",
 	"ASSETSPIDER_COLLECTOR_PROGRESS_SAVE":  "progress_save_seconds",
+	"ASSETSPIDER_COLLECTOR_PAGE_INTERVAL":  "page_interval_ms",
 	"ASSETSPIDER_COLLECTOR_USER_AGENT":     "user_agent",
 }
 
@@ -134,6 +135,8 @@ func collectorFieldEqual(key string, a, b CollectorConfig) bool {
 		return a.RetryBackoffSeconds == b.RetryBackoffSeconds
 	case "progress_save_seconds":
 		return a.ProgressSaveSeconds == b.ProgressSaveSeconds
+	case "page_interval_ms":
+		return a.PageIntervalMs == b.PageIntervalMs
 	case "user_agent":
 		return a.UserAgent == b.UserAgent
 	}
@@ -158,6 +161,7 @@ func collectorScalars(cc CollectorConfig) []collectorScalar {
 		{"retry_times", strconv.Itoa(cc.RetryTimes), "!!int", func(c *CollectorConfig, v string) error { n, e := strconv.Atoi(v); c.RetryTimes = n; return e }},
 		{"retry_backoff_seconds", strconv.Itoa(cc.RetryBackoffSeconds), "!!int", func(c *CollectorConfig, v string) error { n, e := strconv.Atoi(v); c.RetryBackoffSeconds = n; return e }},
 		{"progress_save_seconds", strconv.Itoa(cc.ProgressSaveSeconds), "!!int", func(c *CollectorConfig, v string) error { n, e := strconv.Atoi(v); c.ProgressSaveSeconds = n; return e }},
+		{"page_interval_ms", strconv.Itoa(cc.PageIntervalMs), "!!int", func(c *CollectorConfig, v string) error { n, e := strconv.Atoi(v); c.PageIntervalMs = n; return e }},
 		{"user_agent", cc.UserAgent, "!!str", func(c *CollectorConfig, v string) error { c.UserAgent = v; return nil }},
 	}
 }

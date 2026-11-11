@@ -54,6 +54,7 @@ type CollectorConfig struct {
 	RetryTimes          int    `yaml:"retry_times" json:"retryTimes"`                            // 单次采集失败后的自动重试次数，0 表示不自动重试
 	RetryBackoffSeconds int    `yaml:"retry_backoff_seconds" json:"retryBackoffSeconds"`         // 首次自动重试的等待秒数，之后按 2 倍退避（上限 30 秒）
 	ProgressSaveSeconds int    `yaml:"progress_save_seconds" json:"progressSaveSeconds"`         // 运行中任务把进度写库的间隔（秒），默认 60，避免重启丢进度
+	PageIntervalMs      int    `yaml:"page_interval_ms" json:"pageIntervalMs"`                   // 相邻两页之间的间隔（毫秒），0 表示不限速；用于降低对站点的请求频率
 }
 
 // Default 返回开箱即用的默认配置。
@@ -72,6 +73,7 @@ func Default() *Config {
 			RetryTimes:          2,
 			RetryBackoffSeconds: 3,
 			ProgressSaveSeconds: 60,
+			PageIntervalMs:      0,
 		},
 		Auth: AuthConfig{TokenTTLHours: 168, BCryptCost: 10},
 	}
@@ -120,6 +122,7 @@ func Load(path string) (*Config, error) {
 		{"ASSETSPIDER_COLLECTOR_RETRY_TIMES", &cfg.Collector.RetryTimes},
 		{"ASSETSPIDER_COLLECTOR_RETRY_BACKOFF", &cfg.Collector.RetryBackoffSeconds},
 		{"ASSETSPIDER_COLLECTOR_PROGRESS_SAVE", &cfg.Collector.ProgressSaveSeconds},
+		{"ASSETSPIDER_COLLECTOR_PAGE_INTERVAL", &cfg.Collector.PageIntervalMs},
 	} {
 		before := *item.dst
 		if err := utils.EnvInt(item.name, item.dst); err != nil {
@@ -190,6 +193,9 @@ func (c *Config) Validate() error {
 	}
 	if cc.ProgressSaveSeconds <= 0 {
 		return fmt.Errorf("collector.progress_save_seconds 必须大于 0")
+	}
+	if cc.PageIntervalMs < 0 || cc.PageIntervalMs > 60000 {
+		return fmt.Errorf("collector.page_interval_ms 需在 0..60000 之间（0 表示不限速）")
 	}
 	if c.Auth.TokenTTLHours <= 0 {
 		return fmt.Errorf("auth.token_ttl_hours 必须大于 0")

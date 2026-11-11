@@ -52,12 +52,14 @@ func TestStoreUpdateCollectorPersistsAndKeepsComments(t *testing.T) {
 	in.MaxConcurrent = 7
 	in.RetryTimes = 0
 	in.UserAgent = "MyBot/2.0"
+	in.PageIntervalMs = 1500
 	got, err := store.UpdateCollector(in)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Collector.TimeoutSeconds != 45 || got.Collector.MaxConcurrent != 7 ||
-		got.Collector.RetryTimes != 0 || got.Collector.UserAgent != "MyBot/2.0" {
+		got.Collector.RetryTimes != 0 || got.Collector.UserAgent != "MyBot/2.0" ||
+		got.Collector.PageIntervalMs != 1500 {
 		t.Fatalf("内存快照未更新: %+v", got.Collector)
 	}
 	// 即时生效：读路径拿到新值。
@@ -71,7 +73,8 @@ func TestStoreUpdateCollectorPersistsAndKeepsComments(t *testing.T) {
 	}
 	text := string(raw)
 	for _, want := range []string{"顶部注释要保留", "请求超时注释", "行尾注释",
-		"timeout_seconds: 45", "max_concurrent: 7", "retry_times: 0", `user_agent: MyBot/2.0`} {
+		"timeout_seconds: 45", "max_concurrent: 7", "retry_times: 0", `user_agent: MyBot/2.0`,
+		"page_interval_ms: 1500"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("写回后缺少 %q，实际内容:\n%s", want, text)
 		}
@@ -86,7 +89,8 @@ func TestStoreUpdateCollectorPersistsAndKeepsComments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.Collector.TimeoutSeconds != 45 || reloaded.Collector.MaxConcurrent != 7 {
+	if reloaded.Collector.TimeoutSeconds != 45 || reloaded.Collector.MaxConcurrent != 7 ||
+		reloaded.Collector.PageIntervalMs != 1500 {
 		t.Fatalf("重启后未恢复在线修改: %+v", reloaded.Collector)
 	}
 }
