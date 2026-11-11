@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"testing"
 
 	"github.com/SilenCN/AssetSpider/internal/config"
@@ -141,4 +143,97 @@ func TestFetchTypeListError(t *testing.T) {
 	if _, err := f.FetchTypeList(context.Background(), src); err == nil {
 		t.Fatal("分类接口 500 应返回错误")
 	}
+}
+
+// TestFetchTypeListPaginates 验证分类很多的站点（pagecount > 1）时，
+// FetchTypeList 会翻完所有页并合并，而不是只拿第 1 页丢后续页。
+// 这正是一级分类「拿不到」的根因修复点（巨量资源这类大站分类分布在多页）。
+func TestFetchTypeListPaginates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		pg, _ := strconv.Atoi(r.URL.Query().Get("pg"))
+		if pg <= 0 {
+			pg = 1
+		}
+		// 两页：第 1 页 2 个，第 2 页 2 个（含原本落单的二级分类之父——一级分类）。
+		var payload map[string]interface{}
+		if pg == 1 {
+			payload = map[string]interface{}{
+				"code": 1, "page": 1, "pagecount": 2, "pagesize": 100,
+				"list": []map[string]interface{}{
+					{"type_id": "6", "type_name": "动作", "type_pid": "1"},
+					{"type_id": "7", "type_name": "喜剧", "type_pid": "1"},
+				},
+			}
+		} else {
+			payload = map[string]interface{}{
+				"code": 1, "page": 2, "pagecount": 2, "pagesize": 100,
+				"list": []map[string]interface{}{
+					{"type_id": "1", "type_name": "电影", "type_pid": "0"},
+					{"type_id": "2", "type_name": "电视剧", "type_pid": "0"},
+				},
+			}
+		}
+		_ = json.NewEncoder(w).Encode(payload)
+	}))
+	defer srv.Close()
+
+	src := model.Source{APIBase: srv.URL + "/api.php/provide/vod/"}
+	// PageSize=2 让每页恰好填满（2 条），从而触发真正的多页翻取；
+	// 若用默认 pagesize=100，两页都不足一页会当成单页提前结束。
+	f := NewFetcher(config.CollectorConfig{PageSize: 2})
+	resp, err := f.FetchTypeList(context.Background(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.List) != 4 {
+		t.Fatalf("应合并两页共 4 个分类，实际 %d: %+v", len(resp.List), resp.List)
+	}
+	// 验证第 2 页的一级分类（type_pid=0）确实被拿到，而非只停留在第 1 页。
+	hasFirstLevel := false
+	for _, it := range resp.List {
+		if it.TypeID.String() == "1" && it.TypePID.String() == "0" {
+			hasFirstLevel = true
+		}
+	}
+	if !hasFirstLevel {
+		t.Fatalf("第 2 页的一级分类未合并进来: %+v", resp.List)
+	}
+}
+
+// TestBuildTypeListURLPageSize 验证 BuildTypeListURL 在传入配置时写入 pagesize（上限 100）。
+func TestBuildTypeListURLPageSize(t *testing.T) {
+	src := model.Source{APIBase: "https://example.com/api.php/provide/vod/"}
+	u, err := BuildTypeListURL(src, config.CollectorConfig{PageSize: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := mustQuery(t, u)
+	if q.Get("pagesize") != "50" {
+		t.Fatalf("应写入 pagesize=50，实际 %q", q.Get("pagesize"))
+	}
+	if q.Get("ac") != "typelist" {
+		t.Fatalf("应强制 ac=typelist，实际 %q", q.Get("ac"))
+	}
+
+	// PageSize 超过 100 时被钳到上限 100。
+	u2, _ := BuildTypeListURL(src, config.CollectorConfig{PageSize: 500})
+	if mustQuery(t, u2).Get("pagesize") != "100" {
+		t.Fatalf("pagesize 超过 100 应被钳到 100")
+	}
+
+	// 不传配置时不加 pagesize（保持旧行为）。
+	u3, _ := BuildTypeListURL(src)
+	if mustQuery(t, u3).Get("pagesize") != "" {
+		t.Fatalf("不传配置时不应写入 pagesize")
+	}
+}
+
+func mustQuery(t *testing.T, rawURL string) url.Values {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.Query()
 }
