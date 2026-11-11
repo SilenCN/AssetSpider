@@ -54,8 +54,20 @@ func TestVodFieldsMatchVideoEntity(t *testing.T) {
 			t.Errorf("字段 %s 的分组 %q 未在 VodGroupLabels 中定义", f.Go, f.Group)
 		}
 	}
-	if len(VodFields) < 90 {
-		t.Errorf("标准字段数量异常（%d），疑似清单被裁剪", len(VodFields))
+	// 精确锁定清单规模：既防误删字段导致静默丢列，也防误加字段破坏前后端一致。
+	// 2026-11 按需求裁掉 23 个后台管理字段（审核状态 / 模板 / 积分 / 密码等）后为 68。
+	if len(VodFields) != 68 {
+		t.Errorf("标准字段数量异常（%d），应为 68，疑似清单被误增删", len(VodFields))
+	}
+	// 每个分组都必须仍有字段，避免删字段后留下空的详情页签。
+	usedGroups := map[string]bool{}
+	for _, f := range VodFields {
+		usedGroups[f.Group] = true
+	}
+	for _, g := range VodGroupLabels {
+		if !usedGroups[g.Key] {
+			t.Errorf("分组 %q（%s）已无字段，应同步从 VodGroupLabels 移除", g.Key, g.Label)
+		}
 	}
 }
 

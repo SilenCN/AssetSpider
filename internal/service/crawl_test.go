@@ -207,7 +207,8 @@ func TestCrawlServiceFullIncrementalAndDedup(t *testing.T) {
 		t.Fatalf("数字型 vod_id 或播放地址解析异常: %+v", vids)
 	}
 	// 全字段入库：抽查冷门字段与扩展字段（不再冗余保存整条 raw）
-	if vids[0].VodLevel == "" || vids[0].VodDoubanID == "" || vids[0].VodPwdDownURL == "" {
+	// 这里只抽查仍保留的标准列；被裁剪的字段会落入 Extra，由下面的扩展字段断言覆盖。
+	if vids[0].VodWriter == "" || vids[0].VodDoubanID == "" || vids[0].VodTimeMake == "" {
 		t.Errorf("冷门标准字段未入库: %+v", vids[0])
 	}
 	if !strings.Contains(vids[0].Extra, "vod_custom_flag") {

@@ -352,8 +352,9 @@ func TestVideoFieldMetaAndDetailAPI(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &meta); err != nil {
 		t.Fatal(err)
 	}
-	if meta.Total < 90 || len(meta.Fields) != meta.Total || len(meta.Groups) == 0 {
-		t.Fatalf("字段元数据不完整: total=%d fields=%d groups=%d", meta.Total, len(meta.Fields), len(meta.Groups))
+	// 2026-11 裁剪 23 个后台管理字段后标准字段为 68、分组为 13，精确锁定防误增删。
+	if meta.Total != 68 || len(meta.Fields) != meta.Total || len(meta.Groups) != 13 {
+		t.Fatalf("字段元数据异常: total=%d fields=%d groups=%d（应 68/68/13）", meta.Total, len(meta.Fields), len(meta.Groups))
 	}
 	foundPlayURL := false
 	for _, f := range meta.Fields {

@@ -32,21 +32,18 @@ type Video struct {
 	CategoryID uint `gorm:"column:category_id;index" json:"categoryId"`
 
 	// ---- 基础信息 ----
-	VodID          string `gorm:"column:vod_id;size:64;not null;uniqueIndex:idx_source_vod,priority:2" json:"vodId"`
-	TypeID         string `gorm:"column:type_id" json:"typeId"`
-	TypeID1        string `gorm:"column:type_id_1" json:"typeId1"`
-	GroupID        string `gorm:"column:group_id" json:"groupId"`
-	VodName        string `gorm:"column:vod_name;index" json:"vodName"`
-	VodSub         string `gorm:"column:vod_sub" json:"vodSub"`
-	VodEn          string `gorm:"column:vod_en" json:"vodEn"`
-	VodStatus      string `gorm:"column:vod_status" json:"vodStatus"`
-	VodAuditRemark string `gorm:"column:vod_audit_remark" json:"vodAuditRemark"`
-	VodLetter      string `gorm:"column:vod_letter" json:"vodLetter"`
-	VodColor       string `gorm:"column:vod_color" json:"vodColor"`
-	VodTag         string `gorm:"column:vod_tag" json:"vodTag"`
-	VodClass       string `gorm:"column:vod_class" json:"vodClass"`
-	TypeName       string `gorm:"column:type_name" json:"typeName"`
-	VodType        string `gorm:"column:type;type:text" json:"vodType"`
+	VodID    string `gorm:"column:vod_id;size:64;not null;uniqueIndex:idx_source_vod,priority:2" json:"vodId"`
+	TypeID   string `gorm:"column:type_id" json:"typeId"`
+	TypeID1  string `gorm:"column:type_id_1" json:"typeId1"`
+	GroupID  string `gorm:"column:group_id" json:"groupId"`
+	VodName  string `gorm:"column:vod_name;index" json:"vodName"`
+	VodSub   string `gorm:"column:vod_sub" json:"vodSub"`
+	VodEn    string `gorm:"column:vod_en" json:"vodEn"`
+	VodColor string `gorm:"column:vod_color" json:"vodColor"`
+	VodTag   string `gorm:"column:vod_tag" json:"vodTag"`
+	VodClass string `gorm:"column:vod_class" json:"vodClass"`
+	TypeName string `gorm:"column:type_name" json:"typeName"`
+	VodType  string `gorm:"column:type;type:text" json:"vodType"`
 
 	// ---- 图片 ----
 	VodPic           string `gorm:"column:vod_pic" json:"vodPic"`
@@ -85,51 +82,29 @@ type Video struct {
 	VodDuration string `gorm:"column:vod_duration" json:"vodDuration"`
 
 	// ---- 模板与标志 ----
-	VodTpl       string `gorm:"column:vod_tpl" json:"vodTpl"`
-	VodTplPlay   string `gorm:"column:vod_tpl_play" json:"vodTplPlay"`
-	VodTplDown   string `gorm:"column:vod_tpl_down" json:"vodTplDown"`
-	VodIsend     string `gorm:"column:vod_isend" json:"vodIsend"`
-	VodLock      string `gorm:"column:vod_lock" json:"vodLock"`
-	VodLevel     string `gorm:"column:vod_level" json:"vodLevel"`
-	VodCopyright string `gorm:"column:vod_copyright" json:"vodCopyright"`
+	VodTplPlay string `gorm:"column:vod_tpl_play" json:"vodTplPlay"`
+	VodTplDown string `gorm:"column:vod_tpl_down" json:"vodTplDown"`
+	VodIsend   string `gorm:"column:vod_isend" json:"vodIsend"`
 
 	// ---- 积分与统计 ----
-	VodPoints     string `gorm:"column:vod_points" json:"vodPoints"`
-	VodPointsPlay string `gorm:"column:vod_points_play" json:"vodPointsPlay"`
-	VodPointsDown string `gorm:"column:vod_points_down" json:"vodPointsDown"`
-	VodHits       string `gorm:"column:vod_hits" json:"vodHits"`
-	VodHitsDay    string `gorm:"column:vod_hits_day" json:"vodHitsDay"`
-	VodHitsWeek   string `gorm:"column:vod_hits_week" json:"vodHitsWeek"`
-	VodHitsMonth  string `gorm:"column:vod_hits_month" json:"vodHitsMonth"`
-	VodUp         string `gorm:"column:vod_up" json:"vodUp"`
-	VodDown       string `gorm:"column:vod_down" json:"vodDown"`
-	VodScore      string `gorm:"column:vod_score" json:"vodScore"`
-	VodScoreAll   string `gorm:"column:vod_score_all" json:"vodScoreAll"`
-	VodScoreNum   string `gorm:"column:vod_score_num" json:"vodScoreNum"`
-	VodShareCount string `gorm:"column:vod_share_count" json:"vodShareCount"`
+	VodHits      string `gorm:"column:vod_hits" json:"vodHits"`
+	VodHitsDay   string `gorm:"column:vod_hits_day" json:"vodHitsDay"`
+	VodHitsWeek  string `gorm:"column:vod_hits_week" json:"vodHitsWeek"`
+	VodHitsMonth string `gorm:"column:vod_hits_month" json:"vodHitsMonth"`
+	VodUp        string `gorm:"column:vod_up" json:"vodUp"`
+	VodDown      string `gorm:"column:vod_down" json:"vodDown"`
+	VodScore     string `gorm:"column:vod_score" json:"vodScore"`
+	VodScoreAll  string `gorm:"column:vod_score_all" json:"vodScoreAll"`
+	VodScoreNum  string `gorm:"column:vod_score_num" json:"vodScoreNum"`
 
 	// ---- 时间 ----
-	VodTime        string `gorm:"column:vod_time;size:32;index;index:idx_videos_source_time,priority:2" json:"vodTime"` // 站点原始更新时间，归一化后可字典序比较
-	VodTimeAdd     string `gorm:"column:vod_time_add" json:"vodTimeAdd"`
-	VodTimeHits    string `gorm:"column:vod_time_hits" json:"vodTimeHits"`
-	VodTimeMake    string `gorm:"column:vod_time_make" json:"vodTimeMake"`
-	VodRecycleTime string `gorm:"column:vod_recycle_time" json:"vodRecycleTime"`
-	VodTrysee      string `gorm:"column:vod_trysee" json:"vodTrysee"`
+	VodTime     string `gorm:"column:vod_time;size:32;index;index:idx_videos_source_time,priority:2" json:"vodTime"` // 站点原始更新时间，归一化后可字典序比较
+	VodTimeAdd  string `gorm:"column:vod_time_add" json:"vodTimeAdd"`
+	VodTimeMake string `gorm:"column:vod_time_make" json:"vodTimeMake"`
 
 	// ---- 来源与关联 ----
 	VodDoubanID    string `gorm:"column:vod_douban_id" json:"vodDoubanId"`
 	VodDoubanScore string `gorm:"column:vod_douban_score" json:"vodDoubanScore"`
-	VodReurl       string `gorm:"column:vod_reurl" json:"vodReurl"`
-	VodRelVod      string `gorm:"column:vod_rel_vod" json:"vodRelVod"`
-	VodRelArt      string `gorm:"column:vod_rel_art" json:"vodRelArt"`
-
-	// ---- 密码 ----
-	VodPwd        string `gorm:"column:vod_pwd" json:"vodPwd"`
-	VodPwdURL     string `gorm:"column:vod_pwd_url" json:"vodPwdUrl"`
-	VodPwdPlay    string `gorm:"column:vod_pwd_play" json:"vodPwdPlay"`
-	VodPwdPlayURL string `gorm:"column:vod_pwd_play_url" json:"vodPwdPlayUrl"`
-	VodPwdDown    string `gorm:"column:vod_pwd_down" json:"vodPwdDown"`
-	VodPwdDownURL string `gorm:"column:vod_pwd_down_url" json:"vodPwdDownUrl"`
 
 	// ---- 播放 ----
 	VodPlayFrom   string `gorm:"column:vod_play_from" json:"vodPlayFrom"`

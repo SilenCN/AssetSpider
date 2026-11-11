@@ -35,7 +35,6 @@ var VodGroupLabels = []struct {
 	{"stats", "积分与统计"},
 	{"time", "时间"},
 	{"relation", "来源与关联"},
-	{"password", "密码"},
 	{"play", "播放"},
 	{"download", "下载"},
 	{"plot", "分集剧情"},
@@ -52,9 +51,6 @@ var VodFields = []VodField{
 	{"vod_name", "VodName", "vod_name", "视频名称", "basic", false},
 	{"vod_sub", "VodSub", "vod_sub", "副标题", "basic", false},
 	{"vod_en", "VodEn", "vod_en", "别名 / 英文名", "basic", false},
-	{"vod_status", "VodStatus", "vod_status", "审核状态", "basic", false},
-	{"vod_audit_remark", "VodAuditRemark", "vod_audit_remark", "审核备注", "basic", false},
-	{"vod_letter", "VodLetter", "vod_letter", "首字母", "basic", false},
 	{"vod_color", "VodColor", "vod_color", "颜色", "basic", false},
 	{"vod_tag", "VodTag", "vod_tag", "标签", "basic", false},
 	{"vod_class", "VodClass", "vod_class", "扩展分类", "basic", false},
@@ -98,18 +94,11 @@ var VodFields = []VodField{
 	{"vod_duration", "VodDuration", "vod_duration", "时长", "attribute", false},
 
 	// 模板与标志
-	{"vod_tpl", "VodTpl", "vod_tpl", "独立模板", "flags", false},
 	{"vod_tpl_play", "VodTplPlay", "vod_tpl_play", "播放页模板", "flags", false},
 	{"vod_tpl_down", "VodTplDown", "vod_tpl_down", "下载页模板", "flags", false},
 	{"vod_isend", "VodIsend", "vod_isend", "是否完结", "flags", false},
-	{"vod_lock", "VodLock", "vod_lock", "锁定", "flags", false},
-	{"vod_level", "VodLevel", "vod_level", "推荐级别", "flags", false},
-	{"vod_copyright", "VodCopyright", "vod_copyright", "版权提示", "flags", false},
 
 	// 积分与统计
-	{"vod_points", "VodPoints", "vod_points", "访问所需积分", "stats", false},
-	{"vod_points_play", "VodPointsPlay", "vod_points_play", "每集点播积分", "stats", false},
-	{"vod_points_down", "VodPointsDown", "vod_points_down", "每集下载积分", "stats", false},
 	{"vod_hits", "VodHits", "vod_hits", "总点击量", "stats", false},
 	{"vod_hits_day", "VodHitsDay", "vod_hits_day", "日点击量", "stats", false},
 	{"vod_hits_week", "VodHitsWeek", "vod_hits_week", "周点击量", "stats", false},
@@ -119,30 +108,15 @@ var VodFields = []VodField{
 	{"vod_score", "VodScore", "vod_score", "平均分", "stats", false},
 	{"vod_score_all", "VodScoreAll", "vod_score_all", "总评分", "stats", false},
 	{"vod_score_num", "VodScoreNum", "vod_score_num", "评分次数", "stats", false},
-	{"vod_share_count", "VodShareCount", "vod_share_count", "分享次数", "stats", false},
 
 	// 时间
 	{"vod_time", "VodTime", "vod_time", "更新时间", "time", false},
 	{"vod_time_add", "VodTimeAdd", "vod_time_add", "添加时间", "time", false},
-	{"vod_time_hits", "VodTimeHits", "vod_time_hits", "点击时间", "time", false},
 	{"vod_time_make", "VodTimeMake", "vod_time_make", "生成时间", "time", false},
-	{"vod_recycle_time", "VodRecycleTime", "vod_recycle_time", "回收时间", "time", false},
-	{"vod_trysee", "VodTrysee", "vod_trysee", "试看时长（分）", "time", false},
 
 	// 来源与关联
 	{"vod_douban_id", "VodDoubanID", "vod_douban_id", "豆瓣 ID", "relation", false},
 	{"vod_douban_score", "VodDoubanScore", "vod_douban_score", "豆瓣评分", "relation", false},
-	{"vod_reurl", "VodReurl", "vod_reurl", "来源地址", "relation", false},
-	{"vod_rel_vod", "VodRelVod", "vod_rel_vod", "关联视频 IDs", "relation", false},
-	{"vod_rel_art", "VodRelArt", "vod_rel_art", "关联文章 IDs", "relation", false},
-
-	// 密码
-	{"vod_pwd", "VodPwd", "vod_pwd", "内容页密码", "password", false},
-	{"vod_pwd_url", "VodPwdURL", "vod_pwd_url", "获取密码链接", "password", false},
-	{"vod_pwd_play", "VodPwdPlay", "vod_pwd_play", "播放页密码", "password", false},
-	{"vod_pwd_play_url", "VodPwdPlayURL", "vod_pwd_play_url", "获取密码链接", "password", false},
-	{"vod_pwd_down", "VodPwdDown", "vod_pwd_down", "下载页密码", "password", false},
-	{"vod_pwd_down_url", "VodPwdDownURL", "vod_pwd_down_url", "获取密码链接", "password", false},
 
 	// 播放
 	{"vod_play_from", "VodPlayFrom", "vod_play_from", "播放组", "play", false},

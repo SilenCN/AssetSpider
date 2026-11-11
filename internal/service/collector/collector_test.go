@@ -313,9 +313,9 @@ func TestAllFieldsPreserved(t *testing.T) {
 	for k, val := range obj {
 		obj2[k] = val
 	}
-	obj2["vod_level"] = 999
+	obj2["vod_hits"] = 999
 	if got := ToVideo(1, parseOne(t, obj2).List[0]).Hash; got == base {
-		t.Error("修改标准字段 vod_level 后指纹未变化")
+		t.Error("修改标准字段 vod_hits 后指纹未变化")
 	}
 	obj3 := map[string]interface{}{}
 	for k, val := range obj {
