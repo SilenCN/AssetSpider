@@ -1332,9 +1332,10 @@ const navItems = computed(() => {
   }
   return navItemsFor(isAdmin.value).map(i => ({ ...i, count: counts[i.key] || 0 }))
 })
-const currentPageTitle = computed(() => detail.value
-  ? (detail.value.vodName || '影片详情')
-  : (NAV_ITEMS.find(i => i.key === tab.value)?.label || '资源库'))
+// 顶部栏始终显示当前页签名。详情页是资源库的下钻页（tab 仍为 videos），
+// 因此标题保持「资源库」，不切换成影片名；影片名在详情页头部 h2 展示。
+const currentPageTitle = computed(() =>
+  NAV_ITEMS.find(i => i.key === tab.value)?.label || '资源库')
 
 // 点击侧边栏：切换页面并按需加载该页数据。详情页是资源库的下钻页，
 // 点任意菜单都离开它（播放器一并销毁）。
