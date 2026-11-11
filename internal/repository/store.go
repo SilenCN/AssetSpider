@@ -42,7 +42,15 @@ import (
 //	4 → 年份筛选新增 idx_videos_vod_year
 //	5 → 补建缺失的一级分类（按 videos.type_id_1 / categories.type_pid 重建父子关系）
 //	6 → 站点增加定时增量配置列（schedule_enabled / schedule_cron / schedule_last_at）
-//	7 → 物理删除 videos 表 23 个已裁剪的后台管理字段列并 VACUUM 回收空间
+//	7 → 占位（曾经用于物理删除 videos 表的 23 个已裁剪列，该迁移已回滚，见下）
+//
+// 关于 v7：曾用 ALTER TABLE DROP COLUMN + VACUUM 物理删除实体已裁剪的 23 个
+// 后台管理字段列，以便让库结构与实体对齐、回收空间。该迁移在真实大库上会让
+// 启动时重写整库（2.1GB 库约 5~6 分钟、且峰值需约 2 倍临时空间），运维风险
+// 高于收益，已整体回滚：不再删列，历史库里这些列及其数据原样保留。
+//
+// 版本号仍保留为 7 而不回退到 6，原因：已经跑过 v7 的库 user_version=7，若把
+// 常量降为 6，将来真正需要迁移的 v7 会被这些库跳过。保留占位可避免版本号复用。
 //
 // 新增索引 / 改变索引列 / 增加需要回灌的数据迁移时把它 +1。
 const schemaVersion = 7
@@ -129,12 +137,6 @@ func (r *Repositories) Path() string { return r.path }
 // 不做 ANALYZE 的话，新建的复合索引在 sqlite_stat1 里没有记录，计划器仍会按旧索引
 // 估算行数，出现「有索引却仍全量排序」的情况。
 func prepareDatabase(db *gorm.DB) {
-	// v7：物理删除上一轮从实体裁剪掉的 23 个后台管理字段列。
-	// 无条件幂等调用（内部按实际列集合判断，只删仍存在的列）：不挂在下面的
-	// version 分支里，保证「上次删列/VACUUM 中途失败」或「旧二进制补回了列」时
-	// 下次启动都能自愈。必须在 ANALYZE 之前跑，让统计信息基于整理后的库。
-	dropTrimmedVideoColumns(db)
-
 	var version int
 	if err := db.Raw("PRAGMA user_version").Scan(&version).Error; err != nil {
 		return
