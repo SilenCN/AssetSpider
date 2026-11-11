@@ -2,6 +2,7 @@ package repository
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/SilenCN/AssetSpider/internal/model"
@@ -91,44 +92,69 @@ func (r *categoryRepository) EnsureForVideos(sourceID uint, videos []model.Video
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		typeIDToID := make(map[string]uint)
 		created := make([]model.Category, 0, len(candidates))
-		for key, cat := range candidates {
-			var existing model.Category
-			// 用 Find 而非 First，避免「不存在」时 GORM 打印 warn 日志。
-			found := tx.Where("source_id = ? AND cat_key = ?", sourceID, key).
-				Limit(1).Find(&existing)
-			if found.Error != nil {
-				return found.Error
-			}
-			if found.RowsAffected > 0 {
+
+		// 批量 find-or-create：一次查询取回本批所有已存在分类（按 cat_key），
+		// 只把缺失的批量插入；替代原先逐条 Find+Create 的 O(N) 往返。
+		keys := make([]string, 0, len(candidates))
+		for key := range candidates {
+			keys = append(keys, key)
+		}
+		var found []model.Category
+		if err := tx.Where("source_id = ? AND cat_key IN ?", sourceID, keys).
+			Find(&found).Error; err != nil {
+			return err
+		}
+		existingByKey := make(map[string]model.Category, len(found))
+		for _, row := range found {
+			existingByKey[row.Key] = row
+		}
+
+		missing := make([]model.Category, 0, len(candidates))
+		missingKeys := make([]string, 0, len(candidates))
+		// 按 key 排序遍历，保证 out / created 顺序稳定（map 迭代本无序）。
+		sort.Strings(keys)
+		for _, key := range keys {
+			cat := candidates[key]
+			if ex, ok := existingByKey[key]; ok {
 				// 同 type_id 改名时同步分类名；父级信息后续补到也允许回填。
-				if cat.TypePID != "" && existing.TypePID == "" {
-					if err := tx.Model(&existing).Update("type_pid", cat.TypePID).Error; err != nil {
+				if cat.TypePID != "" && ex.TypePID == "" {
+					if err := tx.Model(&ex).Update("type_pid", cat.TypePID).Error; err != nil {
 						return err
 					}
 				}
-				if cat.Name != "" && existing.Name != cat.Name {
-					if err := tx.Model(&existing).Update("name", cat.Name).Error; err != nil {
+				if cat.Name != "" && ex.Name != cat.Name {
+					if err := tx.Model(&ex).Update("name", cat.Name).Error; err != nil {
 						return err
 					}
+					ex.Name = cat.Name
 				}
-				out[key] = existing.ID
-				if existing.TypeID != "" {
-					typeIDToID[existing.TypeID] = existing.ID
+				if ex.TypePID == "" && cat.TypePID != "" {
+					ex.TypePID = cat.TypePID
 				}
-				created = append(created, existing)
+				out[key] = ex.ID
+				if ex.TypeID != "" {
+					typeIDToID[ex.TypeID] = ex.ID
+				}
+				created = append(created, ex)
 				continue
 			}
 			if cat.Name == "" {
 				cat.Name = cat.TypeID // 父级无名称时以 type_id 兜底展示
 			}
-			if err := tx.Create(&cat).Error; err != nil {
-				return fmt.Errorf("创建分类 %s/%s: %w", cat.TypeID, cat.Name, err)
+			missing = append(missing, cat)
+			missingKeys = append(missingKeys, key)
+		}
+		if len(missing) > 0 {
+			if err := tx.CreateInBatches(&missing, 200).Error; err != nil {
+				return fmt.Errorf("批量创建分类: %w", err)
 			}
-			out[key] = cat.ID
-			if cat.TypeID != "" {
-				typeIDToID[cat.TypeID] = cat.ID
+			for i, cat := range missing {
+				out[missingKeys[i]] = cat.ID
+				if cat.TypeID != "" {
+					typeIDToID[cat.TypeID] = cat.ID
+				}
+				created = append(created, cat)
 			}
-			created = append(created, cat)
 		}
 
 		// 第三遍：根据 type_pid 建立父子关联并标记层级（1=一级 2=二级）。

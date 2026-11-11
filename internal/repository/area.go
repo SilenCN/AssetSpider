@@ -101,28 +101,57 @@ func (r *areaRepository) EnsureForVideos(sourceID uint, videos []model.Video) (m
 }
 
 // ensureAreaIDs 在给定事务内把一批地域名解析为主键，缺失的就地创建。
+// 批量实现：一次查询取回全部已存在的地域，只把缺失项批量插入，避免逐条 find-or-create
+// 的 O(N) 往返。返回 map 的键是小写地域名（与调用方的去重键一致）。
 func ensureAreaIDs(tx *gorm.DB, sourceID uint, names []string) (map[string]uint, error) {
 	out := make(map[string]uint, len(names))
+	// 去重并保持首个写法；收集用于一次查询的小写名列表。
+	firstWrite := make(map[string]string, len(names))
+	keys := make([]string, 0, len(names))
 	for _, name := range names {
 		key := strings.ToLower(name)
+		if _, ok := firstWrite[key]; ok {
+			continue
+		}
+		firstWrite[key] = name
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return out, nil
+	}
+
+	// ① 一次批量查询所有已存在地域（只取 id/name）。
+	var found []struct {
+		ID   uint   `gorm:"column:id"`
+		Name string `gorm:"column:name"`
+	}
+	if err := tx.Model(&model.Area{}).
+		Select("id, name").
+		Where("source_id = ? AND lower(name) IN ?", sourceID, keys).
+		Scan(&found).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range found {
+		out[strings.ToLower(row.Name)] = row.ID
+	}
+
+	// ② 只把缺失的批量插入；CreateInBatches 会回填自增 ID。
+	missing := make([]model.Area, 0, len(keys))
+	missingKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
 		if _, ok := out[key]; ok {
 			continue
 		}
-		var existing model.Area
-		found := tx.Where("source_id = ? AND lower(name) = lower(?)", sourceID, name).
-			Limit(1).Find(&existing)
-		if found.Error != nil {
-			return nil, found.Error
-		}
-		if found.RowsAffected > 0 {
-			out[key] = existing.ID
-			continue
-		}
-		area := model.Area{SourceID: sourceID, Name: name}
-		if err := tx.Create(&area).Error; err != nil {
+		missing = append(missing, model.Area{SourceID: sourceID, Name: firstWrite[key]})
+		missingKeys = append(missingKeys, key)
+	}
+	if len(missing) > 0 {
+		if err := tx.CreateInBatches(&missing, 200).Error; err != nil {
 			return nil, err
 		}
-		out[key] = area.ID
+		for i, row := range missing {
+			out[missingKeys[i]] = row.ID
+		}
 	}
 	return out, nil
 }

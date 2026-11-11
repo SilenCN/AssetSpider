@@ -109,31 +109,15 @@ func (r *tagRepository) EnsureForVideos(sourceID uint, videos []model.Video) (ma
 		return out, nil
 	}
 
-	// 第二遍：事务内按名 find-or-create，建立 小写名 → 标签主键 的映射。
+	// 第二遍：事务内批量 find-or-create。一次查询取回全部已存在标签，只把缺失的
+	// 批量插入，避免按名逐条 find-or-create 的 O(N) 往返。
 	nameToID := make(map[string]uint, len(allNames))
 	err := r.db.Transaction(func(tx *gorm.DB) error {
-		for _, name := range allNames {
-			key := strings.ToLower(name)
-			if id, ok := nameToID[key]; ok {
-				_ = id // 同批已创建
-				continue
-			}
-			var existing model.Tag
-			found := tx.Where("source_id = ? AND lower(name) = lower(?)", sourceID, name).
-				Limit(1).Find(&existing)
-			if found.Error != nil {
-				return found.Error
-			}
-			if found.RowsAffected > 0 {
-				nameToID[key] = existing.ID
-				continue
-			}
-			tag := model.Tag{SourceID: sourceID, Name: name}
-			if err := tx.Create(&tag).Error; err != nil {
-				return err
-			}
-			nameToID[key] = tag.ID
+		ids, err := ensureTagIDs(tx, sourceID, allNames)
+		if err != nil {
+			return err
 		}
+		nameToID = ids
 		return nil
 	})
 	if err != nil {
@@ -150,6 +134,58 @@ func (r *tagRepository) EnsureForVideos(sourceID uint, videos []model.Video) (ma
 		}
 		if len(ids) > 0 {
 			out[vodID] = ids
+		}
+	}
+	return out, nil
+}
+
+// ensureTagIDs 在事务内把一批标签名解析为主键，缺失的批量创建。
+// 批量实现：一次查询取回全部已存在标签，只把缺失项批量插入；返回键为小写标签名。
+func ensureTagIDs(tx *gorm.DB, sourceID uint, names []string) (map[string]uint, error) {
+	out := make(map[string]uint, len(names))
+	firstWrite := make(map[string]string, len(names))
+	keys := make([]string, 0, len(names))
+	for _, name := range names {
+		key := strings.ToLower(name)
+		if _, ok := firstWrite[key]; ok {
+			continue
+		}
+		firstWrite[key] = name
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return out, nil
+	}
+
+	var found []struct {
+		ID   uint   `gorm:"column:id"`
+		Name string `gorm:"column:name"`
+	}
+	if err := tx.Model(&model.Tag{}).
+		Select("id, name").
+		Where("source_id = ? AND lower(name) IN ?", sourceID, keys).
+		Scan(&found).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range found {
+		out[strings.ToLower(row.Name)] = row.ID
+	}
+
+	missing := make([]model.Tag, 0, len(keys))
+	missingKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if _, ok := out[key]; ok {
+			continue
+		}
+		missing = append(missing, model.Tag{SourceID: sourceID, Name: firstWrite[key]})
+		missingKeys = append(missingKeys, key)
+	}
+	if len(missing) > 0 {
+		if err := tx.CreateInBatches(&missing, 200).Error; err != nil {
+			return nil, err
+		}
+		for i, row := range missing {
+			out[missingKeys[i]] = row.ID
 		}
 	}
 	return out, nil

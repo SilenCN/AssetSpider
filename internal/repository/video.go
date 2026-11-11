@@ -8,6 +8,7 @@ import (
 
 	"github.com/SilenCN/AssetSpider/internal/model"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // UpsertStats 是一次影片批量写入的统计。
@@ -75,48 +76,163 @@ func NewVideoRepository(db *gorm.DB) VideoRepository {
 
 var _ VideoRepository = (*videoRepository)(nil)
 
+// existingVideo 是批量预查询时需要用到的既有影片最小字段集。
+// 只取这 6 列：判定新增 / 未变 / 已变、回填首见时间与主键、补齐历史数据都够用，
+// 避免把 91 个标准字段全查回来白耗内存与 IO。
+type existingVideo struct {
+	ID          uint      `gorm:"column:id"`
+	VodID       string    `gorm:"column:vod_id"`
+	Hash        string    `gorm:"column:hash"`
+	CategoryID  uint      `gorm:"column:category_id"`
+	VodPlayList string    `gorm:"column:vod_play_list"`
+	FirstSeenAt time.Time `gorm:"column:first_seen_at"`
+}
+
 // UpsertVideos 按 (source_id, vod_id) 批量去重写入。
 // 内容指纹未变化则跳过更新，仅刷新 LastSeenAt。
+//
+// 性能：整批只发 1 次 SELECT 把已存在行捞进内存，而不再逐条 Find；新增用
+// CreateInBatches 一次写多行的 SQL；已变用 ON CONFLICT 一次 upsert 多行；
+// 未变按「是否需补列」分组批量 UPDATE。往返次数从 O(3N) 降到 O(N/batch+常数)。
+// 整个过程仍在单个事务内，保证原子性；FTS5 的行级触发器对批量语句同样逐行生效。
 func (r *videoRepository) UpsertVideos(items []model.Video) (UpsertStats, error) {
 	var stats UpsertStats
+	if len(items) == 0 {
+		return stats, nil
+	}
+
+	// 批次内按 (source_id, vod_id) 去重并保留最后一条：与旧逻辑一致（同批重复时
+	// 后写覆盖前写，且只有最后一条的统计生效）。唯一键必须带 source_id——不同站点的
+	// vod_id 可能完全相同，不能互相覆盖。
+	type videoKey struct {
+		sourceID uint
+		vodID    string
+	}
+	latest := make(map[videoKey]int, len(items)) // (source_id, vod_id) -> items 下标
+	order := make([]videoKey, 0, len(items))
+	for i := range items {
+		k := videoKey{items[i].SourceID, items[i].VodID}
+		if _, ok := latest[k]; !ok {
+			order = append(order, k)
+		}
+		latest[k] = i
+	}
+
+	// 全批按站点分组：一次查询 per 站点，用 source_id + vod_id IN 取回全部已存在行。
+	sources := make(map[uint][]string, 1)
+	for _, k := range order {
+		sources[k.sourceID] = append(sources[k.sourceID], k.vodID)
+	}
+
 	err := r.db.Transaction(func(tx *gorm.DB) error {
-		for i := range items {
-			v := &items[i]
-			var existing model.Video
-			// 用 Find 而非 First，避免 GORM 为"记录不存在"打印 warn 日志。
-			found := tx.Where("source_id = ? AND vod_id = ?", v.SourceID, v.VodID).
-				Limit(1).Find(&existing)
-			if found.Error != nil {
-				return found.Error
+		// ① 一次批量 SELECT：捞出本批所有已存在行（只取必要列）。
+		existing := make(map[uint]map[string]existingVideo, len(sources))
+		for sid, ids := range sources {
+			uniq := make([]string, 0, len(ids))
+			seen := make(map[string]bool, len(ids))
+			for _, id := range ids {
+				if !seen[id] {
+					seen[id] = true
+					uniq = append(uniq, id)
+				}
 			}
+			var rows []existingVideo
+			if err := tx.Model(&model.Video{}).
+				Select("id, vod_id, hash, category_id, vod_play_list, first_seen_at").
+				Where("source_id = ? AND vod_id IN ?", sid, uniq).
+				Scan(&rows).Error; err != nil {
+				return err
+			}
+			m := make(map[string]existingVideo, len(rows))
+			for _, row := range rows {
+				m[row.VodID] = row
+			}
+			existing[sid] = m
+		}
+
+		now := time.Now()
+		toCreate := make([]*model.Video, 0, len(items))
+		toUpsert := make([]*model.Video, 0, len(items)) // hash 变：ON CONFLICT 全字段更新
+		toTouch := make([]*model.Video, 0, len(items))  // hash 同：仅刷 last_seen_at / 补列
+		touchIDs := make([]uint, 0, len(items))
+
+		// ② 内存分组（只遍历去重后的最后一条，按首次出现顺序保证稳定）。
+		for _, k := range order {
+			v := &items[latest[k]]
+			ex, found := existing[k.sourceID][k.vodID]
 			switch {
-			case found.RowsAffected == 0:
-				now := time.Now()
+			case !found:
 				v.FirstSeenAt, v.LastSeenAt = now, now
-				if err := tx.Create(v).Error; err != nil {
-					return fmt.Errorf("新增影片 %d/%s: %w", v.SourceID, v.VodID, err)
-				}
+				toCreate = append(toCreate, v)
 				stats.New++
-			case existing.Hash == v.Hash:
+			case ex.Hash == v.Hash:
 				stats.Unchanged++
-				updates := map[string]interface{}{"last_seen_at": time.Now()}
-				// 全字段未变时也要补齐分类关联，让改造前入库的历史数据在全量采集后自动归类。
-				if existing.CategoryID != v.CategoryID {
-					updates["category_id"] = v.CategoryID
-				}
-				// 解析后的播放组（vod_play_list）同理：对历史数据或上次未解析成功的记录，
-				// 即使内容指纹未变，也要把本次解析得到的播放组回写，避免"解析了却没入库"。
-				if existing.VodPlayList == "" && v.VodPlayList != "" {
-					updates["vod_play_list"] = v.VodPlayList
-				}
-				if err := tx.Model(&existing).Updates(updates).Error; err != nil {
-					return err
-				}
+				toTouch = append(toTouch, v)
+				touchIDs = append(touchIDs, ex.ID)
 			default:
-				if err := tx.Model(&existing).Updates(videoUpdateMap(*v)).Error; err != nil {
+				// 回填既有主键与首见时间：ON CONFLICT 更新时不覆盖这两列。
+				v.ID = ex.ID
+				v.FirstSeenAt, v.LastSeenAt = ex.FirstSeenAt, now
+				toUpsert = append(toUpsert, v)
+				stats.Updated++
+			}
+		}
+
+		const batchSize = 200
+
+		// ③ 批量新增：GORM CreateInBatches 会回填每行自增 ID 并维护 CreatedAt。
+		if len(toCreate) > 0 {
+			if err := tx.CreateInBatches(toCreate, batchSize).Error; err != nil {
+				return fmt.Errorf("批量新增影片: %w", err)
+			}
+		}
+
+		// ④ 批量更新（内容变化）：按唯一键冲突时更新业务列，不碰 id / created_at /
+		// first_seen_at（first_seen_at 已回填成库内原值，也一并排除更稳妥）。
+		if len(toUpsert) > 0 {
+			cols := make([]string, 0, len(model.VodFields)+3)
+			for _, f := range model.VodFields {
+				cols = append(cols, f.Column)
+			}
+			cols = append(cols, "hash", "extra", "category_id", "last_seen_at")
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "source_id"}, {Name: "vod_id"}},
+				DoUpdates: clause.AssignmentColumns(cols),
+			}).CreateInBatches(toUpsert, batchSize).Error; err != nil {
+				return fmt.Errorf("批量更新影片: %w", err)
+			}
+		}
+
+		// ⑤ 未变批次：先按 id 批量刷 last_seen_at；再把需要补列（历史数据缺
+		// category_id / vod_play_list）的行分组批量 UPDATE，避免逐条语句。
+		if len(toTouch) > 0 {
+			if err := tx.Model(&model.Video{}).Where("id IN ?", touchIDs).
+				Update("last_seen_at", now).Error; err != nil {
+				return err
+			}
+			// 需要补 category_id 的行。
+			catByID := make(map[uint]uint)
+			playByID := make(map[uint]string)
+			for _, v := range toTouch {
+				ex := existing[v.SourceID][v.VodID]
+				if ex.CategoryID != v.CategoryID {
+					catByID[ex.ID] = v.CategoryID
+				}
+				if ex.VodPlayList == "" && v.VodPlayList != "" {
+					playByID[ex.ID] = v.VodPlayList
+				}
+			}
+			for id, cat := range catByID {
+				if err := tx.Model(&model.Video{}).Where("id = ?", id).
+					Update("category_id", cat).Error; err != nil {
 					return err
 				}
-				stats.Updated++
+			}
+			for id, play := range playByID {
+				if err := tx.Model(&model.Video{}).Where("id = ?", id).
+					Update("vod_play_list", play).Error; err != nil {
+					return err
+				}
 			}
 		}
 		return nil
