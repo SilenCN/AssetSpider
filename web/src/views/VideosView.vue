@@ -48,6 +48,7 @@ const {
               <option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }}</option>
             </select>
             <select v-model="videoSort" @change="onFilterChange('sort', $event)" title="排序">
+              <option value="id_desc">默认（ID 倒序）</option>
               <option value="time_desc">更新时间 ↓</option>
               <option value="time_asc">更新时间 ↑</option>
               <option value="score_desc">评分 ↓</option>

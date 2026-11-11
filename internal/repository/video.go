@@ -181,6 +181,9 @@ func (r *videoRepository) MapVodIDs(sourceID uint, vodIDs []string) (map[string]
 // 只允许固定几组排序，避免把外部输入直接拼进 SQL。
 func videoOrder(sort string) string {
 	switch sort {
+	case "id_desc":
+		// 默认排序：按库内视频 id 倒序（即最新入库的排在前面）。
+		return "id DESC"
 	case "time_desc":
 		return "vod_time DESC, id DESC"
 	case "time_asc":

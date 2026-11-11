@@ -80,7 +80,7 @@ const videoCategory = ref('')
 const videoTag = ref('')
 const videoAreaId = ref('')
 const videoYear = ref('')
-const videoSort = ref('time_desc')
+const videoSort = ref('id_desc')
 const areas = ref([])
 const years = ref([])
 // ---------- 筛选条件双向联动 ----------
