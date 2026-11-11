@@ -1421,7 +1421,7 @@ provide('app', {
   areas, years, visibleCategories, visibleTags, visibleAreas, hasActiveFilters, areaGroups, videoPage, videoSize,
   videoLoading, videoLoadingMore, videoEnd, videoSeq, visibleVideoTotal, noticeTimer, notify,
   request, jsonOptions, loadHealth, loadSources, fetchVideos, kickSentinel, loadVideos, loadMoreVideos,
-  loadAreas, loadYears, loadJobs, loadTasks, loadCategories, loadCategoryTree, loadTags, loadUsers, refresh,
+  loadAreas, loadYears, loadJobs, loadTasks, loadCategories, loadCategoryTree, loadTags, loadUsers,
   categoryName, activeTaskOf, queuedCountOf, showCategoryVideos, filterByTag, catCollapsed, isCatCollapsed, toggleCat,
   catKey, siteNameOf, categoryForest, catTotal, catVideoCount, catPath, catSelectLabel, tagSelectLabel, applyFilterLinkage,
   onFilterChange, applyLinkage, clearAllFilters, toggleAllCats, fieldMeta, detail, detailTab, onlyNonEmpty,
@@ -1494,11 +1494,6 @@ provide('app', {
 
       <div class="side-overview">
         <div class="ov">
-          <span class="ov-label">可见站点</span>
-          <b class="ov-value">{{ sources.length }}</b>
-          <span class="ov-sub">启用 {{ sources.filter(s => s.enabled).length }} · 停用 {{ sources.length - sources.filter(s => s.enabled).length }}</span>
-        </div>
-        <div class="ov">
           <span class="ov-label">可见影片</span>
           <b class="ov-value">{{ visibleVideoTotal }}</b>
           <span class="ov-sub">按站点影片数快照累加</span>
@@ -1507,11 +1502,6 @@ provide('app', {
           <span class="ov-label">采集任务</span>
           <b class="ov-value">{{ capacity.running }}<span class="ov-unit">/ {{ capacity.maxConcurrent }}</span></b>
           <span class="ov-sub">运行中 · 排队 {{ capacity.queued }}</span>
-        </div>
-        <div class="ov">
-          <span class="ov-label">字段清单</span>
-          <b class="ov-value">{{ fieldMeta.total || '-' }}</b>
-          <span class="ov-sub">标准字段 · 全量入库</span>
         </div>
       </div>
 
@@ -1531,7 +1521,6 @@ provide('app', {
           <div class="acct-actions">
             <button class="mini ghost" @click="pwdModal = true">修改密码</button>
             <button class="mini ghost" @click="doLogout">退出登录</button>
-            <button class="mini ghost acct-wide" @click="refresh">刷新</button>
           </div>
         </div>
       </div>
@@ -2273,7 +2262,7 @@ tbody tr:hover td { background: #f8faff; }
 .side-foot { padding: 10px 12px 4px; }
 .side-foot .db-chip { display: block; max-width: 100%; }
 
-/* 账号与操作区（导航栏底部）：头像 + 用户名/角色 + 修改密码 / 退出登录 / 刷新 */
+/* 账号与操作区（导航栏底部）：头像 + 用户名/角色 + 修改密码 / 退出登录 */
 .side-account { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
 .acct-head { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 4px 2px; border-radius: 9px; }
 .acct-avatar {
@@ -2287,7 +2276,6 @@ tbody tr:hover td { background: #f8faff; }
 .acct-text .badge { padding: 1px 7px; font-size: 10px; line-height: 1.6; }
 .acct-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
 .acct-actions button { padding: 6px 8px; font-size: 12px; }
-.acct-actions .acct-wide { grid-column: 1 / -1; }
 
 .sidebar-toggle {
   display: flex; align-items: center; gap: 10px; margin: 4px 10px 14px;
