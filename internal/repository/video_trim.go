@@ -3,6 +3,7 @@ package repository
 import (
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -66,6 +67,17 @@ func dropTrimmedVideoColumns(db *gorm.DB) {
 		return // 已是目标结构，连 VACUUM 都不做
 	}
 
+	// 空间预检：ALTER TABLE DROP COLUMN 逐列重写整表、收尾 VACUUM 再重写整库，
+	// 峰值需要约 1~2 倍数据库文件大小的临时空间。磁盘紧张时若强行开删，会先
+	// 写满盘、反过来让服务自身的读写（含启动时的 AutoMigrate / 统计回灌）失败。
+	// 可用空间不足就整体跳过，记警告；下次启动磁盘宽裕时会重新扫描并续做。
+	// 拿不到路径 / 空间信息时不拦截（保守地照常尝试，交由 SQLite 报错与幂等兜底）。
+	if free, dbSize, ok := trimSpaceBudget(db); ok && trimShouldSkip(free, dbSize) {
+		log.Printf("跳过 videos 裁剪列清理：可用空间 %.1f MB 不足（需约 %.1f MB：数据库 %.1f MB ×2 供逐列重写与 VACUUM）；磁盘宽裕后启动会自动续做，期间程序功能不受影响",
+			float64(free)/1024/1024, float64(dbSize*2)/1024/1024, float64(dbSize)/1024/1024)
+		return
+	}
+
 	start := time.Now()
 	log.Printf("清理 videos 表 %d 个已裁剪的历史列: %s", len(toDrop), strings.Join(toDrop, ", "))
 	// DROP COLUMN 会拒绝删除「仍被索引引用」的列（error in index ... after
@@ -101,6 +113,42 @@ func dropTrimmedVideoColumns(db *gorm.DB) {
 		return
 	}
 	log.Printf("videos 裁剪列清理完成，总耗时 %s", time.Since(start).Round(time.Millisecond))
+}
+
+// trimShouldSkip 判断可用空间是否不足以安全执行删列重写。
+// 逐列 ALTER 峰值约需 1 份库大小，收尾 VACUUM 再需 1 份，合计按 2 倍库大小预留；
+// 用 64 位乘法前先防溢出（超大库 / 异常 free 值）。
+func trimShouldSkip(free, dbSize int64) bool {
+	if dbSize <= 0 {
+		return false
+	}
+	if dbSize > (1<<63-1)/2 {
+		return free < 1<<63-1 // 库已大到 2 倍溢出，只要不是接近满就放行
+	}
+	return free < dbSize*2
+}
+
+// trimSpaceBudget 返回（数据库所在卷可用字节数, 数据库文件字节数, 是否取得）。
+// 任何一步拿不到都返回 ok=false，让调用方跳过预检、照常尝试迁移（不误伤正常环境）。
+func trimSpaceBudget(db *gorm.DB) (int64, int64, bool) {
+	var list []struct {
+		Seq  int
+		Name string
+		File string
+	}
+	if err := db.Raw("PRAGMA database_list").Scan(&list).Error; err != nil || len(list) == 0 || list[0].File == "" {
+		return 0, 0, false // 内存库等无文件路径
+	}
+	path := list[0].File
+	info, err := os.Stat(path)
+	if err != nil || info.Size() <= 0 {
+		return 0, 0, false
+	}
+	free, err := availableDiskSpace(path)
+	if err != nil {
+		return 0, 0, false
+	}
+	return free, info.Size(), true
 }
 
 // dropIndexesReferencing 删除 videos 表上「引用了待删列之一」的索引，否则

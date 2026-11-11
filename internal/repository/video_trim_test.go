@@ -165,3 +165,28 @@ func TestTrimmedColumnsAreNotInEntity(t *testing.T) {
 		}
 	}
 }
+
+// TestTrimShouldSkip 锁定删列的空间预检阈值：可用空间不足 2 倍库大小时跳过，
+// 避免大库重写把磁盘写满反过来拖垮服务。
+func TestTrimShouldSkip(t *testing.T) {
+	const mb = int64(1024 * 1024)
+	cases := []struct {
+		name         string
+		free, dbSize int64
+		wantSkip     bool
+	}{
+		{"磁盘宽裕-大库", 10 * 1024 * mb, 2 * 1024 * mb, false},
+		{"恰好够2倍", 4 * 1024 * mb, 2 * 1024 * mb, false},
+		{"不足2倍", 3 * 1024 * mb, 2 * 1024 * mb, true},
+		{"严重不足", 130 * mb, 2119 * mb, true}, // 真实事故场景
+		{"小库-空间小也放行", 200 * mb, 100 * 1024, false},
+		{"无效库大小", 0, 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := trimShouldSkip(c.free, c.dbSize); got != c.wantSkip {
+				t.Errorf("trimShouldSkip(%d, %d) = %v, want %v", c.free, c.dbSize, got, c.wantSkip)
+			}
+		})
+	}
+}
