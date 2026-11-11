@@ -44,6 +44,13 @@ router  →  controller  →  service  →  repository
 - `internal/utils` 是新增的 utils 层，统一存放与业务无关的纯工具：`request.go`（路径/query 参数解析）、`json.go`（JSON 值字符串化）、`time.go`（时间归一化）、`hash.go`（内容指纹）、`env.go`（整数环境变量）。它可被任意一层引用，但自身**不允许依赖任何 `internal/*` 业务包**（由架构测试强制）。
 - 根目录 `architecture_test.go` 会解析四层生产代码的 import，自动校验依赖方向、utils 的横切纯洁性、仓储层「一实体一对象」，以及「Gin 不出现在 service/repository、GORM 不出现在 service/controller/router」；`internal/router/router_test.go` 还会遍历 Gin 路由表，强制 `/api/{模块名}/{版本号}` 结构且路径里不含动词。任何违规都会让 `go test ./...` 失败。
 
+## 文件规模
+
+**单个源文件不超过 1000 行**（`.go` / `.vue` / `.js`），由 `architecture_test.go` 的 `TestSourceFilesStaySmall` 强制（`node_modules` / `dist` 不参与）。行数只是代理指标，真正约束的是职责：超长文件通常意味着多个关注点挤在一起，改动互相牵连、review 看不出边界。超限时按领域拆文件，而不是压缩格式。
+
+- Go 侧：测试按领域拆（`router_test.go` / `source_test.go` / `video_test.go` / `category_test.go` / `task_test.go`，共用的请求构造与轮询 helper 放 `helpers_test.go`）。
+- Vue 侧：`App.vue` 只保留布局骨架（登录页 / 侧边栏 / 主内容区 / 全局弹窗）与装配，样式抽到 `web/src/styles/app.css`，业务按领域落到 `web/src/app/`（见下）。
+
 ## 目录结构
 
 ```
@@ -96,6 +103,24 @@ router  →  controller  →  service  →  repository
 │   └── app/                      # 装配层：repository → service → controller → router
 ├── web/
 │   ├── src/                      # Vue 3 源码
+│   │   ├── App.vue               # 外壳：登录页 / 侧边栏 / 主内容区 / 全局弹窗（只做装配）
+│   │   ├── app/                  # 业务按领域拆分的模块（共享同一个 ctx）
+│   │   │   ├── index.js          #   createApp()：按顺序把各模块挂到 ctx 上
+│   │   │   ├── state.js          #   共享状态（ref / computed）+ 本地存储读写
+│   │   │   ├── client.js         #   fetch 封装：令牌、错误、401 登出
+│   │   │   ├── lookup.js         #   纯展示工具（时间 / 状态 / 标签 / 进度格式化）
+│   │   │   ├── videos.js         #   资源库：筛选联动、分页、无限滚动
+│   │   │   ├── catalog.js        #   分类树 / 分类与标签下拉标签
+│   │   │   ├── detail.js         #   详情页与播放器（hls.js / iframe / 直链）
+│   │   │   ├── sources.js        #   站点配置、JSON 导入导出、cron 校验反馈
+│   │   │   ├── tasks.js          #   采集任务与采集记录
+│   │   │   ├── settings.js       #   系统设置
+│   │   │   ├── users.js          #   用户管理
+│   │   │   ├── auth.js           #   登录 / 退出 / 改密 / 启动探测
+│   │   │   └── shell.js          #   页签与 hash 路由、轮询、Esc、侧边栏
+│   │   ├── views/                # 页面组件（inject('app') 取共享状态）
+│   │   ├── styles/app.css        # 全局样式与 CSS 变量
+│   │   └── *.js                  # 纯函数模块 + node:test 单测（cron / 筛选 / 布局…）
 │   └── dist/                     # 构建产物（Gin 托管，随仓库提交）
 ├── main.go                       # 服务入口
 ├── architecture_test.go          # 分层依赖方向守卫测试
