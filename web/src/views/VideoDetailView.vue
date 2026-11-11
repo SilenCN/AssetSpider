@@ -1,8 +1,10 @@
 <script setup>
 // 影片详情「页面」：占据主内容区，不再是弹窗 / 遮罩。
 // 布局参考主流视频站：左侧播放器 + 线路/选集，右侧海报与资料卡；
+// 线路沿用站点给的播放组原始名称（如 ffm3u8 / lzm3u8），不再统一编号；
 // 接口原始字段（标准字段 / 扩展字段）属于内部信息，只对管理员折叠展示。
 import { computed, inject, ref, watch } from 'vue'
+import { groupLabel, groupHint } from '../playGroups.js'
 const {
   detail, onlyNonEmpty, groupedFields, extraPairs, playGroups,
   playerEl, activeGroup, activeEp, currentEpisodes, currentEpisode, currentUrl,
@@ -132,10 +134,10 @@ const facts = computed(() => {
             <button
               v-for="(g, gi) in playGroups" :key="gi"
               class="line-tab" :class="{ active: gi === activeGroup }"
-              :title="g.note || g.from || ''"
+              :title="groupHint(g)"
               @click="chooseGroup(gi)"
             >
-              {{ '线路 ' + (gi + 1) }}
+              {{ groupLabel(g, gi) }}
               <em>{{ g.episodes?.length || 0 }} 集</em>
             </button>
           </div>
