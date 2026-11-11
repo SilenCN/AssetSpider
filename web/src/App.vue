@@ -609,7 +609,7 @@ function videoErrorText(code) {
 function onVideoError(e) {
   // destroyPlayer 里的 removeAttribute('src') + load() 也会触发 error，忽略空 src 的情况。
   if (!e.target?.getAttribute('src')) return
-  playError.value = '播放失败：' + videoErrorText(e.target?.error?.code) + '。可在新窗口打开原地址确认，或为站点配置视频解析地址。'
+  playError.value = '播放失败：' + videoErrorText(e.target?.error?.code) + '。可点「在新窗口打开」用浏览器直接播放。'
 }
 
 function destroyPlayer() {
@@ -659,17 +659,17 @@ async function mountPlayer() {
         }
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR && !recovered) {
           recovered = true
-          playError.value = 'HLS ' + hlsErrorText(data) + '，正在重试…'
+          playError.value = '播放加载失败，正在重试…'
           try { inst.startLoad() } catch (e) { /* 忽略 */ }
           // 重试迟迟不成功时给出明确结论，避免一直停在「正在重试」。
           playErrorTimer = setTimeout(() => {
             if (playError.value.includes('正在重试')) {
-              playError.value = 'HLS 播放失败：' + hlsErrorText(data) + '。请检查站点的播放域名 / 解析地址配置，或在新窗口打开原地址确认。'
+              playError.value = '播放失败：' + hlsErrorText(data) + '。可点「在新窗口打开」用浏览器直接播放，或切换其它线路。'
             }
           }, 8000)
           return
         }
-        playError.value = 'HLS 播放失败：' + hlsErrorText(data) + '。可在新窗口打开原地址确认，或为站点配置视频解析地址。'
+        playError.value = '播放失败：' + hlsErrorText(data) + '。可点「在新窗口打开」用浏览器直接播放，或切换其它线路。'
       })
       inst.loadSource(url)
       inst.attachMedia(el)
@@ -681,7 +681,7 @@ async function mountPlayer() {
         el.play().catch(() => {})
         return
       }
-      playError.value = '无法播放该地址：' + (e?.message || String(e))
+      playError.value = '该线路暂时无法播放，请切换其它线路，或点「在新窗口打开」重试。'
       return
     }
   }
@@ -2039,14 +2039,41 @@ tbody tr:hover td { background: #f8faff; }
 .res-tag { font-size: 10px; line-height: 1; padding: 3px 7px; border-radius: 999px; background: var(--brand-soft); color: #2f6df6; cursor: pointer; white-space: nowrap; }
 .res-tag:hover { background: #dbe6ff; }
 .res-time { margin: 0; font-size: 11px; color: var(--muted-2); }
-.detail-tags { margin-top: 8px; }
-/* 详情播放器与线路 / 剧集选择 */
-.player-wrap { margin-top: 4px; }
-.player { width: 100%; max-height: 420px; background: #000; border-radius: 10px; display: block; }
-.player-frame { width: 100%; aspect-ratio: 16 / 9; max-height: 420px; border: 0; border-radius: 10px; background: #000; display: block; }
-.group-tabs, .ep-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.ep-chips { max-height: 168px; overflow-y: auto; padding: 2px; }
-.play-url { margin: 10px 0 0; font-size: 11px; color: var(--muted); word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.detail-tags { margin-top: 10px; }
+/* 详情：播放器舞台（16:9 自适应）+ 线路 / 选集 */
+.player-wrap { margin: 0; }
+.player-stage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #0b0d12; border-radius: 12px; overflow: hidden; }
+.player { position: absolute; inset: 0; width: 100%; height: 100%; background: #000; display: block; }
+.player-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
+.player-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #9aa4b4; font-size: 13px; }
+.player-cover { position: absolute; inset: 0; background: #0b0d12; pointer-events: none; overflow: hidden; }
+.player-cover img { width: 100%; height: 100%; object-fit: cover; opacity: .9; }
+.player-cover::after {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(120% 90% at 50% 40%, rgba(0, 0, 0, .05), rgba(0, 0, 0, .45));
+}
+.play-badge {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 66px; height: 66px; border-radius: 50%; z-index: 1;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, .5); color: #fff; font-size: 26px; padding-left: 5px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, .35); backdrop-filter: blur(2px);
+}
+.ph-icon { font-size: 34px; opacity: .7; }
+.group-tabs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.seg-label { font-size: 12px; color: var(--muted); }
+.line-tab { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 9px; background: #f2f4f8; color: var(--text-2); font-size: 13px; box-shadow: none; }
+.line-tab em { font-style: normal; font-size: 11px; color: var(--muted); }
+.line-tab:hover:not(:disabled) { background: #e8ecf4; }
+.line-tab.active { background: var(--brand); color: #fff; }
+.line-tab.active em { color: rgba(255, 255, 255, .85); }
+.ep-block { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 12px; }
+.ep-head { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+.ep-head .muted { font-weight: 400; font-size: 12px; }
+.ep-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px; max-height: 240px; overflow-y: auto; padding: 2px; }
+.ep-chip { padding: 8px 6px; border-radius: 8px; background: #f4f6fa; color: var(--text-2); font-size: 12.5px; box-shadow: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ep-chip:hover:not(:disabled) { background: #e8ecf4; }
+.ep-chip.active { background: var(--brand); color: #fff; font-weight: 600; }
 .play-error { margin: 10px 0 0; padding: 9px 12px; border: 1px solid #ffc9cd; background: #fdecee; border-radius: 8px; font-size: 12px; color: #c0262c; line-height: 1.7; word-break: break-all; }
 /* 分类树：资源站点 → 一级分类 → 二级分类 */
 .tree { display: flex; flex-direction: column; gap: 12px; }
@@ -2163,8 +2190,6 @@ tbody tr:hover td { background: #f8faff; }
   .modal-actions { padding: 12px 16px 16px; }
   .modal-actions button { flex: 1 1 auto; }
   .import-row { gap: 6px; font-size: 12px; }
-  .player { max-height: 56vh; }
-  .player-frame { max-height: 56vh; }
   .field-grid { grid-template-columns: 1fr; }
   .field-item.long .field-v { max-height: 180px; }
   .kv-table th { width: auto; }
@@ -2350,17 +2375,58 @@ tbody tr:hover td { background: #f8faff; }
 }
 
 
-/* ---------- 影片详情页面（占据主内容区，不再是弹窗） ---------- */
+/* ---------- 影片详情页面（播放器 + 侧栏资料，占据主内容区） ---------- */
 .detail-page { padding: 0; overflow: hidden; }
 .detail-head {
   display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap;
-  padding: 18px 22px; border-bottom: 1px solid var(--border);
+  padding: 16px 22px; border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, #fafbff, #fff);
 }
 .detail-back { flex: none; white-space: nowrap; }
-.detail-title { flex: 1 1 260px; min-width: 0; }
-.detail-title h2 { margin: 0 0 6px; font-size: 19px; line-height: 1.35; word-break: break-word; }
-.detail-title p { margin: 0; font-size: 12px; }
-.detail-body { padding: 16px 22px 22px; }
+.detail-title { flex: 1 1 300px; min-width: 0; }
+.detail-title h2 {
+  margin: 0 0 8px; font-size: 21px; line-height: 1.35; word-break: break-word;
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.detail-sub { font-size: 13px; font-weight: 400; color: var(--muted); }
+.meta-line { margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-2); }
+.score-pill { font-weight: 700; color: #ff8f1f; background: #fff4e5; border-radius: 999px; padding: 2px 9px; font-size: 12px; }
+.watch-body {
+  display: grid; grid-template-columns: minmax(0, 1fr) 312px;
+  gap: 22px; padding: 18px 22px 24px; align-items: start;
+}
+.watch-main { min-width: 0; }
+.watch-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.poster-box { width: 100%; height: 300px; border-radius: 12px; overflow: hidden; background: linear-gradient(135deg, #eef2f9, #dde4f1); }
+.poster-box img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.poster-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 52px; font-weight: 700; color: #93a0b8; }
+.facts { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.fact { display: grid; grid-template-columns: 52px 1fr; gap: 8px; font-size: 12.5px; }
+.fact dt { color: var(--muted); }
+.fact dd {
+  margin: 0; color: var(--text-2); overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.synopsis h4 { margin: 0 0 6px; font-size: 13px; color: var(--text-2); }
+.synopsis p {
+  margin: 0; font-size: 12.5px; line-height: 1.8; color: var(--text-2);
+  white-space: pre-wrap; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
+}
+.synopsis p.open { -webkit-line-clamp: unset; overflow: visible; }
+.syn-toggle { margin-top: 6px; }
+
+/* 管理员折叠区：接口原始字段 */
+.raw-fields { border-top: 1px solid var(--border); }
+.raw-fields > summary {
+  cursor: pointer; padding: 12px 22px; font-size: 13px; color: var(--muted);
+  list-style: none; user-select: none;
+}
+.raw-fields > summary::-webkit-details-marker { display: none; }
+.raw-fields > summary::before { content: '▸ '; }
+.raw-fields[open] > summary::before { content: '▾ '; }
+.raw-inner { padding: 0 22px 22px; }
+.raw-bar { display: flex; align-items: center; justify-content: space-between; margin: 6px 0 10px; font-size: 13px; color: var(--text-2); }
 
 /* ---------- 新增 / 编辑用户弹窗表单 ---------- */
 .list-add { margin-left: auto; }
@@ -2371,12 +2437,24 @@ tbody tr:hover td { background: #f8faff; }
   gap: 10px; padding-top: 4px;
 }
 
-/* 窄屏：详情页内边距收敛，弹窗表单按钮铺满 */
+/* 窄屏：详情页侧栏折到播放器下方，弹窗表单按钮铺满 */
+@media (max-width: 1020px) {
+  .watch-body { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .watch-side { flex-direction: row; flex-wrap: wrap; align-items: flex-start; }
+  .poster-box { width: 120px; height: 168px; flex: none; }
+  .facts { flex: 1 1 220px; }
+  .synopsis { flex-basis: 100%; }
+}
 @media (max-width: 900px) {
   .detail-head { padding: 14px 16px; gap: 10px; }
-  .detail-body { padding: 12px 16px 20px; }
-  .detail-title h2 { font-size: 17px; }
+  .watch-body { padding: 12px 16px 20px; }
+  .detail-title h2 { font-size: 18px; }
   .modal-body.user-form { padding: 12px 16px 18px; }
   .user-form-actions button { flex: 1 1 auto; }
+  .raw-fields > summary, .raw-inner { padding-left: 16px; padding-right: 16px; }
+}
+@media (max-width: 760px) {
+  .poster-box { display: none; }
+  .ep-chips { grid-template-columns: repeat(auto-fill, minmax(66px, 1fr)); max-height: 200px; }
 }
 </style>

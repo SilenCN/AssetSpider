@@ -1,14 +1,14 @@
 <script setup>
 // 影片详情「页面」：占据主内容区，不再是弹窗 / 遮罩。
-// 共享状态由 App.vue 通过 provide('app') 提供，解构出的仍是原始 ref / computed / 函数，
-// 因此模板 ref（播放器）、v-model 与拆分前一致。
-import { inject } from 'vue'
+// 布局参考主流视频站：左侧播放器 + 线路/选集，右侧海报与资料卡；
+// 接口原始字段（标准字段 / 扩展字段）属于内部信息，只对管理员折叠展示。
+import { computed, inject, ref, watch } from 'vue'
 const {
-  detail, detailTab, onlyNonEmpty, groupedFields, extraPairs, playGroups,
+  detail, onlyNonEmpty, groupedFields, extraPairs, playGroups,
   playerEl, activeGroup, activeEp, currentEpisodes, currentEpisode, currentUrl,
-  detailSource, parseEnabled, useFrame, playError,
+  detailSource, useFrame, playError,
   metaLine, episodeLabel, scoreOf, tagListOf,
-  switchDetailTab, chooseGroup, chooseEp, closeDetail, filterByTag,
+  chooseGroup, chooseEp, closeDetail, filterByTag, isAdmin,
   onVideoError, onVideoLoaded,
 } = inject('app')
 
@@ -19,6 +19,57 @@ function onTagClick(t) {
   closeDetail()
   filterByTag(t, sid)
 }
+
+// 海报：多张图依次回退；全部失败时用首字占位块，避免破图。
+const posterFailed = ref(false)
+const posterUrl = computed(() => {
+  const v = detail.value
+  if (!v || posterFailed.value) return ''
+  return v.vodPic || v.vodPicThumb || v.vodPicSlide || ''
+})
+const posterChar = computed(() => (detail.value?.vodName || '影').trim().slice(0, 1))
+
+// 简介：站点给的是 HTML（含 <p>/<br> 与实体），转成纯文本段落展示。
+const synopsis = computed(() => {
+  const raw = detail.value?.vodContent || detail.value?.vodBlurb || ''
+  return raw
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li)>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+})
+const synOpen = ref(false)
+
+// 播放封面：未开始播放时用海报遮住播放器（含播放按钮），一开播即隐藏，
+// 避免 native <video> 在加载时显示黑屏/转圈。切换线路或集数时重新显示。
+const playing = ref(false)
+watch(currentUrl, () => { playing.value = false })
+watch(detail, () => {
+  playing.value = false
+  posterFailed.value = false
+  synOpen.value = false
+})
+
+// 资料卡：只展示用户关心的信息，空值不占位。
+const facts = computed(() => {
+  const v = detail.value || {}
+  return [
+    ['导演', v.vodDirector],
+    ['编剧', v.vodWriter],
+    ['主演', v.vodActor],
+    ['语言', v.vodLang],
+    ['时长', v.vodDuration],
+    ['更新', v.vodTime],
+  ].filter(([, val]) => String(val || '').trim() !== '')
+})
 </script>
 
 <template>
@@ -26,12 +77,14 @@ function onTagClick(t) {
     <div class="detail-head">
       <button class="ghost detail-back" @click="closeDetail">← 返回资源库</button>
       <div class="detail-title">
-        <h2>{{ detail.vodName || detail.vodId }}</h2>
-        <p class="muted">
-          <span v-if="metaLine(detail)">{{ metaLine(detail) }} · </span>
-          更新：{{ episodeLabel(detail) }} · {{ detail.vodTime || '-' }}
-          <span v-if="scoreOf(detail)"> · 评分 {{ scoreOf(detail) }}</span>
-          <span v-if="detail.vodRemarks && detail.vodRemarks !== episodeLabel(detail)"> · {{ detail.vodRemarks }}</span>
+        <h2>
+          {{ detail.vodName || detail.vodId }}
+          <small v-if="detail.vodSub" class="detail-sub">{{ detail.vodSub }}</small>
+        </h2>
+        <p class="meta-line">
+          <span v-if="scoreOf(detail)" class="score-pill">★ {{ scoreOf(detail) }}</span>
+          <span v-if="metaLine(detail)">{{ metaLine(detail) }}</span>
+          <span v-if="episodeLabel(detail) !== '-'" class="badge on">{{ episodeLabel(detail) }}</span>
         </p>
         <div v-if="tagListOf(detail).length" class="res-tags detail-tags">
           <span v-for="t in tagListOf(detail)" :key="t" class="res-tag"
@@ -40,61 +93,101 @@ function onTagClick(t) {
       </div>
     </div>
 
-    <div class="detail-tabs">
-      <button :class="{ active: detailTab === 'play' }" @click="switchDetailTab('play')">播放组 ({{ playGroups.length }})</button>
-      <button :class="{ active: detailTab === 'fields' }" @click="switchDetailTab('fields')">标准字段</button>
-      <button :class="{ active: detailTab === 'extra' }" @click="switchDetailTab('extra')">扩展字段 ({{ extraPairs.length }})</button>
-      <label v-if="detailTab === 'fields'" class="check"><input v-model="onlyNonEmpty" type="checkbox" /> 只看非空</label>
-    </div>
-
-    <div class="detail-body">
-      <template v-if="detailTab === 'play'">
+    <div class="watch-body">
+      <div class="watch-main">
         <div class="player-wrap">
-          <video v-show="!useFrame && playGroups.length" ref="playerEl" class="player" controls playsinline preload="metadata"
-                 @error="onVideoError" @loadeddata="onVideoLoaded"></video>
-          <iframe v-if="useFrame" :key="currentUrl" class="player-frame" :src="currentUrl"
-                  allow="autoplay; fullscreen; encrypted-media" allowfullscreen
-                  referrerpolicy="no-referrer"></iframe>
-          <p v-if="!playGroups.length" class="empty">该影片没有播放地址（vod_play_url 为空）。</p>
-          <p v-else-if="useFrame" class="hint">
-            已按站点配置拼接<strong>视频解析地址</strong>，下面用解析页面播放；若解析站要求手动播放，
-            可在<strong>解析页面内</strong>点击播放。
-            <a v-if="currentUrl" :href="currentUrl" target="_blank" rel="noopener" class="ep-url">在新窗口打开</a>
+          <div class="player-stage">
+            <video v-show="!useFrame && playGroups.length" ref="playerEl" class="player"
+                   controls playsinline preload="metadata"
+                   @play="playing = true" @error="onVideoError" @loadeddata="onVideoLoaded"></video>
+            <div v-if="!useFrame && playGroups.length && posterUrl && !playing"
+                 class="player-cover" aria-hidden="true">
+              <img :src="posterUrl" :alt="detail.vodName || ''" @error="posterFailed = true" />
+              <span class="play-badge">▶</span>
+            </div>
+            <iframe v-if="useFrame" :key="currentUrl" class="player-frame" :src="currentUrl"
+                    allow="autoplay; fullscreen; encrypted-media" allowfullscreen
+                    referrerpolicy="no-referrer"></iframe>
+            <div v-if="!playGroups.length" class="player-placeholder">
+              <span class="ph-icon">🎬</span>
+              <p>该影片暂无可播放的线路</p>
+            </div>
+          </div>
+          <p v-if="useFrame && currentUrl" class="hint">
+            正在通过解析页面播放；若上方无响应，可
+            <a :href="currentUrl" target="_blank" rel="noopener" class="ep-url">在新窗口打开</a>。
           </p>
-          <p v-else-if="!currentUrl" class="hint">
-            当前线路这一集没有播放地址。
+          <p v-else-if="playGroups.length && !currentUrl" class="hint">
+            当前线路暂无播放地址，试试切换其它线路。
           </p>
-          <p v-else class="hint">m3u8 优先用 hls.js 播放，mp4 / webm 走直链；无后缀地址会先按 HLS 试播再回退直链。切换线路或集数即时切换。</p>
           <p v-if="playError" class="play-error">
             {{ playError }}
-            <a v-if="currentUrl" :href="currentUrl" target="_blank" rel="noopener" class="ep-url">在新窗口打开</a>
+            <template v-if="currentUrl"> · <a :href="currentUrl" target="_blank" rel="noopener" class="ep-url">在新窗口打开</a></template>
           </p>
         </div>
+
         <template v-if="playGroups.length">
           <div class="group-tabs">
+            <span class="seg-label">线路</span>
             <button
               v-for="(g, gi) in playGroups" :key="gi"
-              class="mini" :class="gi === activeGroup ? '' : 'ghost'"
-              :title="g.note || ''"
+              class="line-tab" :class="{ active: gi === activeGroup }"
+              :title="g.note || g.from || ''"
               @click="chooseGroup(gi)"
-            >{{ g.from || ('线路' + (gi + 1)) }} ({{ g.episodes?.length || 0 }})</button>
+            >
+              {{ '线路 ' + (gi + 1) }}
+              <em>{{ g.episodes?.length || 0 }} 集</em>
+            </button>
           </div>
-          <div class="ep-chips">
-            <button
-              v-for="(ep, ei) in currentEpisodes" :key="ei"
-              class="mini" :class="ei === activeEp ? '' : 'ghost'"
-              @click="chooseEp(ei)"
-            >{{ ep.name || ('第' + (ei + 1) + '集') }}</button>
-            <span v-if="!currentEpisodes.length" class="muted">该线路暂无剧集。</span>
+          <div class="ep-block">
+            <div class="ep-head">
+              选集
+              <span class="muted" v-if="currentEpisodes.length">共 {{ currentEpisodes.length }} 集</span>
+            </div>
+            <div class="ep-chips">
+              <button
+                v-for="(ep, ei) in currentEpisodes" :key="ei"
+                class="ep-chip" :class="{ active: ei === activeEp }"
+                :title="ep.name || ('第' + (ei + 1) + '集')"
+                @click="chooseEp(ei)"
+              >{{ ep.name || ('第' + (ei + 1) + '集') }}</button>
+              <span v-if="!currentEpisodes.length" class="muted">该线路暂无剧集。</span>
+            </div>
           </div>
-          <p v-if="currentEpisode?.url" class="play-url">
-            <span v-if="detailSource?.playDomain" class="badge on">播放域名已替换</span>
-            <span v-if="parseEnabled" class="badge on">已拼接解析地址</span>
-            {{ currentEpisode.url }}
-          </p>
         </template>
-      </template>
-      <template v-else-if="detailTab === 'fields'">
+      </div>
+
+      <aside class="watch-side">
+        <div class="poster-box">
+          <img v-if="posterUrl" :src="posterUrl" :alt="detail.vodName || ''" @error="posterFailed = true" />
+          <div v-else class="poster-placeholder">{{ posterChar }}</div>
+        </div>
+
+        <dl v-if="facts.length" class="facts">
+          <div v-for="[k, val] in facts" :key="k" class="fact">
+            <dt>{{ k }}</dt>
+            <dd :title="String(val)">{{ val }}</dd>
+          </div>
+        </dl>
+
+        <div v-if="synopsis" class="synopsis">
+          <h4>简介</h4>
+          <p :class="{ open: synOpen }">{{ synopsis }}</p>
+          <button v-if="synopsis.length > 90" class="mini ghost syn-toggle" @click="synOpen = !synOpen">
+            {{ synOpen ? '收起' : '展开' }}
+          </button>
+        </div>
+      </aside>
+    </div>
+
+    <!-- 接口原始字段：属于内部数据，仅管理员可见、默认折叠 -->
+    <details v-if="isAdmin" class="raw-fields">
+      <summary>接口原始字段（仅管理员可见）</summary>
+      <div class="raw-inner">
+        <div class="raw-bar">
+          <strong>标准字段</strong>
+          <label class="check"><input v-model="onlyNonEmpty" type="checkbox" /> 只看非空</label>
+        </div>
         <section v-for="g in groupedFields" :key="g.key" class="field-group">
           <h4>{{ g.label }} <span class="muted">{{ g.items.length }} 项</span></h4>
           <div class="field-grid">
@@ -104,15 +197,14 @@ function onTagClick(t) {
             </div>
           </div>
         </section>
-        <p v-if="!groupedFields.length" class="empty">没有可显示的字段。</p>
-      </template>
-      <template v-else-if="detailTab === 'extra'">
-        <p class="hint">接口返回但不在标准字段清单内的字段（站点自定义字段、嵌套对象、数组等），按原始 JSON 值保存，确保不丢失。</p>
+        <p v-if="!groupedFields.length" class="empty">没有可显示的标准字段。</p>
+
+        <div class="raw-bar"><strong>扩展字段</strong></div>
         <p v-if="!extraPairs.length" class="empty">该站点未返回扩展字段。</p>
         <table v-else class="kv-table">
           <tbody><tr v-for="[k, val] in extraPairs" :key="k"><th><code>{{ k }}</code></th><td>{{ val }}</td></tr></tbody>
         </table>
-      </template>
-    </div>
+      </div>
+    </details>
   </section>
 </template>
