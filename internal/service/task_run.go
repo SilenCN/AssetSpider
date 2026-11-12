@@ -173,11 +173,11 @@ func (s *CrawlService) runTask(ctx context.Context, task *crawlTask, src *model.
 		status = model.JobPaused
 		msg = fmt.Sprintf("已暂停：已完成 %d 页，可稍后继续采集", res.Pages)
 		if crawlErr != nil && !errors.Is(crawlErr, ErrPaused) {
-			msg = fmt.Sprintf("已暂停：已完成 %d 页（上次尝试失败：%v），可稍后继续采集", res.Pages, crawlErr)
+			msg = fmt.Sprintf("已暂停：已完成 %d 页（上次尝试失败：%s），可稍后继续采集", res.Pages, explainCrawlError(crawlErr))
 		}
 	case crawlErr != nil:
 		status = model.JobFailed
-		msg = crawlErr.Error()
+		msg = explainCrawlError(crawlErr)
 		if task.maxAttempts > 1 {
 			msg = fmt.Sprintf("%s（已自动尝试 %d 次）", msg, task.attempt)
 		}
@@ -282,8 +282,8 @@ func (s *CrawlService) syncSourceVideoCount(sourceID uint) {
 // awaitRetry 在两次尝试之间退避等待；返回 false 表示被暂停或取消，应终止任务。
 func (s *CrawlService) awaitRetry(ctx context.Context, task *crawlTask, attempt int, cause error) bool {
 	delay := s.retryDelay(attempt)
-	task.retryPending(delay, fmt.Sprintf("第 %d 次尝试失败：%v；%d 秒后自动重试（%d/%d）",
-		attempt, cause, int(delay.Seconds()), attempt+1, task.maxAttempts))
+	task.retryPending(delay, fmt.Sprintf("第 %d 次尝试失败：%s；%d 秒后自动重试（%d/%d）",
+		attempt, explainCrawlError(cause), int(delay.Seconds()), attempt+1, task.maxAttempts))
 
 	timer := time.NewTimer(delay)
 	defer timer.Stop()

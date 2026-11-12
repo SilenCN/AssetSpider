@@ -314,8 +314,53 @@ func (r *categoryRepository) ApplyTypeTree(sourceID uint, defs []CategoryDef) er
 				}
 			}
 		}
+		// 一级分类按 typelist 的定义直接补齐，再重建整棵树。
+		if err := ensureTopLevelCategories(tx, sourceID, items); err != nil {
+			return err
+		}
 		return rebuildCategoryTree(tx, sourceID, names)
 	})
+}
+
+// ensureTopLevelCategories 把 typelist 明确声明的一级分类（type_pid 为空）建出来。
+//
+// 一级分类是纯容器，自己的 type_id 不会出现在任何影片的 type_id 上，只出现在
+// 子分类的 type_pid 里。过去只在「被某个子分类引用」时才补建，于是还没采到影片
+// 的一级分类（如「电影」「动漫」）整块缺失，分类页看起来像少了分类。这里按
+// typelist 的定义直接补齐，保证一级分类始终完整。
+//
+// 只建一级：叶子分类空着没有意义，仍等采到影片时由 EnsureForVideos 创建。
+func ensureTopLevelCategories(tx *gorm.DB, sourceID uint, items []CategoryDef) error {
+	for _, d := range items {
+		if d.ParentTypeID != "" || d.Name == "" || d.TypeID == "" {
+			continue
+		}
+		var cat model.Category
+		if err := tx.Where("source_id = ? AND TRIM(COALESCE(type_id, '')) = ?", sourceID, d.TypeID).
+			Order("id ASC").Limit(1).Find(&cat).Error; err != nil {
+			return err
+		}
+		if cat.ID != 0 {
+			continue
+		}
+		key := utils.CategoryKey(d.TypeID, "")
+		// 同一类目可能已被 EnsureForVideos 建过（key 相同但 type_id 尚未回填），复用即可。
+		if err := tx.Where("source_id = ? AND cat_key = ?", sourceID, key).
+			Order("id ASC").Limit(1).Find(&cat).Error; err != nil {
+			return err
+		}
+		if cat.ID != 0 {
+			continue
+		}
+		cat = model.Category{
+			SourceID: sourceID, Key: key, TypeID: d.TypeID,
+			Name: d.Name, Level: 1,
+		}
+		if err := tx.Create(&cat).Error; err != nil {
+			return fmt.Errorf("补建一级分类 %s/%d: %w", d.TypeID, sourceID, err)
+		}
+	}
+	return nil
 }
 
 // categoryParentRef 是一条「本源内被引用过的父级 type_id」。

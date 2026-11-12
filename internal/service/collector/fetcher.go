@@ -154,6 +154,29 @@ type TypeItem struct {
 	TypeName flexString `json:"type_name"`
 	TypePID  flexString `json:"type_pid"`
 	TypeSort flexString `json:"type_sort"`
+
+	// IsVideo 标记这条记录其实是影片而不是分类定义：有的站点不认 ac=typelist，
+	// 仍返回影片列表（带 vod_id / vod_name），只是把字段塞进了 list[]。影片条目
+	// 只能用来补分类名称，不能当分类定义——影片没有 type_pid，当成定义会把
+	// 二级分类抬成一级。
+	IsVideo bool `json:"-"`
+}
+
+// UnmarshalJSON 在解析分类定义的同时判断它是否是影片条目。
+func (it *TypeItem) UnmarshalJSON(b []byte) error {
+	type plain TypeItem // 新类型不继承方法，避免递归调用
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*it = TypeItem(p)
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(b, &keys); err == nil {
+		_, vodID := keys["vod_id"]
+		_, vodName := keys["vod_name"]
+		it.IsVideo = vodID || vodName
+	}
+	return nil
 }
 
 // TypeListResponse 对应 api.php/provide/vod/?ac=typelist 的 JSON 响应。

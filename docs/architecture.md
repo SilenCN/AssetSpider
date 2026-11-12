@@ -81,6 +81,7 @@ router  →  controller  →  service  →  repository
 │   │   ├── scheduler.go          # 按站点 cron 到点触发增量任务
 │   │   ├── settings.go           # 系统设置：采集运行时配置的读写编排
 │   │   ├── errors.go             # 业务错误语义
+│   │   ├── errtext.go            # 采集失败原因归类（超时 / DNS / 拒绝连接 / 非 JSON…）
 │   │   └── collector/            # 采集协议客户端（零丢失 JSON 解析、URL 拼装、实体转换）
 │   ├── repository/               # 第 4 层：每个实体一个文件 / 对象 / 接口
 │   │   ├── store.go              # 连接、迁移、装配 Repositories、Path / Close

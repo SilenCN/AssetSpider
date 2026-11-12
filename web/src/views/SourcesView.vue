@@ -102,6 +102,9 @@ const {
                     ⏰ {{ s.scheduleCron }} · 下次 {{ formatTime(s.nextScheduleAt) }}
                     <span v-if="!s.enabled">（站点停用，不触发）</span>
                   </div>
+                  <div v-if="s.lastError" class="tiny err-text" :title="s.lastError">
+                    采集失败：{{ short(s.lastError, 60) }}
+                  </div>
                   <div v-if="s.parseApi || s.playDomain || s.picApi || s.picDomain" class="tiny muted" :title="[s.parseApi && ('解析：' + s.parseApi), s.playDomain && ('播放域名：' + s.playDomain), s.picApi && ('图片代理：' + s.picApi), s.picDomain && ('图片域名：' + s.picDomain)].filter(Boolean).join(' / ')">
                     {{ [s.parseApi && '解析播放', s.playDomain && '播放域名替换', (s.picApi || s.picDomain) && '图片改写'].filter(Boolean).join(' · ') }}
                   </div>

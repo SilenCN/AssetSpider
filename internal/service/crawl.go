@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/url"
 	"strings"
 	"sync"
@@ -44,6 +45,10 @@ type RunResult struct {
 
 // mergeTypeDefs 把 typelist / class 里的分类定义按 type_id 合并。
 // 后写入的覆盖先写入的，因此调用顺序应为「先 list[]，再 class[]」。
+//
+// list[] 的语义因站而异：有的站点返回分类对象（type_id / type_name / type_pid），
+// 有的直接返回影片（带 vod_id / vod_name）。影片只能补分类名称，不能当定义——
+// 它没有 type_pid，当定义会把二级分类抬成一级。是否影片由 TypeItem.IsVideo 标记。
 func mergeTypeDefs(items []collector.TypeItem, names map[string]string, defs map[string]repository.CategoryDef) {
 	for _, it := range items {
 		id := strings.TrimSpace(it.TypeID.String())
@@ -54,11 +59,36 @@ func mergeTypeDefs(items []collector.TypeItem, names map[string]string, defs map
 		pid := strings.TrimSpace(it.TypePID.String())
 		if nm != "" {
 			names[id] = nm
-		} else {
+		}
+		if it.IsVideo {
+			continue // 影片条目到此为止：只贡献名称
+		}
+		if nm == "" {
 			nm = defs[id].Name
 		}
 		defs[id] = repository.CategoryDef{TypeID: id, Name: nm, ParentTypeID: pid}
 	}
+}
+
+// applyTypeDefs 把 typelist / class[] 里的分类定义落库：补建一级分类、校正层级、
+// 补全名称。采集开始前与结束后各调用一次——提前调用保证任务中途失败或暂停时，
+// 分类树仍是站点的完整结构，而不是只剩「已采到影片」的那几个分类；结束时再调用
+// 一次兜底纠正。全部操作幂等，重复调用无副作用。
+func (s *CrawlService) applyTypeDefs(sourceID uint, typeDefs map[string]repository.CategoryDef, names map[string]string) error {
+	if len(typeDefs) == 0 && len(names) == 0 {
+		return nil
+	}
+	defs := make([]repository.CategoryDef, 0, len(typeDefs))
+	for _, d := range typeDefs {
+		defs = append(defs, d)
+	}
+	if err := s.categories.ApplyTypeTree(sourceID, defs); err != nil {
+		return fmt.Errorf("重建分类层级失败: %w", err)
+	}
+	if err := s.categories.ApplyTypeNames(sourceID, names); err != nil {
+		return fmt.Errorf("补全分类名称失败: %w", err)
+	}
+	return nil
 }
 
 // hasExplicitAC 判断站点地址或附加参数里是否显式指定了 ac。
@@ -314,6 +344,12 @@ func (s *CrawlService) crawl(
 			mergeTypeDefs(tl.Class, typeNames, typeDefs)
 		}
 	}
+	// 先把分类结构落库，再开始翻页：一级分类是纯容器，站点全站分类应当在任务
+	// 一开始就完整可见；这样即使后面某页失败或用户中途暂停，分类树也不会只剩
+	// 「已采到影片」的那几个。失败只记日志——采集本身仍可继续，结束时还会再试。
+	if err := s.applyTypeDefs(src.ID, typeDefs, typeNames); err != nil {
+		log.Printf("站点「%s」预写分类结构失败: %v", src.Name, err)
+	}
 
 	pageCount := 0
 	maxCursor := src.LastCursor
@@ -478,18 +514,11 @@ func (s *CrawlService) crawl(
 	}
 	// 正常结束（或按 maxPages 上限结束）：下次从头开始。
 	res.ResumePage = 1
-	// 采集完成后按权威父子关系重建分类树：补建缺失的一级分类、
-	// 把「未归类」的二级分类挂回父级，并补全父级名称。
-	// defs 为空（接口不可用）时仍会按库内 type_id_1 / type_pid 重建，不依赖网络。
-	defs := make([]repository.CategoryDef, 0, len(typeDefs))
-	for _, d := range typeDefs {
-		defs = append(defs, d)
-	}
-	if err := s.categories.ApplyTypeTree(src.ID, defs); err != nil {
-		return fmt.Errorf("重建分类层级失败: %w", err)
-	}
-	if err := s.categories.ApplyTypeNames(src.ID, typeNames); err != nil {
-		return fmt.Errorf("补全分类名称失败: %w", err)
+	// 采集完成后再按权威父子关系重建一次分类树：本页新出现的分类、type_id_1
+	// 推断出的父级都在这一轮归位。defs 为空（接口不可用）时仍会按库内
+	// type_id_1 / type_pid 重建，不依赖网络。
+	if err := s.applyTypeDefs(src.ID, typeDefs, typeNames); err != nil {
+		return err
 	}
 	return nil
 }

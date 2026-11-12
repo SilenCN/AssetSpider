@@ -19,7 +19,8 @@ const {
               <tr><th>ID</th><th>站点</th><th class="hide-sm">模式</th><th>状态</th><th>页数</th><th>拉取</th><th>新增</th><th>更新</th><th>未变</th><th class="hide-sm">开始时间</th><th class="hide-sm">结束时间</th><th class="hide-sm">说明</th><th>操作</th></tr>
             </thead>
             <tbody>
-              <tr v-for="j in jobs" :key="j.id">
+              <template v-for="j in jobs" :key="j.id">
+              <tr>
                 <td class="mono">
                   {{ j.id }}
                   <div v-if="j.retryOf" class="tiny">源自 #{{ j.retryOf }}</div>
@@ -60,6 +61,12 @@ const {
                   </template>
                 </td>
               </tr>
+              <!-- 失败原因单独占一行：说明列只有 30 字，技术细节挤在里面等于没写，
+                   而且移动端列被隐藏，用户看不到失败原因。 -->
+              <tr v-if="j.status === 'failed' && jobMessage(j) !== '-'" class="fail-row">
+                <td :colspan="13">失败原因：{{ jobMessage(j) }}</td>
+              </tr>
+              </template>
             </tbody>
           </table>
         </div>

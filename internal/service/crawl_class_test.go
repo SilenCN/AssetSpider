@@ -67,3 +67,64 @@ func TestCrawlBuildsParentCategoriesFromClass(t *testing.T) {
 		}
 	}
 }
+
+// TestCrawlKeepsTopLevelCategoriesWhenPageFails 验证「第 1 页之后失败」时，
+// 任务开始前写入的分类结构仍然完整。
+//
+// 一级分类是纯容器，自己不会出现在任何影片的 type_id 上。若只在任务成功结束时
+// 才补建，一次中途失败就会让分类页缺掉整块一级分类——用户看到的分类就是"不全"。
+func TestCrawlKeepsTopLevelCategoriesWhenPageFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		if q.Get("ac") == "typelist" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": 1, "pagecount": 1,
+				"class": []map[string]interface{}{
+					{"type_id": 7, "type_pid": 0, "type_name": "电影"},
+					{"type_id": 8, "type_pid": 0, "type_name": "连续剧"},
+					{"type_id": 26, "type_pid": 8, "type_name": "国产剧"},
+				},
+			})
+			return
+		}
+		if q.Get("pg") != "1" {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": 1, "pagecount": 5,
+			"list": []map[string]interface{}{
+				{"vod_id": 1, "vod_name": "剧集A", "type_id": 26, "type_name": "国产剧",
+					"type_id_1": 8, "vod_time": "2026-11-07 10:00:00"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	st, svc := newCrawlService(t)
+	id := addSource(t, st, srv.URL+"/api.php/provide/vod/", true)
+	if _, err := svc.RunOne(context.Background(), id, model.ModeFull); err == nil {
+		t.Fatal("第 2 页返回 500，任务应失败")
+	}
+
+	cats, err := st.Categories.List(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byType := make(map[string]model.Category)
+	for _, c := range cats {
+		byType[c.TypeID] = c
+	}
+	// 「电影」下没有任何影片，也必须已经在库里——这正是"一级分类完整"的含义。
+	if movie, ok := byType["7"]; !ok || movie.Name != "电影" || movie.Level != 1 {
+		t.Fatalf("失败后一级分类「电影」缺失或层级不对: %+v", cats)
+	}
+	tv, ok := byType["8"]
+	if !ok || tv.Level != 1 {
+		t.Fatalf("失败后一级分类「连续剧」缺失: %+v", cats)
+	}
+	if ch, ok := byType["26"]; !ok || ch.ParentID != tv.ID || ch.Level != 2 {
+		t.Fatalf("已采到的二级分类未挂到一级: %+v", ch)
+	}
+}

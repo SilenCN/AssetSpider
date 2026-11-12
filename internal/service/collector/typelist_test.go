@@ -508,3 +508,36 @@ func mustQuery(t *testing.T, rawURL string) url.Values {
 	}
 	return u.Query()
 }
+
+// TestTypeItemMarksVideoEntries 验证「list[] 里其实是影片」能被识别出来。
+//
+// 有的站点不认 ac=typelist，仍返回影片列表：这些条目只有 type_id/type_name，
+// 没有 type_pid。若当成分类定义，就会把二级分类误判成一级；因此必须标记出来，
+// 让它只贡献分类名称。
+func TestTypeItemMarksVideoEntries(t *testing.T) {
+	raw := `{
+		"code": 1, "pagecount": 1,
+		"class": [
+			{"type_id": 7, "type_pid": 0, "type_name": "电影"},
+			{"type_id": 29, "type_pid": 8, "type_name": "欧美剧"}
+		],
+		"list": [
+			{"vod_id": 86713, "vod_name": "某剧", "type_id": 29, "type_name": "欧美剧"}
+		]
+	}`
+	r, err := ParseTypeList([]byte(raw))
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if len(r.List) != 1 || !r.List[0].IsVideo {
+		t.Fatalf("list[] 里的影片条目未被标记: %+v", r.List)
+	}
+	for _, c := range r.Class {
+		if c.IsVideo {
+			t.Fatalf("class[] 里的分类定义被误标成影片: %+v", c)
+		}
+	}
+	if got := r.List[0].TypePID.String(); got != "" {
+		t.Fatalf("影片条目的 type_pid 应为空，实际 %q", got)
+	}
+}

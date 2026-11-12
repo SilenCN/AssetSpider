@@ -190,3 +190,49 @@ func TestApplyTypeTree(t *testing.T) {
 		t.Fatalf("重复重建后父子关系被破坏: %+v", ch)
 	}
 }
+
+// TestApplyTypeTreeCreatesUnreferencedTopLevel 覆盖「一级分类下既没有已采影片、
+// 也没有已采到的子分类」的情形：站点 typelist 明确声明的一级分类必须直接建出来，
+// 否则分类页只显示碰巧采到影片的那几个分类，用户会以为站点分类不全。
+func TestApplyTypeTreeCreatesUnreferencedTopLevel(t *testing.T) {
+	r := newTestRepos(t)
+	videos := []model.Video{{VodID: "v1", SourceID: 5, TypeID: "29", TypeName: "欧美剧"}}
+	if _, err := r.Categories.EnsureForVideos(5, videos); err != nil {
+		t.Fatal(err)
+	}
+	defs := []CategoryDef{
+		{TypeID: "7", Name: "电影", ParentTypeID: "0"},
+		{TypeID: "8", Name: "连续剧", ParentTypeID: "0"},
+		{TypeID: "29", Name: "欧美剧", ParentTypeID: "8"},
+		{TypeID: "10", Name: "动作片", ParentTypeID: "7"}, // 还没有影片，不应建
+	}
+	if err := r.Categories.ApplyTypeTree(5, defs); err != nil {
+		t.Fatal(err)
+	}
+	movie := categoryByTypeID(t, r, 5, "7")
+	if movie.Name != "电影" || movie.Level != 1 || movie.ParentID != 0 {
+		t.Fatalf("未被引用的一级分类没有建出来: %+v", movie)
+	}
+	var leaf model.Category
+	if err := r.db.Where("source_id = ? AND type_id = ?", 5, "10").Limit(1).Find(&leaf).Error; err != nil {
+		t.Fatal(err)
+	}
+	if leaf.ID != 0 {
+		t.Fatalf("不应为没有影片的叶子分类建空记录: %+v", leaf)
+	}
+	ep := categoryByTypeID(t, r, 5, "29")
+	if ep.Level != 2 || ep.ParentID != categoryByTypeID(t, r, 5, "8").ID {
+		t.Fatalf("二级分类未挂到一级: %+v", ep)
+	}
+	// 幂等：重复执行不能产生重复的一级分类。
+	if err := r.Categories.ApplyTypeTree(5, defs); err != nil {
+		t.Fatal(err)
+	}
+	var n int64
+	if err := r.db.Model(&model.Category{}).Where("source_id = ? AND level = 1", 5).Count(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("一级分类数量 = %d，期望 2（电影 / 连续剧）", n)
+	}
+}
