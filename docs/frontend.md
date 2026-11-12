@@ -18,7 +18,8 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 | `app/lookup.js` | 纯展示格式化（时间、状态、标签拆分、进度条宽度、ETA） |
 | `app/videos.js` | 资源库：筛选与站点双向联动、分页、无限滚动、分类/标签跳转 |
 | `app/catalog.js` | 分类树（站点 → 一级 → 二级）、分类/标签下拉标签、展开收起 |
-| `app/detail.js` | 详情页与播放器：线路/选集、hls.js / iframe / 直链、hash 路由 |
+| `app/detail.js` | 详情页：全字段资料、播放组解析、hash 路由进出详情、列表滚动恢复 |
+| `app/player.js` | 播放器：线路/选集、hls.js / iframe / 直链挂载与错误提示 |
 | `app/sources.js` | 站点增删改查、启停、清空数据、JSON 导入导出、cron 实时校验 |
 | `app/tasks.js` | 采集任务入队/暂停/继续/重试/重跑、采集记录、活动任务查询 |
 | `app/settings.js` / `app/users.js` | 系统设置、用户管理 |

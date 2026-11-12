@@ -46,10 +46,17 @@ router  →  controller  →  service  →  repository
 
 ## 文件规模
 
-**单个源文件不超过 1000 行**（`.go` / `.vue` / `.js`），由 `architecture_test.go` 的 `TestSourceFilesStaySmall` 强制（`node_modules` / `dist` 不参与）。行数只是代理指标，真正约束的是职责：超长文件通常意味着多个关注点挤在一起，改动互相牵连、review 看不出边界。超限时按领域拆文件，而不是压缩格式。
+**单个源文件不超过 800 行，单个函数不超过 250 行**（`.go` / `.vue` / `.js` / `.ts`），由根目录 `size_test.go` 的两个测试强制（`node_modules` / `dist` / `vendor` 不参与）：
 
-- Go 侧：测试按领域拆（`router_test.go` / `source_test.go` / `video_test.go` / `category_test.go` / `task_test.go`，共用的请求构造与轮询 helper 放 `helpers_test.go`）。
-- Vue 侧：`App.vue` 只保留布局骨架（登录页 / 侧边栏 / 主内容区 / 全局弹窗）与装配，样式抽到 `web/src/styles/app.css`，业务按领域落到 `web/src/app/`（见下）。
+| 测试 | 约束 | 检查方式 |
+| --- | --- | --- |
+| `TestSourceFilesStaySmall` | 文件 ≤ 800 行 | 统计换行数 |
+| `TestFunctionsStaySmall` | 函数 ≤ 250 行 | Go 用 `go/ast` 取 `FuncDecl` / `FuncLit` 起止行；Vue/JS 用轻量词法扫描识别 `function f(){}`、方法简写与箭头函数，跳过注释、字符串、模板串与正则 |
+
+行数只是代理指标，真正约束的是职责：超长文件通常意味着多个关注点挤在一起，超长函数通常意味着多个步骤串在一起，改动互相牵连、review 也看不出边界。超限时按领域拆文件、按步骤拆函数，而不是压缩格式。
+
+- Go 侧：测试按领域拆（`router_test.go` / `source_test.go` / `video_test.go` / `category_test.go` / `task_test.go`，共用的请求构造与轮询 helper 放 `helpers_test.go`）；`service/task.go` 按「运行时状态 / 执行编排 / 对外 API」拆为 `task_state.go` + `task_run.go` + `task.go`。
+- Vue 侧：`App.vue` 只保留布局骨架（登录页 / 侧边栏 / 主内容区 / 全局弹窗）与装配，样式抽到 `web/src/styles/app.css`，业务按领域落到 `web/src/app/`（见下）；详情页再拆出 `app/player.js`，播放器状态与挂载逻辑不挤在详情里。
 
 ## 目录结构
 
@@ -127,6 +134,7 @@ router  →  controller  →  service  →  repository
 │   └── dist/                     # 构建产物（Gin 托管，随仓库提交）
 ├── main.go                       # 服务入口
 ├── architecture_test.go          # 分层依赖方向守卫测试
+├── size_test.go                  # 文件 ≤ 800 行、函数 ≤ 250 行守卫
 ├── docs/                         # 分主题文档：架构 / 采集 / 配置 / API / 前端 / 测试 / 部署
 ├── go.mod / go.sum
 └── Readme.md                     # 项目总览 + 文档导航

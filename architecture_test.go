@@ -4,9 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -235,74 +233,6 @@ func TestNoFrameworkLeak(t *testing.T) {
 			if strings.HasPrefix(p, c.prefix) || p == c.prefix {
 				t.Errorf("技术泄漏：%s 层不应 import %s（实际 %s）", c.layer, c.prefix, p)
 			}
-		}
-	}
-}
-
-// TestSourceFilesStaySmall 固化「单个源文件不超过 1000 行」的约定。
-// 行数只是代理指标，真正约束的是职责：一个文件超长通常意味着多个关注点
-// 挤在一起，改动时互相牵连、review 也看不出边界。超限时按领域拆文件，
-// 而不是靠压缩格式把行数藏起来。
-func TestSourceFilesStaySmall(t *testing.T) {
-	const limit = 1000
-	// 构建产物与依赖目录不是手工维护的源码，不参与行数约束。
-	skipDirs := map[string]bool{
-		"node_modules": true, "dist": true, ".git": true, "testdata": true,
-	}
-	exts := map[string]bool{".go": true, ".vue": true, ".js": true, ".ts": true}
-
-	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if skipDirs[d.Name()] {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if !exts[filepath.Ext(path)] || strings.HasSuffix(path, ".min.js") {
-			return nil
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		lines, err := countLines(f)
-		if err != nil {
-			return err
-		}
-		if lines > limit {
-			t.Errorf("%s 有 %d 行，超过单文件上限 %d 行；请按职责拆分", path, lines, limit)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("扫描源文件失败: %v", err)
-	}
-}
-
-// countLines 统计换行符个数；末行没有换行符时也计入一行。
-func countLines(r io.Reader) (int, error) {
-	buf := make([]byte, 64*1024)
-	lines, last := 0, byte(0)
-	for {
-		n, err := r.Read(buf)
-		for _, b := range buf[:n] {
-			if b == '\n' {
-				lines++
-			}
-			last = b
-		}
-		if err == io.EOF {
-			if last != 0 && last != '\n' {
-				lines++
-			}
-			return lines, nil
-		}
-		if err != nil {
-			return lines, err
 		}
 	}
 }
