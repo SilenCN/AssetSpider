@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +13,20 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+// waitVideoBigramReady 等待后台回灌完成。历史数据回灌改成启动后的异步任务，
+// Open 返回不再等于回灌结束；完成前 2 字检索降级 LIKE，结果仍正确。
+func waitVideoBigramReady(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if videoBigramReady(db) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("后台两字索引回灌在 15 秒内未完成")
+}
 
 // seedBigramVideos 让六列检索字段各有可验证的两字片段。
 func seedBigramVideos(t *testing.T, r *Repositories) {
@@ -188,9 +204,10 @@ func TestVideoBigramBackfillsExistingData(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer upgraded.Close()
-	if !videoBigramReady(upgraded.db) {
-		t.Fatal("升级后回灌状态未置为完成")
+	if upgraded.bigram == nil {
+		t.Fatal("有历史数据时应启动后台回灌任务，而不是在 Open 里同步跑")
 	}
+	waitVideoBigramReady(t, upgraded.db)
 	if got := countBigramKeyword(t, upgraded.Videos, "经典"); got != 1 {
 		t.Errorf("升级后历史数据的 2 字检索应命中，实际 %d 条", got)
 	}
@@ -261,5 +278,92 @@ func TestRetiredVideoIndexesAreDropped(t *testing.T) {
 		if n != 0 {
 			t.Errorf("废弃索引 %s 仍存在", name)
 		}
+	}
+}
+
+// 后台回灌被中止时不标记完成，下次从进度续跑；完成后新建仓储立即走倒排表。
+func TestVideoBigramBackfillStopsAndResumes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	raw, err := gorm.Open(sqlite.Open(path), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.AutoMigrate(&model.Video{}); err != nil {
+		t.Fatal(err)
+	}
+	// 在建倒排表之前插入数据，模拟「没有 bigram 索引的历史库」。
+	for i := 1; i <= 6; i++ {
+		if err := raw.Exec("INSERT INTO videos(id, source_id, vod_id, vod_name) VALUES(?, 1, ?, ?)",
+			i, fmt.Sprintf("v%d", i), fmt.Sprintf("经典影片%d", i)).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if sqlDB, err := raw.DB(); err == nil {
+		sqlDB.Close()
+	}
+
+	db, err := gorm.Open(sqlite.Open(path), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if sqlDB, err := db.DB(); err == nil {
+			sqlDB.Close()
+		}
+	}()
+	if err := initVideoBigrams(db); err != nil {
+		t.Fatal(err)
+	}
+
+	oldBatch := videoBigramBatch
+	videoBigramBatch = 2
+	t.Cleanup(func() { videoBigramBatch = oldBatch })
+
+	calls := 0
+	err = backfillVideoBigrams(db, func() bool { calls++; return calls > 1 })
+	if !errors.Is(err, errBigramStopped) {
+		t.Fatalf("中止应返回 errBigramStopped，实际 %v", err)
+	}
+	if videoBigramReady(db) {
+		t.Fatal("中止后不应标记回灌完成，否则未回灌的历史数据会查不到")
+	}
+	if videoBigramState(db, "cursor") == 0 {
+		t.Fatal("中止前应已提交至少一批进度")
+	}
+
+	if err := backfillVideoBigrams(db, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !videoBigramReady(db) {
+		t.Fatal("续跑完成后应标记 done")
+	}
+	// 能力探测是动态的：完成后新建的仓储立刻切到倒排表，不需要重启。
+	if got := countBigramKeyword(t, NewVideoRepository(db), "经典"); got != 6 {
+		t.Errorf("续跑后 2 字检索应命中 6 条，实际 %d", got)
+	}
+}
+
+// 回灌状态从 0 变 1 后，已构造的仓储也应立刻切换，不缓存旧的降级结论。
+func TestVideoBigramReadinessIsDynamic(t *testing.T) {
+	r := newTestRepos(t)
+	seedBigramVideos(t, r)
+	repo := NewVideoRepository(r.db)
+	if err := r.db.Exec("DELETE FROM " + videoBigramStateTable + " WHERE k = 'done'").Error; err != nil {
+		t.Fatal(err)
+	}
+	if got := countBigramKeyword(t, repo, "流浪"); got != 2 {
+		t.Fatalf("done 被移除后应降级 LIKE 且结果不变，实际 %d", got)
+	}
+	if err := r.db.Exec("INSERT OR REPLACE INTO " + videoBigramStateTable + "(k, v) VALUES('done', 1)").Error; err != nil {
+		t.Fatal(err)
+	}
+	if got := countBigramKeyword(t, repo, "流浪"); got != 2 {
+		t.Fatalf("done 恢复后动态探测应切回索引，结果仍为 2 条，实际 %d", got)
+	}
+	dry := applyVideoKeyword(r.db.Model(&model.Video{}), "流浪",
+		videoSearchCaps{fts: true, bigram: repo.(*videoRepository).bigram()}).
+		Session(&gorm.Session{DryRun: true}).Find(&[]model.Video{}).Statement
+	if !strings.Contains(dry.SQL.String(), videoBigramTable) {
+		t.Errorf("状态恢复后未走倒排表: %s", dry.SQL.String())
 	}
 }

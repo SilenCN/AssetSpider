@@ -119,7 +119,7 @@ bash /tmp/as/deploy/deploy.sh /tmp/assetspider-release.tar.gz
 | `Host key verification failed` | 服务器重装或换 IP：更新 Secret `DEPLOY_KNOWN_HOSTS` 或仓库 `deploy/known_hosts` |
 | `Connection timed out` | 云安全组 / iptables 未对 GitHub runner 放行 22 端口 |
 | 部署成功但页面打不开 | 8080 未在云控制台与主机防火墙双向放行 |
-| 健康检查失败并自动回滚 | 看 `logs/assetspider.log`；常见是 8080 被占用、`/etc/assetspider.env` 端口与 `HEALTH_URL` 不一致，或老库首次启动正在做数据迁移（耗时较长，可调大 `HEALTH_TIMEOUT`） |
+| 健康检查失败并自动回滚 | 看 `logs/assetspider.log`；常见是 8080 被占用、`/etc/assetspider.env` 端口与 `HEALTH_URL` 不一致，或老库首次启动正在做数据迁移（耗时较长，可调大 `HEALTH_TIMEOUT`）。**若新版本启动特别慢**：检查是否把一次性回灌 / 迁移放进了 `repository.Open` 的同步路径——服务迟迟不监听，健康检查超时后回滚又 kill 掉迁移，会形成「每次部署都失败、迁移永远做不完」的死循环。一次性重活必须放到服务启动之后的后台任务，并写入可续跑的进度（参见[配置](configuration.md)的 2 字索引回灌） |
 | `sudo: a password is required` | 部署用户没有免密 sudo：改用 root，或设置 `DEPLOY_MODE=process` |
 | 服务能启动但采集异常 | 检查 `conf/config.yaml` 与 `data/` 权限；两者不会被部署覆盖 |
 

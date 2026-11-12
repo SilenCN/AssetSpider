@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -32,16 +33,21 @@ import (
 // 都不会漏。UPDATE 触发器带 AFTER UPDATE OF <六列>，只刷 last_seen_at、category_id
 // 这类不涉及检索文本的更新不会重算 bigram。
 //
-// 历史库回灌：按主键分批（每批 2000 行）INSERT OR IGNORE，每批提交后把进度写进
-// video_bigram_state。被打断（部署健康检查 kill、磁盘紧张）可续跑，不会从头重来；
-// 完成前 2 字检索降级走 LIKE，结果始终正确。回灌只插入新表，不改写 videos 主表，
+// 历史库回灌：启动路径里只做 DDL 与触发器（毫秒级），历史数据由启动后的后台任务
+// 按主键分批（每批 videoBigramBatch 行）INSERT OR IGNORE 补齐，**绝不阻塞 HTTP 监听**。
+// 大库回灌可能几分钟，同步做会让部署健康检查超时并回滚，回滚又 kill 掉回灌，
+// 形成「每次部署都失败、回灌永远做不完」的死循环。每批提交后把进度写进
+// video_bigram_state，被打断（部署 kill、磁盘紧张、主动停止）可续跑；完成前
+// 2 字检索降级走 LIKE，结果始终正确。回灌只插入新表，不改写 videos 主表，
 // 也不触发 PRAGMA user_version 升级（避免把 v6 的整表回灌 + ANALYZE 再拉起来）。
 
 const (
 	videoBigramTable      = "video_bigrams"
 	videoBigramStateTable = "video_bigram_state"
-	videoBigramBatch      = 5000
 )
+
+// videoBigramBatch 是每批回灌的行数；声明为变量便于测试用小批次验证续跑。
+var videoBigramBatch = 5000
 
 // videoBigramColumns 与 FTS5 的检索列保持一致。
 var videoBigramColumns = videoSearchColumns
@@ -134,9 +140,10 @@ func videoBigramState(db *gorm.DB, key string) int64 {
 	return v
 }
 
-// ensureVideoBigrams 幂等创建两字索引并补齐历史数据。
-// 失败只由调用方降级为 LIKE，不阻断启动。
-func ensureVideoBigrams(db *gorm.DB) error {
+// initVideoBigrams 只建表、索引、状态表与三条触发器，是毫秒级的启动路径操作。
+// 历史数据回灌由 backfillVideoBigrams 负责，二者刻意分开：回灌在大库上要几分钟，
+// 不能放在 HTTP 服务开始监听之前。
+func initVideoBigrams(db *gorm.DB) error {
 	for _, stmt := range videoBigramDDL() {
 		if err := db.Exec(stmt).Error; err != nil {
 			return err
@@ -147,13 +154,41 @@ func ensureVideoBigrams(db *gorm.DB) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// videoBigramNeedsBackfill 判断是否有历史数据待回灌。
+// 没有待回灌行时顺手把 done 置 1（新库或刚跑完的库），检索立即走索引，
+// 也不必为它启动后台任务。
+func videoBigramNeedsBackfill(db *gorm.DB) bool {
 	if videoBigramState(db, "done") == 1 {
-		return nil
+		return false
 	}
-	// 回灌是明确的长操作（每批几百毫秒），用静默 logger 避免每批刷一条 SLOW SQL。
+	var pending int64
+	cursor := videoBigramState(db, "cursor")
+	if err := db.Raw("SELECT 1 FROM videos WHERE id > ? LIMIT 1", cursor).Scan(&pending).Error; err != nil {
+		return false
+	}
+	if pending == 0 {
+		db.Exec("INSERT OR REPLACE INTO " + videoBigramStateTable + "(k, v) VALUES('done', 1)")
+		return false
+	}
+	return true
+}
+
+// errBigramStopped 表示回灌被 pace 主动中止：不是失败，也不该把 done 置 1。
+var errBigramStopped = errors.New("bigram backfill stopped")
+
+// backfillVideoBigrams 分批补齐历史数据。
+// pace 在每批之前调用，返回 true 就停下并返回 errBigramStopped；传 nil 表示
+// 一口气跑完（测试与手动调用）。每批都用静默 logger，避免刷 SLOW SQL 日志。
+func backfillVideoBigrams(db *gorm.DB, pace func() bool) error {
 	quiet := db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)})
 	cursor := videoBigramState(db, "cursor")
 	for {
+		if pace != nil && pace() {
+			return errBigramStopped
+		}
 		var lo, hi int64
 		row := db.Raw(
 			"SELECT COALESCE(MIN(id), 0), COALESCE(MAX(id), 0) FROM (SELECT id FROM videos WHERE id > ? ORDER BY id LIMIT ?)",
@@ -175,6 +210,14 @@ func ensureVideoBigrams(db *gorm.DB) error {
 		cursor = hi
 	}
 	return db.Exec("INSERT OR REPLACE INTO " + videoBigramStateTable + "(k, v) VALUES('done', 1)").Error
+}
+
+// ensureVideoBigrams 供测试与手动调用，一次性同步补齐；正式启动走 init + 后台回灌。
+func ensureVideoBigrams(db *gorm.DB) error {
+	if err := initVideoBigrams(db); err != nil {
+		return err
+	}
+	return backfillVideoBigrams(db, nil)
 }
 
 // videoBigramReady 表示历史数据已回灌完毕，2 字检索可以走倒排表。

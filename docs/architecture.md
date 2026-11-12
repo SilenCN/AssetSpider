@@ -28,7 +28,7 @@ router  →  controller  →  service  →  repository
 | `CrawlJob` | `repository/job.go` | `JobRepository` | `CreateJob` / `FinishJob` / `ListJobs` |
 | `User` / `Session` / `UserSource` | `repository/user.go` | `UserRepository` | 账号 CRUD、会话签发/校验/吊销、站点授权读写 |
 
-`repository/store.go` 只是容器：`Repositories` 共享一条 `*gorm.DB`，负责连接、自动迁移、装配各实体对象与 `Path` / `Close`，**不承载任何实体读写方法**；`errors.go` 放各对象共用的 `ErrNotFound`，`visibility.go` 放各实体共用的「可见站点白名单」过滤规则，`video_search.go` / `video_bigram.go` 是检索层共用的索引定义、查询条件与历史数据回灌（包级函数，不挂在容器上）。测试同样按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go` / `user_test.go`，`store_test.go` 只测连接与装配。
+`repository/store.go` 只是容器：`Repositories` 共享一条 `*gorm.DB`，负责连接、自动迁移、装配各实体对象与 `Path` / `Close`，**不承载任何实体读写方法**；`errors.go` 放各对象共用的 `ErrNotFound`，`visibility.go` 放各实体共用的「可见站点白名单」过滤规则，`video_search.go` / `video_bigram.go` 是检索层共用的索引定义、查询条件与历史数据回灌（包级函数，不挂在容器上）；`video_bigram_async.go` 把长耗时的回灌收敛成启动后的后台任务，`Open` 里只做毫秒级的 DDL，保证服务立即开始监听。测试同样按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go` / `user_test.go`，`store_test.go` 只测连接与装配。
 
 **采集写入采用批量策略**（避免逐条 SQL 往返拖慢大站采集）：
 

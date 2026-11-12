@@ -66,20 +66,18 @@ type VideoRepository interface {
 // videoRepository 是 Video 实体专属的仓储对象。
 type videoRepository struct {
 	db *gorm.DB
-	// search 表示 trigram 全文索引（videos_fts）是否可用。
-	// bigram 表示两字关键词倒排表（video_bigrams）是否回灌完毕。
-	// 两者任一不可用时对应长度的关键词都降级为 LIKE，结果不受影响。
+	// search 表示 trigram 全文索引（videos_fts）是否可用，启动时探测一次即可。
+	// bigram 不缓存：历史回灌在后台跑，完成时写 video_bigram_state，查询时动态
+	// 读一次主键点查（开销可忽略）就能从 LIKE 切到倒排表，无需重启或重建仓储。
 	search bool
-	bigram bool
 }
 
 func NewVideoRepository(db *gorm.DB) VideoRepository {
-	return &videoRepository{
-		db:     db,
-		search: videoSearchTableExists(db),
-		bigram: videoBigramReady(db),
-	}
+	return &videoRepository{db: db, search: videoSearchTableExists(db)}
 }
+
+// bigram 返回两字倒排表是否已回灌完毕。后台任务完成后状态立即生效。
+func (r *videoRepository) bigram() bool { return videoBigramReady(r.db) }
 
 var _ VideoRepository = (*videoRepository)(nil)
 
@@ -365,7 +363,7 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, error) {
 		q = q.Where("vod_year = ?", year)
 	}
 	if query.Keyword != "" {
-		q = applyVideoKeyword(q, query.Keyword, videoSearchCaps{fts: r.search, bigram: r.bigram})
+		q = applyVideoKeyword(q, query.Keyword, videoSearchCaps{fts: r.search, bigram: r.bigram()})
 	}
 	// 一次查询拿本页数据即可，不做 COUNT、不多取一条。
 	var items []model.Video
