@@ -111,6 +111,13 @@ func Open(path string) (*Repositories, error) {
 	if err := ensureVideoSearch(db); err != nil {
 		log.Printf("建立影片全文索引失败，关键词检索将退回 LIKE 全表扫描: %v", err)
 	}
+	// 历史库里已废弃的单列索引由 AutoMigrate 留着不动，显式清掉（不触发版本升级）。
+	dropRetiredVideoIndexes(db)
+	// 2 字关键词的 bigram 倒排表：建表/触发器 + 可续跑的历史数据回灌。
+	// 失败只降级为 LIKE，不影响启动与结果正确性。
+	if err := ensureVideoBigrams(db); err != nil {
+		log.Printf("建立两字关键词索引失败，2 字检索将退回 LIKE: %v", err)
+	}
 	prepareDatabase(db)
 	return &Repositories{
 		Assets:        NewAssetRepository(db),

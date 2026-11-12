@@ -134,13 +134,23 @@ auth:
 
 SQLite 的索引末尾隐含 rowid（即 `id`），所以 `(source_id, vod_time)` 同时满足 `ORDER BY vod_time DESC, id DESC`，不必再补 id 列。
 
-**全文索引（FTS5）**：关键词检索原来是对 6 列做 `LIKE '%词%'`，前置通配符让索引彻底失效，每次搜索全表扫描。启动时 `ensureVideoSearch` 幂等创建 FTS5 虚拟表 `videos_fts`（`content='videos'` 外部内容模式，正文不复制第二份）+ 三条同步触发器；索引列与 LIKE 覆盖的列一致：`vod_name / vod_en / vod_actor / vod_director / vod_class / vod_area`。
+`vod_name` / `hash` 的单列索引已移除：关键词检索走下面的倒排索引，前置通配符的 `LIKE` 用不上 B-Tree；`hash` 只在 Go 侧比对内容指纹，SQL 里没有按它过滤的查询。历史库里已建出的这两个索引由启动时幂等的 `DROP INDEX IF EXISTS` 清理，**不提升 `schemaVersion`**——删索引不需要重算统计信息，更不该把 v6 的整表回灌 + `ANALYZE` 重新触发一遍。
 
-分词器选 `trigram`：默认的 unicode61 按词切分，中文整句会变成一个词，搜「流浪」永远命中不了「流浪地球」；trigram 把文本切成三字符片段，天然支持中文子串与英文子串。
+**关键词索引（FTS5 + bigram）**：关键词检索原来是对 6 列做 `LIKE '%词%'`，前置通配符让索引彻底失效，每次搜索全表扫描。现在按长度分三条路径，参与检索的列始终一致：`vod_name / vod_en / vod_actor / vod_director / vod_class / vod_area`。
 
-> **边界**：trigram 无法为少于 3 个字符的关键词建立片段，所以 **1~2 字的关键词仍走 LIKE 全表扫描**（代码里 `videoSearchMatch` 返回 false 即回退）。3 字及以上走索引。若底层 SQLite 未编译 FTS5，建表失败只打日志并整体退回 LIKE，不影响启动。
+| 关键词长度 | 走哪套索引 | 实现 |
+| --- | --- | --- |
+| ≥ 3 字 | `videos_fts`（FTS5 trigram） | `ensureVideoSearch` 幂等建外部内容表（`content='videos'`，正文不复制第二份）+ 三条同步触发器；短语查询把任意子串匹配变成倒排查找 |
+| = 2 字 | `video_bigrams` | 六列各自切成连续两字符片段，存 `(gram, video_id)` 主键倒排表；`gram = LOWER(?)` 直接命中主键 |
+| 1 字 | 无 | 回退六列 `LIKE`，优先在 FTS5 外部内容表上做（只读取这六列，比扫 `videos` 的九十多列快一个数量级） |
+
+trigram 把文本切成三字符片段，天然支持中文子串与英文子串；默认的 unicode61 按词切分，中文整句会变成一个词，搜「流浪」永远命中不了「流浪地球」。但它**物理上无法为 2 字查询建立片段**（实测 `MATCH '"测试"'` 恒返回 0 行），所以两字单独建 bigram 倒排表；单纯把阈值改成 2 会让两字搜索从「慢」变成「一个结果都搜不到」。
+
+> **2 字索引的同步与回灌**：`video_bigrams` 由 `videos` 上的三条触发器维护，`AFTER UPDATE OF` 只限定六个检索列，刷新 `last_seen_at` 不会重算片段；`video_bigram_state` 记录回灌进度，历史库按主键分批（每批 5000 行）`INSERT OR IGNORE`，每批提交后写进度，被打断可续跑、不会从头重来。回灌完成前两字检索降级走 `LIKE`，结果始终正确。回灌只插入新表、不改写 `videos`，也不触发 `PRAGMA user_version` 升级。
 >
-> **存储代价**：15 万条影片的库从 73 MB 涨到 105 MB（+43%），主要来自 6 列文本的 trigram 倒排表。若要压缩，可只把真正会被搜索的列（如 `vod_name` / `vod_actor`）放进索引，代价是这几列以外的字段不再参与关键词检索。
+> **边界与降级**：若底层 SQLite 未编译 FTS5，建表失败只打日志并整体退回 `LIKE`；bigram 表建立 / 回灌失败同样只降级，都不影响启动。1 字关键词仍走 `LIKE` 全表扫描。
+>
+> **存储代价**：15 万条影片的库从 73 MB 涨到 105 MB（+43%，主要是 6 列文本的 trigram 倒排表）；在大文本量的真实库上，bigram 倒排表额外约 +12%（578 MB → 650 MB，272 万条片段，含按 `video_id` 反查的二级索引）。若要压缩，可只把真正会被搜索的列放进索引，代价是这几列以外的字段不再参与关键词检索。
 
 **查询侧的两处配合**：
 
@@ -157,10 +167,12 @@ SQLite 的索引末尾隐含 rowid（即 `id`），所以 `(source_id, vod_time)
 | 地域下拉（原 `DISTINCT vod_area`） | 99 ms | **<1 ms**（改读 `areas` 表） |
 | 标签筛选 | 25 ms | **5.7 ms** |
 | 关键词 4 字「流浪地球」 | 87 ms | **2.0 ms** |
-| 关键词 2 字（回退 LIKE） | 83 ms | 80 ms |
+| 关键词 2 字（bigram 索引） | 83 ms | **2~38 ms** |
 | 默认列表第一页 | 0.5 ms | 0.5 ms |
 
-写入侧没有额外代价：500 条影片 upsert 在新旧库上都是 ~566 ms（触发器维护索引的开销远小于逐行更新上百列本身）。
+> 关键词 2 字这一行的「优化后」在 578 MB / 15 万行的真实库上单独复测：低频词 **2 ms**、高频词（命中全库）**33 ms**，同一库上六列 `LIKE` 约 **250 ms**；`EXPLAIN QUERY PLAN` 确认走 `SEARCH video_bigrams USING PRIMARY KEY (gram=?)`。其余行沿用早期基准库，绝对值不直接横比。该库一次性回灌约 16 秒（完成后写入 `done` 状态，后续启动直接跳过）。
+
+写入侧由行级触发器同步维护 FTS5 与 bigram 两套倒排索引；批量 upsert 仍是 `CreateInBatches` / `ON CONFLICT` 的少量 SQL，触发器开销远小于逐行更新上百列本身。回灌用静默 logger，不会每批刷一条 SLOW SQL 日志。
 
 ## 清空站点数据（保留站点配置）
 

@@ -11,8 +11,8 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// 影片关键词检索有两条路径：3 个字符以上走 FTS5 全文索引，1~2 个字符回退 LIKE。
-// 两条路径的结果语义必须一致（都是「六列里任意一列包含该子串」）。
+// 影片关键词检索有三条路径：3 字以上走 FTS5 trigram、2 字走 video_bigrams、
+// 1 字回退 LIKE。三条路径的结果语义必须一致（都是「六列里任意一列包含该子串」）。
 func TestVideoKeywordSearchBothPaths(t *testing.T) {
 	r := newTestRepos(t)
 	mk := func(vodID, name, actor, class string) model.Video {
@@ -35,10 +35,10 @@ func TestVideoKeywordSearchBothPaths(t *testing.T) {
 		path    string
 	}{
 		{"流浪地球", 1, "FTS（4 字）"},
-		{"流浪", 2, "LIKE（2 字，trigram 无法命中）"},
-		{"联盟", 1, "LIKE（2 字）"},
+		{"流浪", 2, "bigram（2 字，trigram 无法命中）"},
+		{"联盟", 1, "bigram（2 字）"},
 		{"小罗伯特", 1, "FTS（命中演员列）"},
-		{"动作", 1, "LIKE（命中分类列）"},
+		{"动作", 1, "bigram（命中分类列）"},
 		{"不存在的片名", 0, "FTS 无命中"},
 	}
 	for _, c := range cases {

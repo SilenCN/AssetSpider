@@ -19,8 +19,8 @@ import (
 // 中文子串匹配，也顺带支持英文子串与大小写不敏感。
 //
 // 代价与边界：
-//   - trigram 无法为短于 3 个字符的查询建立片段，所以 1~2 字的关键词仍走 LIKE
-//     （见 videoSearchMatch 的返回值）；
+//   - trigram 无法为短于 3 个字符的查询建立片段：3 字及以上走这里，2 字改走
+//     video_bigrams 倒排表（见 video_bigram.go），1 字仍回退 LIKE；
 //   - 索引本身占额外存储（约为被索引文本的 1/3），写入时随之维护；
 //   - 用 external content 表（content='videos'）而不是复制一份正文，正文仍只有
 //     videos 一份，索引里只存倒排表，靠触发器保持同步。
@@ -102,7 +102,8 @@ func videoSearchTriggerSQL() []string {
 
 // videoSearchMatch 把用户输入包装成 FTS5 的短语查询表达式。
 //
-// 返回 false 表示关键词太短（不足 3 个符文），trigram 索引无法命中，调用方应回退 LIKE。
+// 返回 false 表示关键词不足 3 个符文，trigram 索引无法命中，调用方应改走
+// bigram 倒排表或回退 LIKE。
 // 关键词整体放进双引号，既避免 MATCH 的语法字符（AND / OR / - / *）被当成操作符，
 // 也保证多词输入按「连续子串」匹配，与原 LIKE 的语义一致。
 func videoSearchMatch(keyword string) (string, bool) {
@@ -113,19 +114,37 @@ func videoSearchMatch(keyword string) (string, bool) {
 	return `"` + strings.ReplaceAll(kw, `"`, `""`) + `"`, true
 }
 
-// applyVideoKeyword 给影片查询附加关键词条件。
+// videoSearchCaps 是本次查询可用的检索索引。
+type videoSearchCaps struct {
+	fts    bool // videos_fts（trigram，≥3 字）是否可用
+	bigram bool // video_bigrams（2 字）是否回灌完毕
+}
+
+// applyVideoKeyword 给影片查询附加关键词条件，按关键词长度选索引：
 //
-// 索引可用且关键词够长时走 FTS5（先由倒排表取出命中的 rowid，再回主表），
-// 否则退回六列 LIKE，保证短词与索引不可用时行为不变。
-func applyVideoKeyword(q *gorm.DB, keyword string, searchReady bool) *gorm.DB {
-	if searchReady {
-		if expr, ok := videoSearchMatch(keyword); ok {
+//	≥3 字  → videos_fts 的 trigram 短语查询
+//	==2 字 → video_bigrams 的主键等值查找（gram = LOWER(?)）
+//	1 字 / 索引未就绪 → 六列 LIKE 回退，结果语义与上面两条完全一致
+//
+// LIKE 回退优先在 FTS5 外部内容表上做：它只读取六列文本，比扫 videos 的九十多列
+// 快一个数量级；连 FTS 都不可用时才回主表。
+func applyVideoKeyword(q *gorm.DB, keyword string, caps videoSearchCaps) *gorm.DB {
+	kw := strings.TrimSpace(keyword)
+	if caps.fts {
+		if expr, ok := videoSearchMatch(kw); ok {
 			return q.Where("videos.id IN (SELECT rowid FROM "+videoSearchTable+" WHERE "+videoSearchTable+" MATCH ?)", expr)
 		}
 	}
-	kw := "%" + keyword + "%"
-	return q.Where(
-		"vod_name LIKE ? OR vod_en LIKE ? OR vod_actor LIKE ? OR vod_director LIKE ? OR vod_class LIKE ? OR vod_area LIKE ?",
-		kw, kw, kw, kw, kw, kw,
-	)
+	// 含 LIKE 通配符的两字输入仍走原来的 LIKE 语义：倒排表是精确等值匹配，
+	// 直接切换会把「%」从通配符变成普通字符，属于行为突变。
+	if caps.bigram && utf8.RuneCountInString(kw) == 2 && !strings.ContainsAny(kw, "%_") {
+		return q.Where("videos.id IN (SELECT video_id FROM "+videoBigramTable+" WHERE gram = LOWER(?))", kw)
+	}
+	like := "%" + kw + "%"
+	cond := "vod_name LIKE ? OR vod_en LIKE ? OR vod_actor LIKE ? OR vod_director LIKE ? OR vod_class LIKE ? OR vod_area LIKE ?"
+	args := []interface{}{like, like, like, like, like, like}
+	if caps.fts {
+		return q.Where("videos.id IN (SELECT rowid FROM "+videoSearchTable+" WHERE "+cond+")", args...)
+	}
+	return q.Where(cond, args...)
 }

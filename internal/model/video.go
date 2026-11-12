@@ -25,6 +25,11 @@ type Video struct {
 	//    关键词检索里的 vod_area LIKE '%x%' 本来也用不上索引）
 	//   idx_videos_vod_year     年份筛选与年份下拉的 GROUP BY（单值列，无需拆表）；
 	//   idx_videos_category_id 分类筛选与按分类聚合影片数。
+	//
+	// vod_name / hash 不再建单列索引：关键词检索走 FTS5 trigram（≥3 字）或
+	// video_bigrams（2 字），前置通配符的 LIKE 用不上 B-Tree；hash 只在 Go 侧比对
+	// 内容指纹，SQL 里没有按 hash 过滤的查询。历史库里已建出的这两个索引由
+	// dropRetiredVideoIndexes 幂等删除。
 	ID       uint `gorm:"primaryKey;index:idx_videos_source_id,priority:2" json:"id"`
 	SourceID uint `gorm:"column:source_id;not null;uniqueIndex:idx_source_vod,priority:1;index:idx_videos_source_time,priority:1;index:idx_videos_source_id,priority:1" json:"sourceId"`
 
@@ -36,7 +41,7 @@ type Video struct {
 	TypeID   string `gorm:"column:type_id" json:"typeId"`
 	TypeID1  string `gorm:"column:type_id_1" json:"typeId1"`
 	GroupID  string `gorm:"column:group_id" json:"groupId"`
-	VodName  string `gorm:"column:vod_name;index" json:"vodName"`
+	VodName  string `gorm:"column:vod_name" json:"vodName"`
 	VodSub   string `gorm:"column:vod_sub" json:"vodSub"`
 	VodEn    string `gorm:"column:vod_en" json:"vodEn"`
 	VodColor string `gorm:"column:vod_color" json:"vodColor"`
@@ -126,7 +131,7 @@ type Video struct {
 	VodPlotDetail string `gorm:"column:vod_plot_detail;type:text" json:"vodPlotDetail"`
 
 	// ---- 采集元数据 ----
-	Hash  string `gorm:"column:hash;size:64;index" json:"-"`            // 全字段内容指纹
+	Hash  string `gorm:"column:hash;size:64" json:"-"`                  // 全字段内容指纹
 	Extra string `gorm:"column:extra;type:text" json:"extra,omitempty"` // 未映射字段（原始 JSON 值）
 
 	FirstSeenAt time.Time `json:"firstSeenAt"`
