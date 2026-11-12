@@ -60,8 +60,6 @@ func New(cfg *config.Config) (*App, error) {
 	}
 	videoSvc := service.NewVideoService(repos.Videos, repos.Sources)
 	categorySvc := service.NewCategoryService(repos.Categories, repos.Videos)
-	tagSvc := service.NewTagService(repos.Tags)
-	areaSvc := service.NewAreaService(repos.Areas)
 	metaSvc := service.NewMetaService()
 	jobSvc := service.NewJobService(repos.Jobs)
 	// 采集记录页要显示运行中任务的实时进度，这里把调度层注入为进度来源。
@@ -84,8 +82,6 @@ func New(cfg *config.Config) (*App, error) {
 		Task:         controller.NewTaskController(crawlSvc),
 		Video:        controller.NewVideoController(videoSvc),
 		Category:     controller.NewCategoryController(categorySvc),
-		Tag:          controller.NewTagController(tagSvc),
-		Area:         controller.NewAreaController(areaSvc),
 		Meta:         controller.NewMetaController(metaSvc),
 		Job:          controller.NewJobController(jobSvc),
 		Auth:         controller.NewAuthController(authSvc),

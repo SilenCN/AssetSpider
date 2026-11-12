@@ -32,7 +32,8 @@ func TestParseAreas(t *testing.T) {
 	}
 }
 
-// TestAreaEnsureAndLink 验证地域的「创建 → 关联 → 列表/计数 → 按地域筛选」全链路。
+// TestAreaEnsureAndLink 验证地域的「创建 → 关联 → 列表 / 计数」全链路
+// （资源库地域筛选维度已移除，归档数据仍保留）。
 func TestAreaEnsureAndLink(t *testing.T) {
 	r := newTestRepos(t)
 	src := model.Source{Name: "站点A", APIBase: "http://a.example/api.php/provide/vod/"}
@@ -92,13 +93,10 @@ func TestAreaEnsureAndLink(t *testing.T) {
 		t.Fatalf("「美国」影片数应为 2，实际 %d（%+v）", counts[usa.ID], counts)
 	}
 
-	// 按地域筛选：美国应命中 a、b 两条。
-	_, total, err := listVideosForTest(r.Videos, VideoQuery{SourceID: src.ID, AreaID: usa.ID, Page: 1, Size: 20})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 2 {
-		t.Fatalf("按「美国」筛选应命中 2 条，实际 %d", total)
+	// 资源库已移除地域筛选维度：归档数据（地域、关联、影片数）仍保留并可用，
+	// 但列表不再提供 area_id 过滤，这里只复核归档计数的一致性。
+	if got := counts[usa.ID]; got != 2 {
+		t.Fatalf("「美国」归档影片数应为 2，实际 %d", got)
 	}
 
 	// 幂等：重复 Ensure + Link 不重复建地域、不重复关联。

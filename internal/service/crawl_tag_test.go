@@ -8,9 +8,9 @@ import (
 	"github.com/SilenCN/AssetSpider/internal/repository"
 )
 
-// TestCrawlSavesTagsAndFilters 端到端验证：采集时按 vod_tag 自动创建标签、
-// 建立影片关联，并能按标签筛选影片。
-func TestCrawlSavesTagsAndFilters(t *testing.T) {
+// TestCrawlSavesTagsAndCounts 端到端验证：采集时按 vod_tag 自动创建标签、
+// 建立影片关联并统计影片数（资源库标签筛选维度已移除，归档数据仍保留）。
+func TestCrawlSavesTagsAndCounts(t *testing.T) {
 	items := []mockItem{
 		{ID: "1", Name: "影片A", VodTime: "2026-11-06 08:00:00", PlayURL: "https://x/a.m3u8", Tag: "动作,科幻"},
 		{ID: "2", Name: "影片B", VodTime: "2026-11-06 09:00:00", PlayURL: "https://x/b.m3u8", Tag: "科幻，喜剧"},
@@ -57,24 +57,9 @@ func TestCrawlSavesTagsAndFilters(t *testing.T) {
 		t.Fatalf("动作/喜剧 影片数应各为 1，实际 %+v", counts)
 	}
 
-	// 按标签筛选：科幻命中 2 条，动作命中 1 条（影片A）。
-	_, total, err := listVideosForTest(st.Videos, repository.VideoQuery{SourceID: id, TagID: byName["科幻"].ID, Page: 1, Size: 20})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 2 {
-		t.Fatalf("按「科幻」筛选应命中 2 条，实际 %d", total)
-	}
-	only, _, err := listVideosForTest(st.Videos, repository.VideoQuery{SourceID: id, TagID: byName["动作"].ID, Page: 1, Size: 20})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(only) != 1 || only[0].VodName != "影片A" {
-		t.Fatalf("按「动作」筛选应只命中影片A，实际 %+v", only)
-	}
-
-	// 无标签影片不应被任何标签筛选命中，但仍在全量列表里。
-	if _, total, _ := listVideosForTest(st.Videos, repository.NewVideoQuery(id, "", 1, 20)); total != 3 {
-		t.Fatalf("全量列表应有 3 条，实际 %d", total)
+	// 资源库已移除标签筛选维度：采集仍自动归档标签并统计影片数（上面已验证），
+	// 但列表不再提供 tag_id 过滤；无标签影片照常出现在全量列表里。
+	if _, total, err := listVideosForTest(st.Videos, repository.NewVideoQuery(id, "", 1, 20)); err != nil || total != 3 {
+		t.Fatalf("全量列表应有 3 条，实际 %d（err=%v）", total, err)
 	}
 }

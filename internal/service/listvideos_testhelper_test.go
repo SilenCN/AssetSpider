@@ -6,9 +6,21 @@ import (
 )
 
 // listVideosForTest 是服务层测试用的适配函数。
-// 影片列表接口不再返回总数，测试断言沿用「命中 N 条」的写法，这里以本页条数代替。
-// 测试数据都在一页以内，两者等价。
+// 生产列表只返回 VideoCard 卡片投影，完整记录由 GetVideo 按 id 返回；这里按卡片 ID
+// 逐条补全成 model.Video，让「命中 N 条」与全字段断言继续有效。测试数据都在一页内，
+// total 用本页条数代替，不做全表 COUNT。
 func listVideosForTest(repo repository.VideoRepository, q repository.VideoQuery) ([]model.Video, int64, error) {
-	items, err := repo.ListVideos(q)
-	return items, int64(len(items)), err
+	cards, err := repo.ListVideos(q)
+	if err != nil {
+		return nil, 0, err
+	}
+	items := make([]model.Video, 0, len(cards))
+	for _, c := range cards {
+		v, err := repo.GetVideo(c.ID)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, *v)
+	}
+	return items, int64(len(items)), nil
 }

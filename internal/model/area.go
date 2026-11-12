@@ -27,7 +27,7 @@ type Area struct {
 // 这类写法），因此仍用连接表承载，与标签保持一致。
 type VideoArea struct {
 	VideoID uint `gorm:"column:video_id;primaryKey;index:idx_video_areas_area,priority:2" json:"videoId"`
-	// idx_video_areas_area (area_id, video_id)：按地域筛选影片时先定位到该地域的
+	// idx_video_areas_area (area_id, video_id)：按地域统计归档影片数时先定位到该地域的
 	// 全部 video_id，索引内天然有序，配合 ORDER BY videos.id DESC 可直接倒序读。
 	AreaID uint `gorm:"column:area_id;primaryKey;index:idx_video_areas_area,priority:1" json:"areaId"`
 }

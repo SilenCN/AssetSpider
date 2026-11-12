@@ -756,3 +756,5 @@ tr.fail-row td { background: #fff6f6; color: var(--danger, #d93a3f); font-size: 
   .poster-box { display: none; }
   .ep-chips { grid-template-columns: repeat(auto-fill, minmax(66px, 1fr)); max-height: 200px; }
 }
+/* 点开影片后按 id 拉完整详情期间的占位，避免停留在列表造成空白或重复点击 */
+.detail-loading { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 240px; }

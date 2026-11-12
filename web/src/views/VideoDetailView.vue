@@ -8,19 +8,11 @@ import { groupLabel, groupHint } from '../playGroups.js'
 const {
   detail, onlyNonEmpty, groupedFields, extraPairs, playGroups,
   playerEl, activeGroup, activeEp, currentEpisodes, currentEpisode, currentUrl,
-  detailSource, useFrame, playError,
+  useFrame, playError,
   metaLine, episodeLabel, scoreOf, tagListOf,
-  chooseGroup, chooseEp, closeDetail, filterByTag, isAdmin,
+  chooseGroup, chooseEp, closeDetail, isAdmin,
   onVideoError, onVideoLoaded,
 } = inject('app')
-
-// 标签跳转：先记住影片所属站点，再离开详情页回资源库筛选，
-// 避免 closeDetail 清空 detail 后 detailSource 变成 null 而匹配到别的站点同名标签。
-function onTagClick(t) {
-  const sid = detailSource.value?.id
-  closeDetail()
-  filterByTag(t, sid)
-}
 
 // 海报：多张图依次回退；全部失败时用首字占位块，避免破图。
 const posterFailed = ref(false)
@@ -88,9 +80,9 @@ const facts = computed(() => {
           <span v-if="metaLine(detail)">{{ metaLine(detail) }}</span>
           <span v-if="episodeLabel(detail) !== '-'" class="badge on">{{ episodeLabel(detail) }}</span>
         </p>
+        <!-- 标签只作信息展示，标签筛选维度已移除 -->
         <div v-if="tagListOf(detail).length" class="res-tags detail-tags">
-          <span v-for="t in tagListOf(detail)" :key="t" class="res-tag"
-                :title="`按标签「${t}」筛选`" @click="onTagClick(t)">{{ t }}</span>
+          <span v-for="t in tagListOf(detail)" :key="t" class="res-tag">{{ t }}</span>
         </div>
       </div>
     </div>

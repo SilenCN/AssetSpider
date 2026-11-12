@@ -3,6 +3,7 @@ package repository
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SilenCN/AssetSpider/internal/model"
@@ -207,5 +208,23 @@ func TestListVideosPaginationWithoutTotal(t *testing.T) {
 	third, err := r.Videos.ListVideos(VideoQuery{Page: 3, Size: 2})
 	if err != nil || len(third) != 0 {
 		t.Fatalf("超出末页应返回空: len=%d err=%v", len(third), err)
+	}
+}
+
+// 1 字 / 含通配符的关键词即使 FTS 可用也直接扫主表六列 LIKE，
+// 不再绕道 FTS5 外部内容表（实测更慢）。
+func TestShortKeywordFallsBackToMainTable(t *testing.T) {
+	r := newTestRepos(t)
+	for _, kw := range []string{"流", "流%"} {
+		dry := applyVideoKeyword(r.db.Model(&model.Video{}), kw,
+			videoSearchCaps{fts: true, bigram: true}).
+			Session(&gorm.Session{DryRun: true}).Find(&[]model.Video{}).Statement
+		sql := dry.SQL.String()
+		if strings.Contains(sql, videoSearchTable) || strings.Contains(sql, videoBigramTable) {
+			t.Errorf("短词 %q 回退不应引用索引表: %s", kw, sql)
+		}
+		if !strings.Contains(sql, "LIKE") {
+			t.Errorf("短词 %q 应回退 LIKE: %s", kw, sql)
+		}
 	}
 }

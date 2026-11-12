@@ -3,7 +3,6 @@ package repository
 import (
 	"fmt"
 	"reflect"
-	"strings"
 	"time"
 
 	"github.com/SilenCN/AssetSpider/internal/model"
@@ -18,19 +17,14 @@ type UpsertStats struct {
 	Unchanged int `json:"unchanged"`
 }
 
-// VideoYear 是一个年份及其影片数，供资源库的年份筛选下拉使用。
-type VideoYear struct {
-	Year  string
-	Count int64
-}
-
-// VideoQuery 是影片列表的查询条件，避免随筛选维度增加不断拉长参数列表。
+// VideoQuery 是影片列表的查询条件。
+//
+// 检索维度只保留关键词 + 站点 + 分类：标签 / 地域 / 年份 / 评分排序已从资源库移除，
+// 但影片上的 vod_tag / vod_area / vod_year / vod_score 原始字段与采集时的归档数据
+// 仍原样保留，详情接口照常返回，卡片也照常展示这些信息。
 type VideoQuery struct {
 	SourceID   uint
 	CategoryID uint
-	TagID      uint   // 按标签过滤（经 video_tags 关联表）
-	AreaID     uint   // 按地域过滤（经 video_areas 关联表）
-	Year       string // 按年份过滤（vod_year 等值匹配）
 	Keyword    string
 	Sort       string // 排序标识，见 videoOrder；空则按 id 倒序
 	Page       int
@@ -50,17 +44,17 @@ type VideoRepository interface {
 	UpsertVideos(items []model.Video) (UpsertStats, error)
 	// 读取类方法都接受可选的站点白名单，语义见 visibility.go。
 	GetVideo(id uint, visible ...[]uint) (*model.Video, error)
-	// ListVideos 只返回本页影片，不计算总数、也不多取一条：
-	// COUNT 需要一次全量扫描，前端按「本页条数 == size」判断是否继续翻页。
-	ListVideos(query VideoQuery) ([]model.Video, error)
+	// ListVideos 返回本页影片的卡片投影，只 SELECT 卡片需要的列，
+	// 不计算总数、也不多取一条：COUNT 需要一次全量扫描，前端按
+	// 「本页条数 == size」判断是否继续翻页。
+	// 完整记录由 GetVideo 在用户点开影片时按 id 单独返回。
+	ListVideos(query VideoQuery) ([]model.VideoCard, error)
 	// MapVodIDs 把一批 vod_id 解析为库内影片主键，供标签关联回填等场景使用。
 	MapVodIDs(sourceID uint, vodIDs []string) (map[string]uint, error)
 	// CountVideos 返回某站点已入库的影片总数，供站点表的 video_count 快照回写。
 	CountVideos(sourceID uint) (int64, error)
 	CountVideosBySource(visible ...[]uint) (map[uint]int64, error)
 	CountVideosByCategory(visible ...[]uint) (map[uint]int64, error)
-	// ListVideoYears 返回库中出现过的年份及各自的影片数，供年份筛选下拉使用。
-	ListVideoYears(sourceID uint, visible ...[]uint) ([]VideoYear, error)
 }
 
 // videoRepository 是 Video 实体专属的仓储对象。
@@ -309,23 +303,25 @@ func videoOrder(sort string) string {
 		return "vod_time DESC, id DESC"
 	case "time_asc":
 		return "vod_time ASC, id ASC"
-	case "score_desc":
-		// 表达式必须和 videoSortIndexDDL 完全一致，才能命中后台创建的表达式索引；
-		// 空值经 NULLIF 转 NULL，DESC 时排在末尾。
-		return videoScoreExpr + " DESC, vod_time DESC, id DESC"
-	case "score_asc":
-		return videoScoreExpr + " ASC, vod_time DESC, id DESC"
 	default:
 		return "id DESC"
 	}
 }
 
-// ListVideos 分页查询影片，支持按站点、分类、地域过滤、多字段模糊搜索与排序。
+// videoCardColumns 是资源库卡片需要的列，与 model.VideoCard 的字段一一对应。
+// 列表只 SELECT 这些列：完整 Video 有 90+ 标准字段，其中 vod_play_list /
+// vod_content / extra 等大文本单条可达数 KB，每页 24 条全取出来是纯粹的浪费。
+// 用户点开影片时才由 GetVideo 按 id 返回完整记录。
+const videoCardColumns = "id, source_id, vod_id, vod_name, vod_pic, vod_pic_thumb, " +
+	"vod_pic_slide, vod_score, vod_remarks, vod_serial, vod_total, vod_area, " +
+	"vod_year, vod_tag, category_id, vod_time, first_seen_at"
+
+// ListVideos 分页查询影片卡片，支持关键词、站点、分类过滤与排序。
 //
-// 不再计算总数：COUNT 需要对命中结果做一次全量扫描，在关键词检索 / 大表上往往比
-// 取本页数据还贵。也不额外多取一条、不返回 hasMore——前端按「本页条数 >= size」
-// 认为还有下一页，到底时最多多发一次拿到空页的请求。
-func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, error) {
+// 两个「不做」：不计算总数（COUNT 要对命中结果全量扫描，在关键词检索 / 大表上往往
+// 比取本页还贵）；不多取一条、不返回 hasMore（前端按「本页条数 >= size」判断还有
+// 下一页，到底时最多多发一次拿到空页的请求）。
+func (r *videoRepository) ListVideos(query VideoQuery) ([]model.VideoCard, error) {
 	if query.Page < 1 {
 		query.Page = 1
 	}
@@ -349,60 +345,17 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.Video, error) {
 		}
 		q = q.Where("category_id IN ?", ids)
 	}
-	if query.TagID > 0 {
-		// 标签与影片是多对多：命中该标签的影片即通过 video_tags 内连接筛选。
-		q = q.Joins("JOIN video_tags ON video_tags.video_id = videos.id").
-			Where("video_tags.tag_id = ?", query.TagID)
-	}
-	if query.AreaID > 0 {
-		// 地域与影片同样是多对多：命中该地域的影片经 video_areas 内连接筛选。
-		q = q.Joins("JOIN video_areas ON video_areas.video_id = videos.id").
-			Where("video_areas.area_id = ?", query.AreaID)
-	}
-	if year := strings.TrimSpace(query.Year); year != "" {
-		// 年份是影片上的单值列，直接等值匹配（走 idx_videos_vod_year）。
-		q = q.Where("vod_year = ?", year)
-	}
 	if query.Keyword != "" {
 		q = applyVideoKeyword(q, query.Keyword, videoSearchCaps{fts: r.search, bigram: r.bigram()})
 	}
-	// 一次查询拿本页数据即可，不做 COUNT、不多取一条。
-	var items []model.Video
-	if err := q.Order(videoOrder(query.Sort)).
+	// 一次查询拿本页卡片即可，不做 COUNT、不多取一条。
+	var items []model.VideoCard
+	if err := q.Select(videoCardColumns).
+		Order(videoOrder(query.Sort)).
 		Offset((query.Page - 1) * query.Size).Limit(query.Size).Find(&items).Error; err != nil {
 		return nil, err
 	}
 	return items, nil
-}
-
-// ListVideoYears 返回库中出现过的年份及各自的影片数，按年份倒序。
-//
-// 年份不像标签 / 地域那样拆成独立实体：它是影片上的单值属性，既没有跨站共享的名称，
-// 也不需要多对多关系，直接对 vod_year 做 GROUP BY 即可（走 idx_videos_vod_year）。
-// 空年份（接口没给）不进入下拉，否则会出现一个没有意义的空白选项。
-// sourceID 为 0 时统计全部可见站点。
-func (r *videoRepository) ListVideoYears(sourceID uint, visible ...[]uint) ([]VideoYear, error) {
-	type row struct {
-		Year  string
-		Count int64
-	}
-	var rows []row
-	q := applyVisibility(r.db.Model(&model.Video{}), "source_id", firstVisible(visible...))
-	if sourceID > 0 {
-		q = q.Where("source_id = ?", sourceID)
-	}
-	if err := q.Select("vod_year AS year, count(*) AS count").
-		Where("TRIM(vod_year) <> ''").
-		Group("vod_year").
-		Order("vod_year DESC").
-		Scan(&rows).Error; err != nil {
-		return nil, err
-	}
-	out := make([]VideoYear, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, VideoYear{Year: row.Year, Count: row.Count})
-	}
-	return out, nil
 }
 
 // CountVideos 返回某站点已入库的影片总数。

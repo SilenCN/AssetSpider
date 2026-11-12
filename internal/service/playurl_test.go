@@ -130,6 +130,7 @@ func TestSourcePlayAndPicConfigRoundTrip(t *testing.T) {
 }
 
 // TestVideoServiceAppliesPicRewrite 验证封面图片按站点配置改写，且原始地址不被污染。
+// 列表只返回卡片投影（三张卡图），截图集等完整字段在按 id 取详情时验证。
 func TestVideoServiceAppliesPicRewrite(t *testing.T) {
 	st, err := repository.Open(filepath.Join(t.TempDir(), "pic.db"))
 	if err != nil {
@@ -165,9 +166,13 @@ func TestVideoServiceAppliesPicRewrite(t *testing.T) {
 	if v.VodPic != want {
 		t.Errorf("封面改写异常: %q，期望 %q", v.VodPic, want)
 	}
-	// 截图是 # 连接的集合，逐段改写后拼回
-	if strings.Count(v.VodPicScreenshot, "#") != 1 || strings.Count(v.VodPicScreenshot, "img.example.com/proxy") != 2 {
-		t.Errorf("截图集合改写异常: %q", v.VodPicScreenshot)
+	// 列表卡片不含截图集（列裁剪），按 id 取完整详情后再验证逐段改写。
+	full, err := svc.Get(v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(full.VodPicScreenshot, "#") != 1 || strings.Count(full.VodPicScreenshot, "img.example.com/proxy") != 2 {
+		t.Errorf("截图集合改写异常: %q", full.VodPicScreenshot)
 	}
 
 	// 数据库里仍是原始地址
@@ -180,8 +185,9 @@ func TestVideoServiceAppliesPicRewrite(t *testing.T) {
 	}
 }
 
-// TestVideoServiceAppliesPlayRewrite 验证影片列表/播放组会按站点配置改写地址，
+// TestVideoServiceAppliesPlayRewrite 验证详情接口 / 播放组会按站点配置改写地址，
 // 且数据库中的原始播放地址保持不变（配置只影响读取）。
+// 列表现在只返回卡片投影（不含播放组），改写验证走「按 id 取详情」的路径。
 func TestVideoServiceAppliesPlayRewrite(t *testing.T) {
 	st, err := repository.Open(filepath.Join(t.TempDir(), "rewrite.db"))
 	if err != nil {
@@ -223,49 +229,62 @@ func TestVideoServiceAppliesPlayRewrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "https://jx.example.com/?url=https://cdn.example.com/v/1/index.m3u8"
-	var rewritten, untouched bool
-	for _, v := range list.Items {
-		switch v.SourceID {
+	// 列表只给卡片：按 id 记住两个站点的影片，完整记录由详情接口取。
+	var rewrittenID, untouchedID uint
+	for _, c := range list.Items {
+		switch c.SourceID {
 		case src.ID:
-			groups := decodeGroups(t, v.VodPlayList)
-			if groups[0].Episodes[0].Url != want {
-				t.Errorf("播放地址改写异常: %q", groups[0].Episodes[0].Url)
-			}
-			// 拼了解析地址后必须打 frame 标记，前端才会用 iframe 而不是把解析页当 m3u8 播。
-			if !groups[0].Episodes[0].Frame {
-				t.Error("使用视频解析地址时播放组应标记 frame=true")
-			}
-			rewritten = true
+			rewrittenID = c.ID
 		case plain.ID:
-			groups := decodeGroups(t, v.VodPlayList)
-			if groups[0].Episodes[0].Url != "https://dead.example.net/v/1/index.m3u8" {
-				t.Errorf("未配置改写的站点不应变化: %q", groups[0].Episodes[0].Url)
-			}
-			if groups[0].Episodes[0].Frame {
-				t.Error("未配置解析地址时不应标记 frame")
-			}
-			untouched = true
+			untouchedID = c.ID
 		}
 	}
-	if !rewritten || !untouched {
+	if rewrittenID == 0 || untouchedID == 0 {
 		t.Fatalf("列表应同时包含两个站点的影片: %+v", list.Items)
 	}
 
-	// 播放组子资源同样带改写
-	groups, err := svc.GetPlayGroups(list.Items[0].ID)
+	want := "https://jx.example.com/?url=https://cdn.example.com/v/1/index.m3u8"
+	// 按 id 取完整详情：改写站点的播放组地址被改写并标记 frame。
+	full, err := svc.Get(rewrittenID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if groups[0].Episodes[0].Url != want && groups[0].Episodes[0].Url != "https://dead.example.net/v/1/index.m3u8" {
-		t.Fatalf("播放组改写异常: %+v", groups)
+	groups := decodeGroups(t, full.VodPlayList)
+	if groups[0].Episodes[0].Url != want {
+		t.Errorf("详情播放地址改写异常: %q", groups[0].Episodes[0].Url)
 	}
-	if groups[0].Episodes[0].Url == want && !groups[0].Episodes[0].Frame {
-		t.Errorf("播放组子资源也应标记 frame=true: %+v", groups)
+	// 拼了解析地址后必须打 frame 标记，前端才会用 iframe 而不是把解析页当 m3u8 播。
+	if !groups[0].Episodes[0].Frame {
+		t.Error("使用视频解析地址时播放组应标记 frame=true")
+	}
+
+	// 未配置改写的站点保持原样。
+	plainFull, err := svc.Get(untouchedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainGroups := decodeGroups(t, plainFull.VodPlayList)
+	if plainGroups[0].Episodes[0].Url != "https://dead.example.net/v/1/index.m3u8" {
+		t.Errorf("未配置改写的站点不应变化: %q", plainGroups[0].Episodes[0].Url)
+	}
+	if plainGroups[0].Episodes[0].Frame {
+		t.Error("未配置解析地址时不应标记 frame")
+	}
+
+	// 播放组子资源同样带改写
+	playGroups, err := svc.GetPlayGroups(rewrittenID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if playGroups[0].Episodes[0].Url != want {
+		t.Fatalf("播放组改写异常: %+v", playGroups)
+	}
+	if !playGroups[0].Episodes[0].Frame {
+		t.Errorf("播放组子资源也应标记 frame=true: %+v", playGroups)
 	}
 
 	// 数据库里仍是原始地址
-	stored, err := st.Videos.GetVideo(list.Items[0].ID)
+	stored, err := st.Videos.GetVideo(rewrittenID)
 	if err != nil {
 		t.Fatal(err)
 	}

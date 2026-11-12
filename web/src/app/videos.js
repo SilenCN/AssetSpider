@@ -1,4 +1,4 @@
-// 资源库：筛选条件（含站点主轴的双向联动）、分页与底部无限滚动。
+// 资源库：筛选条件（关键词 / 站点 / 分类的双向联动）、分页与底部无限滚动。
 import { computed, nextTick, onBeforeUnmount, watch } from 'vue'
 import { linkedFilters, scopeOptions } from '../filterLinkage.js'
 
@@ -13,38 +13,22 @@ export function createVideos(ctx) {
   let searchTimer = null
 
   // ---------- 筛选条件双向联动 ----------
-  // 分类 / 标签 / 地域都归属于某个站点（sourceId），站点是筛选的主轴：
-  // 选了站点就只列出该站点的选项；反过来选中某个分类 / 标签 / 地域，
-  // 站点会自动定位过去，并清掉属于其它站点的已选条件，避免必然为空的组合。
+  // 分类归属于某个站点（sourceId），站点是筛选的主轴：选了站点就只列出该站点的
+  // 分类；反过来选中某个分类，站点会自动定位过去，避免必然为空的组合。
   const visibleCategories = computed(() => scopeOptions(ctx.categories.value, ctx.videoSource.value))
-  const visibleTags = computed(() => scopeOptions(ctx.tags.value, ctx.videoSource.value))
-  const visibleAreas = computed(() => scopeOptions(ctx.areas.value, ctx.videoSource.value))
   const hasActiveFilters = computed(() => !!(
-    ctx.videoQuery.value.trim() || ctx.videoSource.value || ctx.videoCategory.value ||
-    ctx.videoTag.value || ctx.videoAreaId.value || ctx.videoYear.value
+    ctx.videoQuery.value.trim() || ctx.videoSource.value || ctx.videoCategory.value
   ))
-  // 地域与标签同构：每个资源站一套，因此站点未定时下拉按站点分组（optgroup），
-  // 避免「美国」在多站点各出现一次时看起来像重复项；站点已定时只剩一组，直接平铺。
-  const areaGroups = computed(() => {
-    const groups = new Map()
-    for (const a of visibleAreas.value) {
-      if (!groups.has(a.sourceId)) {
-        groups.set(a.sourceId, { sourceId: a.sourceId, name: ctx.siteNameOf(a.sourceId), items: [] })
-      }
-      groups.get(a.sourceId).items.push(a)
-    }
-    return [...groups.values()]
-  })
 
   // 「可见影片」与资源库页签的计数徽标都取站点表上的影片数快照（videoCount）：
   // 列表接口不返回总数，也就不需要对 videos 表做 COUNT。
-  // 它与「可见站点」同源，因此资源库里的搜索/分类/标签筛选不会改变这个数值。
+  // 它与「可见站点」同源，因此资源库里的搜索 / 分类筛选不会改变这个数值。
   const visibleVideoTotal = computed(() =>
     ctx.sources.value.reduce((n, s) => n + (Number(s.videoCount) || 0), 0)
   )
 
   // 拉取一页影片。append=true 时追加到现有列表（无限滚动），否则整表替换（搜索/筛选/刷新）。
-  // 接口只返回 items / page / size，是否还有下一页由本页条数与分页条数推导。
+  // 接口只返回卡片投影，是否还有下一页由本页条数与分页条数推导。
   async function fetchVideos(page, append) {
     const seq = ++videoSeq
     const requestedSize = ctx.videoSize.value
@@ -60,9 +44,6 @@ export function createVideos(ctx) {
       if (ctx.videoQuery.value.trim()) p.set('q', ctx.videoQuery.value.trim())
       if (ctx.videoSource.value) p.set('source_id', String(ctx.videoSource.value))
       if (ctx.videoCategory.value) p.set('category_id', String(ctx.videoCategory.value))
-      if (ctx.videoTag.value) p.set('tag_id', String(ctx.videoTag.value))
-      if (ctx.videoAreaId.value) p.set('area_id', String(ctx.videoAreaId.value))
-      if (ctx.videoYear.value) p.set('year', ctx.videoYear.value)
       if (ctx.videoSort.value) p.set('sort', ctx.videoSort.value)
       const d = await ctx.request('/api/videos/v1?' + p.toString())
       if (seq !== videoSeq) return // 已经有更新的请求在跑，丢弃这次结果
@@ -118,28 +99,12 @@ export function createVideos(ctx) {
   }
   function searchVideos() { loadVideos().catch(e => { ctx.error.value = e.message }) }
 
-  async function loadAreas() {
-    try { ctx.areas.value = (await ctx.request('/api/areas/v1')) || [] } catch (e) { ctx.areas.value = [] }
-  }
-  // 年份是影片上的单值属性（不分站点各一套），因此下拉只取一次全局列表；
-  // 选项形如 [{ year: '2025', videoCount: 12 }]，按年份倒序。
-  async function loadYears() {
-    try { ctx.years.value = (await ctx.request('/api/videos/v1/years')) || [] } catch (e) { ctx.years.value = [] }
-  }
-
-  // 把联动结果写回各筛选 ref。changed 为 null 表示从分类树 / 卡片标签跳转后的校正。
+  // 把联动结果写回筛选 ref。changed 为 null 表示从分类树跳转后的校正。
   function applyFilterLinkage(changed) {
-    const state = {
-      source: ctx.videoSource.value, category: ctx.videoCategory.value,
-      tag: ctx.videoTag.value, area: ctx.videoAreaId.value,
-    }
-    const next = linkedFilters(state, changed, {
-      category: ctx.categories.value, tag: ctx.tags.value, area: ctx.areas.value,
-    })
+    const state = { source: ctx.videoSource.value, category: ctx.videoCategory.value }
+    const next = linkedFilters(state, changed, { category: ctx.categories.value })
     ctx.videoSource.value = next.source
     ctx.videoCategory.value = next.category
-    ctx.videoTag.value = next.tag
-    ctx.videoAreaId.value = next.area
   }
 
   // 筛选下拉的统一 change 入口：先写回本次变化的值，再联动校正，最后重载列表。
@@ -148,47 +113,26 @@ export function createVideos(ctx) {
     const value = e?.target?.value ?? ''
     if (changed === 'sort') {
       ctx.videoSort.value = value
-    } else if (changed === 'year') {
-      // 年份是影片上的单值属性，不属于任何站点，因此不参与站点联动。
-      ctx.videoYear.value = value
     } else {
       if (changed === 'source') ctx.videoSource.value = value
       else if (changed === 'category') ctx.videoCategory.value = value
-      else if (changed === 'tag') ctx.videoTag.value = value
-      else ctx.videoAreaId.value = value
       applyFilterLinkage(changed)
     }
     searchVideos()
   }
 
-  // 从分类树 / 卡片标签跳转过来时，同样把站点同步到已选条件所属的站点。
+  // 从分类树跳转过来时，同样把站点同步到已选分类所属的站点。
   function applyLinkage() { applyFilterLinkage(null) }
 
   function clearAllFilters() {
     ctx.videoQuery.value = ''
     ctx.videoSource.value = ''
     ctx.videoCategory.value = ''
-    ctx.videoTag.value = ''
-    ctx.videoAreaId.value = ''
-    ctx.videoYear.value = ''
     searchVideos()
   }
 
   function showCategoryVideos(c) {
     ctx.videoCategory.value = String(c.id)
-    applyLinkage()
-    ctx.videoPage.value = 1
-    ctx.tab.value = 'videos'
-    loadVideos().catch(e => { ctx.error.value = e.message })
-  }
-  // 点击卡片上的标签：按该标签筛选资源库（标签名大小写不敏感匹配）。
-  // 标签按站点隔离，优先取当前影片所在站点的同名标签，避免跳到别的站点去。
-  function filterByTag(name, sourceId) {
-    const matched = ctx.tags.value.filter(x =>
-      (x.name || '').toLowerCase() === String(name).toLowerCase())
-    const t = matched.find(x => Number(x.sourceId) === Number(sourceId)) || matched[0]
-    if (!t) return
-    ctx.videoTag.value = String(t.id)
     applyLinkage()
     ctx.videoPage.value = 1
     ctx.tab.value = 'videos'
@@ -212,10 +156,9 @@ export function createVideos(ctx) {
   })
 
   return {
-    visibleCategories, visibleTags, visibleAreas, hasActiveFilters, areaGroups,
-    visibleVideoTotal, fetchVideos, kickSentinel, loadVideos, loadMoreVideos, searchVideos,
+    visibleCategories, hasActiveFilters, visibleVideoTotal,
+    fetchVideos, kickSentinel, loadVideos, loadMoreVideos, searchVideos,
     debouncedSearch, clearSearch,
-    loadAreas, loadYears, applyFilterLinkage, onFilterChange, applyLinkage, clearAllFilters,
-    showCategoryVideos, filterByTag,
+    applyFilterLinkage, onFilterChange, applyLinkage, clearAllFilters, showCategoryVideos,
   }
 }

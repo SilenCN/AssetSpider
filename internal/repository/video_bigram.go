@@ -225,14 +225,21 @@ func videoBigramReady(db *gorm.DB) bool {
 	return videoBigramState(db, "done") == 1
 }
 
-// dropRetiredVideoIndexes 清理历史库里已不再使用的单列索引。
+// dropRetiredVideoIndexes 清理历史库里已不再使用的索引。
 //
 // AutoMigrate 只会补建索引、不会删掉实体里已移除的索引，所以这里显式 DROP。
 // 不提升 schemaVersion：删索引不需要重新 ANALYZE，更不该把 v6 的整表回灌 +
 // ANALYZE 重新触发一遍（那正是旧版 v7 在大库上「每次启动都被健康检查打断」的成因）。
 // IF EXISTS 让每次启动的空转代价接近零。
+//
+// 其中两条评分排序表达式索引是随「移除评分排序」一并清理的：它们曾是大库上
+// 一次性 CREATE INDEX 要等 165 秒、写入时还要持续维护的重索引，功能移除后
+// 不再有任何查询会用到，DROP 掉既省空间也省采集写入的索引维护成本。
 func dropRetiredVideoIndexes(db *gorm.DB) {
-	for _, name := range []string{"idx_videos_vod_name", "idx_videos_hash"} {
+	for _, name := range []string{
+		"idx_videos_vod_name", "idx_videos_hash",
+		"idx_videos_score_desc", "idx_videos_score_asc",
+	} {
 		db.Exec("DROP INDEX IF EXISTS " + name)
 	}
 }

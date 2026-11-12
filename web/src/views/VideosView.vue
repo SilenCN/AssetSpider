@@ -3,12 +3,11 @@
 // 解构出的仍是原始 ref / computed / 函数，模板写法与拆分前一致。
 import { inject } from 'vue'
 const {
-  areaGroups, catSelectLabel, clearAllFilters, clearSearch, debouncedSearch, episodeLabel, error, filterByTag,
+  catSelectLabel, clearAllFilters, clearSearch, debouncedSearch, episodeLabel, error,
   formatTime, hasActiveFilters, isAdmin, markPicFailed, metaLine, onFilterChange,
   openDetail, posterOf, scoreOf, searchVideos, sources, tagListOf,
-  tagSelectLabel, tags, videoAreaId, videoCategory, videoEnd, videoLoading,
-  videoLoadingMore, videoQuery, videoSentinel, videoSort, videoSource, videoTag,
-  videoYear, videos, visibleAreas, visibleCategories, visibleTags, years
+  videoCategory, videoEnd, videoLoading, videoLoadingMore, videoQuery, videoSentinel,
+  videoSort, videoSource, videos, visibleCategories,
 } = inject('app')
 </script>
 
@@ -25,25 +24,6 @@ const {
               <option value="">全部分类</option>
               <option v-for="c in visibleCategories" :key="c.id" :value="c.id">{{ catSelectLabel(c) }}</option>
             </select>
-            <select v-model="videoTag" @change="onFilterChange('tag', $event)" title="按标签筛选">
-              <option value="">全部标签</option>
-              <option v-for="t in visibleTags" :key="t.id" :value="t.id">{{ tagSelectLabel(t) }}</option>
-            </select>
-            <select v-model="videoAreaId" @change="onFilterChange('area', $event)" title="按地域筛选">
-              <option value="">全部地域</option>
-              <template v-if="videoSource">
-                <option v-for="a in visibleAreas" :key="a.id" :value="a.id">{{ a.name }}（{{ a.videoCount }}）</option>
-              </template>
-              <template v-else>
-                <optgroup v-for="g in areaGroups" :key="g.sourceId" :label="g.name">
-                  <option v-for="a in g.items" :key="a.id" :value="a.id">{{ a.name }}（{{ a.videoCount }}）</option>
-                </optgroup>
-              </template>
-            </select>
-            <select v-model="videoYear" @change="onFilterChange('year', $event)" title="按年份筛选">
-              <option value="">全部年份</option>
-              <option v-for="y in years" :key="y.year" :value="y.year">{{ y.year }}（{{ y.videoCount }}）</option>
-            </select>
             <select v-model="videoSource" @change="onFilterChange('source', $event)" title="按站点筛选">
               <option value="">全部站点</option>
               <option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }}</option>
@@ -52,11 +32,9 @@ const {
               <option value="id_desc">默认（ID 倒序）</option>
               <option value="time_desc">更新时间 ↓</option>
               <option value="time_asc">更新时间 ↑</option>
-              <option value="score_desc">评分 ↓</option>
-              <option value="score_asc">评分 ↑</option>
             </select>
             <button class="ghost btn-clear" :disabled="!hasActiveFilters"
-              @click="clearAllFilters" title="清空搜索词与全部分类、标签、地域、年份、站点条件">清空筛选</button>
+              @click="clearAllFilters" title="清空搜索词与分类、站点条件">清空筛选</button>
           </div>
         </div>
         <div class="res-body">
@@ -72,8 +50,9 @@ const {
               <div class="res-info">
                 <h4 :title="v.vodName">{{ v.vodName || v.vodId }}</h4>
                 <p v-if="metaLine(v)" class="res-meta">{{ metaLine(v) }}</p>
+                <!-- 标签只作信息展示，不再点击跳转筛选 -->
                 <div v-if="tagListOf(v).length" class="res-tags">
-                  <span v-for="t in tagListOf(v).slice(0, 4)" :key="t" class="res-tag" :title="`按标签「${t}」筛选`" @click.stop="filterByTag(t, v.sourceId)">{{ t }}</span>
+                  <span v-for="t in tagListOf(v).slice(0, 4)" :key="t" class="res-tag">{{ t }}</span>
                 </div>
                 <p class="res-time">{{ v.vodTime || formatTime(v.firstSeenAt) }}</p>
               </div>

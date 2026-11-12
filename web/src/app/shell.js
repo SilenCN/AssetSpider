@@ -20,16 +20,12 @@ export function createShell(ctx) {
   async function loadSubscriptions() {
     ctx.subscriptions.value = (await ctx.request('/api/subscriptions/v1')) || []
   }
-  async function loadTags() {
-    ctx.tags.value = (await ctx.request('/api/tags/v1')) || []
-  }
-
   async function refresh() {
     ctx.error.value = ''
     try {
       const pending = [
         loadHealth(), loadSources(), ctx.loadVideos(), ctx.loadJobs(),
-        loadCategories(), loadCategoryTree(), loadTags(), ctx.loadAreas(), ctx.loadYears(), ctx.loadTasks(),
+        loadCategories(), loadCategoryTree(), ctx.loadTasks(),
         loadSubscriptions(),
       ]
       if (ctx.isAdmin.value) pending.push(ctx.loadUsers(), ctx.loadSettings())
@@ -173,7 +169,7 @@ export function createShell(ctx) {
   onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible))
 
   return {
-    loadHealth, loadSources, loadSubscriptions, loadCategories, loadCategoryTree, loadTags, refresh,
+    loadHealth, loadSources, loadSubscriptions, loadCategories, loadCategoryTree, refresh,
     toggleSidebar, navItems, currentPageTitle, switchTab, onHashChange, onEsc,
     collectTabs, refreshCollectData, onVisible,
   }

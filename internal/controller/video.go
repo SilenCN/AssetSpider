@@ -20,25 +20,11 @@ func (v *VideoController) List(c *gin.Context) {
 	out, err := v.svc.List(service.VideoListQuery{
 		SourceID:   utils.ParseUintQuery(c.Query("source_id")),
 		CategoryID: utils.ParseUintQuery(c.Query("category_id")),
-		TagID:      utils.ParseUintQuery(c.Query("tag_id")),
-		AreaID:     utils.ParseUintQuery(c.Query("area_id")),
-		Year:       c.Query("year"),
 		Keyword:    c.Query("q"),
 		Sort:       c.Query("sort"),
 		Page:       utils.ParseIntQuery(c.Query("page")),
 		Size:       utils.ParseIntQuery(c.Query("size")),
 	}, principalOf(c))
-	if err != nil {
-		writeError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, out)
-}
-
-// Years 返回库中出现过的年份及各自的影片数（年份筛选下拉的选项）。
-// source_id 为空时统计全部可见站点。
-func (v *VideoController) Years(c *gin.Context) {
-	out, err := v.svc.Years(utils.ParseUintQuery(c.Query("source_id")), principalOf(c))
 	if err != nil {
 		writeError(c, err)
 		return

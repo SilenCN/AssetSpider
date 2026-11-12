@@ -76,22 +76,34 @@ func TestVideoFieldMetaAndDetailAPI(t *testing.T) {
 	if _, ok := v["raw"]; ok {
 		t.Errorf("响应不应再包含 raw 字段: %+v", v)
 	}
-	// 播放地址已结构化保存到 vodPlayUrl，不再依赖 raw 兜底
-	hasPlayURL := false
+	// 列表只返回卡片投影：播放组 / 播放地址 / 简介 / 扩展字段等完整记录内容
+	// 不随列表下发，用户点开影片时由详情接口按 id 单独返回。
 	for _, item := range list.Items {
-		if u, _ := item["vodPlayUrl"].(string); strings.Contains(u, "a.m3u8") {
-			hasPlayURL = true
+		for _, full := range []string{"vodPlayUrl", "vodPlayList", "vodContent", "extra"} {
+			if _, ok := item[full]; ok {
+				t.Errorf("列表卡片不应包含完整字段 %s: %+v", full, item)
+			}
 		}
 	}
-	if !hasPlayURL {
-		t.Error("播放地址字段未结构化保存")
-	}
 
+	// 点开列表里第一张卡片：按 id 请求详情，完整结构化字段随详情接口返回。
+	id := int(v["id"].(float64))
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1/1", nil))
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1/"+strconv.Itoa(id), nil))
 	body := w.Body.String()
 	if w.Code != http.StatusOK || strings.Contains(body, `"raw"`) || !strings.Contains(body, `"vodName"`) {
 		t.Fatalf("详情接口异常（不应含 raw）: %d %s", w.Code, body)
+	}
+	var detail map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	// 详情接口返回完整记录：列表卡片没有的播放组 / 播放地址 / 简介字段
+	// 都随详情返回（字段值可为空，但键必须存在，证明下发的是完整 model.Video）。
+	for _, full := range []string{"vodPlayUrl", "vodPlayList", "vodContent"} {
+		if _, ok := detail[full]; !ok {
+			t.Errorf("详情接口应返回完整字段 %s: %+v", full, detail)
+		}
 	}
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1/9999", nil))
@@ -182,8 +194,9 @@ func TestVideoPlayGroupsEndpoint(t *testing.T) {
 	}
 }
 
-// TestVideoAreasAndSortEndpoint 验证资源检索：地域枚举、地域筛选、按更新时间/评分排序。
-func TestVideoAreasAndSortEndpoint(t *testing.T) {
+// TestVideoSearchSortAndCardProjection 验证移除标签 / 地域 / 年份筛选与评分排序后，
+// 资源库仍保留关键词检索与更新时间排序；列表只返回卡片字段，完整记录由详情接口按 id 返回。
+func TestVideoSearchSortAndCardProjection(t *testing.T) {
 	r, _ := newTestRouter(t)
 	site := newMockVideoSite(t)
 	if w := doJSON(r, http.MethodPost, "/api/sources/v1", map[string]interface{}{
@@ -196,55 +209,8 @@ func TestVideoAreasAndSortEndpoint(t *testing.T) {
 		t.Fatalf("采集失败: %d %s", w.Code, w.Body.String())
 	}
 
-	// 地域枚举：地域已从 vod_area 字符串拆成独立实体（与标签同构），
-	// 接口返回带主键与影片数，筛选按 area_id。
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, authReq(http.MethodGet, "/api/areas/v1", nil))
-	var areas []struct {
-		ID         uint   `json:"id"`
-		Name       string `json:"name"`
-		VideoCount int64  `json:"videoCount"`
-	}
-	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &areas) != nil {
-		t.Fatalf("地域接口异常: %d %s", w.Code, w.Body.String())
-	}
-	if len(areas) != 2 {
-		t.Fatalf("应有 2 个地域，实际 %v", areas)
-	}
-	areaID := map[string]uint{}
-	for _, a := range areas {
-		areaID[a.Name] = a.ID
-		if a.VideoCount != 1 {
-			t.Errorf("地域 %s 的影片数应为 1，实际 %d", a.Name, a.VideoCount)
-		}
-	}
-	if areaID["大陆"] == 0 || areaID["美国"] == 0 {
-		t.Fatalf("地域名称缺失: %v", areas)
-	}
-
-	// 年份枚举：年份不拆表，直接按 vod_year 聚合（影片上的单值属性），
-	// 下拉选项按年份倒序并带影片数，筛选按 year 等值匹配。
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1/years", nil))
-	var years []struct {
-		Year       string `json:"year"`
-		VideoCount int64  `json:"videoCount"`
-	}
-	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &years) != nil {
-		t.Fatalf("年份接口异常: %d %s", w.Code, w.Body.String())
-	}
-	if len(years) != 2 || years[0].Year != "2025" || years[1].Year != "2024" {
-		t.Fatalf("年份枚举异常（应为 2025、2024 倒序）: %+v", years)
-	}
-	for _, y := range years {
-		if y.VideoCount != 1 {
-			t.Errorf("年份 %s 的影片数应为 1，实际 %d", y.Year, y.VideoCount)
-		}
-	}
-
-	// 年份筛选（get 在下方定义，见「地域筛选」位置）
 	type listResp struct {
-		Items []model.Video `json:"items"`
+		Items []map[string]interface{} `json:"items"`
 	}
 	get := func(qs string) listResp {
 		w := httptest.NewRecorder()
@@ -256,32 +222,60 @@ func TestVideoAreasAndSortEndpoint(t *testing.T) {
 		return out
 	}
 
-	// 地域筛选（按 area_id，走 video_areas 连接表）
-	if got := get("area_id=" + strconv.Itoa(int(areaID["大陆"]))); len(got.Items) != 1 || got.Items[0].VodName != "测试影片A" {
-		t.Errorf("按地域筛选异常: %+v", got)
+	// 列表卡片：结构化字段在，但不含播放组 / 简介 / 扩展字段等完整记录内容。
+	all := get("")
+	if len(all.Items) != 2 {
+		t.Fatalf("默认应返回 2 条，实际 %d", len(all.Items))
 	}
-	// 年份筛选：等值匹配，不存在的年份返回空
-	if got := get("year=2024"); len(got.Items) != 1 || got.Items[0].VodName != "测试影片A" {
-		t.Errorf("按年份筛选异常: %+v", got)
+	for _, item := range all.Items {
+		for _, full := range []string{"vodPlayUrl", "vodPlayList", "vodContent", "extra", "raw"} {
+			if _, ok := item[full]; ok {
+				t.Errorf("列表卡片不应包含完整字段 %s: %+v", full, item)
+			}
+		}
 	}
-	if got := get("year=1999"); len(got.Items) != 0 {
-		t.Errorf("不存在的年份应无结果，实际 %+v", got)
+
+	// 名称检索
+	if got := get("q=影片A"); len(got.Items) != 1 || got.Items[0]["vodName"] != "测试影片A" {
+		t.Errorf("名称检索异常: %+v", got.Items)
 	}
-	// 按更新时间倒序：B 的 vod_time 更晚
-	if got := get("sort=time_desc"); got.Items[0].VodName != "测试影片B" {
+	// 按更新时间排序：B 的 vod_time 更晚
+	if got := get("sort=time_desc"); got.Items[0]["vodName"] != "测试影片B" {
 		t.Errorf("按更新时间倒序异常: %+v", got.Items)
 	}
-	// 按评分倒序：B 9.1 > A 8.5
-	if got := get("sort=score_desc"); got.Items[0].VodName != "测试影片B" || got.Items[1].VodName != "测试影片A" {
-		t.Errorf("按评分倒序异常: %+v", got.Items)
+	if got := get("sort=time_asc"); got.Items[0]["vodName"] != "测试影片A" {
+		t.Errorf("按更新时间升序异常: %+v", got.Items)
 	}
-	// 按评分升序：A 8.5 在前
-	if got := get("sort=score_asc"); got.Items[0].VodName != "测试影片A" {
-		t.Errorf("按评分升序异常: %+v", got.Items)
+
+	// 已移除的枚举端点：areas / tags 是独立路由组，移除后直接 404；
+	// years 会落到 /api/videos/v1/:id，因 id 非数字返回 400，两者都表示资源不再可用。
+	for _, path := range []string{"/api/areas/v1", "/api/videos/v1/years", "/api/tags/v1"} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, authReq(http.MethodGet, path, nil))
+		if w.Code == http.StatusOK {
+			t.Errorf("已移除的端点 %s 不应再返回 200，实际 %d", path, w.Code)
+		}
 	}
-	// 名称检索
-	if got := get("q=影片A"); len(got.Items) != 1 || got.Items[0].VodName != "测试影片A" {
-		t.Errorf("名称检索异常: %+v", got)
+	// 已移除的筛选参数与评分排序：被忽略，不报错、也不应把结果筛空。
+	for _, qs := range []string{"area_id=1", "year=1999", "sort=score_desc", "sort=score_asc"} {
+		if got := get(qs); len(got.Items) != 2 {
+			t.Errorf("已移除的参数 %s 不应影响列表结果，实际 %d 条", qs, len(got.Items))
+		}
+	}
+
+	// 点开第一张卡片：按 id 取详情，完整字段随详情接口返回。
+	id := int(all.Items[0]["id"].(float64))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1/"+strconv.Itoa(id), nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("详情接口异常: %d %s", w.Code, w.Body.String())
+	}
+	var detail map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := detail["vodPlayUrl"]; !ok {
+		t.Errorf("详情接口应返回完整字段 vodPlayUrl: %+v", detail)
 	}
 }
 

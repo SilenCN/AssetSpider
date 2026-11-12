@@ -96,10 +96,9 @@ func registerV1(api *gin.RouterGroup, set controller.Set) {
 	tasks.POST("/:id/retry", set.Task.Retry) // 失败任务：从失败页续采
 	tasks.POST("/:id/rerun", set.Task.Rerun) // 已结束任务：从第 1 页重新运行
 
-	// 入库影片；category_id 可按自动归档的分类过滤
+	// 入库影片；列表只返回卡片字段，点开后由 :id 取完整详情
 	videos := secured.Group("/videos/" + APIVersion)
 	videos.GET("", set.Video.List)
-	videos.GET("/years", set.Video.Years) // 年份筛选项；静态路径必须注册在 :id 之前
 	videos.GET("/:id", set.Video.Get)
 	videos.GET("/:id/play-groups", set.Video.PlayGroups) // 按苹果CMS 字段解析出的播放组
 
@@ -108,14 +107,6 @@ func registerV1(api *gin.RouterGroup, set controller.Set) {
 	categories.GET("", set.Category.List)
 	categories.GET("/tree", set.Category.Tree)
 	categories.GET("/:id", set.Category.Get)
-
-	// 视频标签（由采集按 vod_tag 自动维护，每个资源站一套）
-	tags := secured.Group("/tags/" + APIVersion)
-	tags.GET("", set.Tag.List)
-
-	// 地域（由采集按 vod_area 自动维护，每个资源站一套；与标签同构）
-	areas := secured.Group("/areas/" + APIVersion)
-	areas.GET("", set.Area.List)
 
 	// 字段元数据
 	meta := secured.Group("/meta/" + APIVersion)

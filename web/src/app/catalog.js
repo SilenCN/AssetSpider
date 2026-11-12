@@ -92,10 +92,6 @@ export function createCatalog(ctx) {
     const path = catPath.value.get(c.id) || c.name
     return ctx.videoSource.value ? path : `${ctx.siteNameOf(c.sourceId)} · ${path}`
   }
-  function tagSelectLabel(t) {
-    return ctx.videoSource.value ? t.name : `${ctx.siteNameOf(t.sourceId)} · ${t.name}`
-  }
-
   function toggleAllCats() {
     const allOpen = categoryForest.value.every(s => !isCatCollapsed(s.key))
     for (const site of categoryForest.value) {
@@ -111,6 +107,6 @@ export function createCatalog(ctx) {
 
   return {
     catCollapsed, isCatCollapsed, toggleCat, catKey, catVideoCount,
-    categoryForest, catTotal, catPath, catSelectLabel, tagSelectLabel, toggleAllCats,
+    categoryForest, catTotal, catPath, catSelectLabel, toggleAllCats,
   }
 }

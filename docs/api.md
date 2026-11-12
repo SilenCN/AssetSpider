@@ -47,15 +47,12 @@
 | tasks | POST | `/api/tasks/v1/:id/rerun` | **重新运行**已结束的任务：**复用原记录**忽略断点从第 1 页重来，统计与尝试次数清零，返回 `202` 与任务视图（运行中返回 409） |
 | tasks | GET | `/api/tasks/v1/capacity` | 读取并发容量 |
 | tasks | PUT | `/api/tasks/v1/capacity` | 调整同时运行的任务数：`{"maxConcurrent":2}`（1..64）；兼容旧入口，有配置存储时同样写回配置持久化，与设置页共用数据源 |
-| videos | GET | `/api/videos/v1?source_id=&category_id=&tag_id=&area_id=&year=&q=&sort=&page=&size=` | 分页查询入库影片，响应为 `{items, page, size}`（**不返回 total / hasMore**；前端按本页条数是否等于 size 判断是否继续翻页）。`q` 匹配名称/别名/演员/导演/分类/地域（≥3 字走 FTS5 trigram、2 字走 bigram 倒排索引、1 字回退 LIKE，语义一致，详见[配置](configuration.md)）；`category_id` 按自动归档的分类过滤（含子分类）；`tag_id` 按自动归档的标签过滤；`area_id` 按自动归档的地域过滤（走 `video_areas` 连接表）；`year` 按 `vod_year` 等值过滤；`sort` 取值 `time_desc`（更新时间↓）/`time_asc`/`score_desc`（评分↓）/`score_asc`（两条评分排序走表达式索引），空则为 id 倒序 |
-| videos | GET | `/api/videos/v1/years?source_id=` | 出现过的年份及各自影片数（年份筛选下拉），按年份倒序 |
+| videos | GET | `/api/videos/v1?source_id=&category_id=&q=&sort=&page=&size=` | 分页查询入库影片（列表只返回卡片字段，完整记录见详情接口），响应为 `{items, page, size}`（**不返回 total / hasMore**；前端按本页条数是否等于 size 判断是否继续翻页）。`q` 匹配名称/别名/演员/导演/分类/地域（≥3 字走 FTS5 trigram、2 字走 bigram 倒排索引、1 字回退 LIKE，语义一致，详见[配置](configuration.md)）；`category_id` 按自动归档的分类过滤（含子分类）；`sort` 取值 `id_desc`（默认，库内 id 倒序）/`time_desc`（更新时间↓）/`time_asc`。标签 / 地域 / 年份筛选与评分排序已移除，影片上的 `vod_tag` / `vod_area` / `vod_year` / `vod_score` 原始字段仍保留并作为卡片、详情的纯信息展示 |
 | videos | GET | `/api/videos/v1/:id` | 单条影片完整记录 |
 | videos | GET | `/api/videos/v1/:id/play-groups` | 该影片的播放组数组（来自苹果CMS 播放组字段，已解析为结构化 JSON） |
 | categories | GET | `/api/categories/v1?source_id=` | 视频分类列表，含 `videoCount`；`source_id` 只看该资源站的一套分类 |
 | categories | GET | `/api/categories/v1/tree?source_id=` | 视频分类二级树（父分类在前、子分类嵌套），按苹果CMS type_pid 模型 |
 | categories | GET | `/api/categories/v1/:id` | 单个分类详情 |
-| tags | GET | `/api/tags/v1?source_id=` | 视频标签列表，含 `videoCount`；`source_id` 只看该资源站的一套标签 |
-| areas | GET | `/api/areas/v1?source_id=` | 视频地域列表（与标签同构，每个资源站一套），含 `videoCount`；`source_id` 只看该资源站的一套地域 |
 | meta | GET | `/api/meta/v1/fields` | 全字段元数据：`total`、`groups`、`fields[]`（`key` 原始键、`json` 前端键、`desc` 中文含义、`group`、`label`、`long`） |
 | jobs | GET | `/api/jobs/v1?source_id=&limit=` | 采集记录（含 `queued` / `running` / `paused` / `success` / `failed` 与续采页码 `resumePage`） |
 

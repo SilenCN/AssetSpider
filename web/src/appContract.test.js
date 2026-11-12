@@ -24,38 +24,39 @@ const { createApp } = await import('./app/index.js')
 const REQUIRED = [
   'TOKEN_KEY', 'token', 'me', 'authReady', 'initialized', 'isAdmin', 'currentUsername',
   'clearAuth', 'setAuth', 'tab', 'health', 'sources', 'videos', 'categories', 'categoryTree',
-  'tags', 'jobs', 'tasks', 'users', 'capacity', 'settings', 'settingsForm', 'settingsDirty',
+  'jobs', 'tasks', 'users', 'capacity', 'settings', 'settingsForm', 'settingsDirty',
   'settingsSaving', 'loadSettings', 'saveSettings', 'error', 'notice', 'notify',
-  'videoQuery', 'videoSource', 'videoCategory', 'videoTag', 'videoAreaId', 'videoYear', 'videoSort',
-  'areas', 'years', 'visibleCategories', 'visibleTags', 'visibleAreas', 'hasActiveFilters',
-  'areaGroups', 'videoPage', 'videoSize', 'videoLoading', 'videoLoadingMore', 'videoEnd',
+  'videoQuery', 'videoSource', 'videoCategory', 'videoSort',
+  'visibleCategories', 'hasActiveFilters',
+  'videoPage', 'videoSize', 'videoLoading', 'videoLoadingMore', 'videoEnd',
   'videoSentinel', 'visibleVideoTotal', 'request', 'jsonOptions', 'loadHealth', 'loadSources',
-  'fetchVideos', 'kickSentinel', 'loadVideos', 'loadMoreVideos', 'loadAreas', 'loadYears',
-  'loadJobs', 'loadTasks', 'loadCategories', 'loadCategoryTree', 'loadTags', 'loadUsers',
-  'categoryName', 'activeTaskOf', 'queuedCountOf', 'showCategoryVideos', 'filterByTag',
+  'fetchVideos', 'kickSentinel', 'loadVideos', 'loadMoreVideos',
+  'loadJobs', 'loadTasks', 'loadCategories', 'loadCategoryTree', 'loadUsers',
+  'categoryName', 'activeTaskOf', 'queuedCountOf', 'showCategoryVideos',
   'catCollapsed', 'isCatCollapsed', 'toggleCat', 'catKey', 'siteNameOf', 'categoryForest',
-  'catTotal', 'catVideoCount', 'catPath', 'catSelectLabel', 'tagSelectLabel', 'applyFilterLinkage',
-  'onFilterChange', 'applyLinkage', 'clearAllFilters', 'toggleAllCats', 'fieldMeta', 'detail',
-  'detailTab', 'onlyNonEmpty', 'loadFieldMeta', 'hasValue', 'nonEmptyCount', 'groupedFields',
-  'extraPairs', 'playGroups', 'posterOf', 'markPicFailed', 'episodeLabel', 'scoreOf', 'metaLine',
-  'tagListOf', 'playerEl', 'activeGroup', 'activeEp', 'currentGroup', 'currentEpisodes',
-  'currentEpisode', 'currentUrl', 'detailSource', 'parseEnabled', 'useFrame', 'isHls',
-  'isDirectVideo', 'isUnknownStream', 'canPlay', 'playError', 'onVideoLoaded', 'hlsErrorText',
-  'videoErrorText', 'onVideoError', 'destroyPlayer', 'mountPlayer', 'chooseGroup', 'chooseEp',
-  'switchDetailTab', 'closeDetail', 'openDetail', 'onEsc', 'emptyForm', 'emptyUserForm', 'form',
+  'catTotal', 'catVideoCount', 'catPath', 'catSelectLabel', 'applyFilterLinkage',
+  'onFilterChange', 'applyLinkage', 'clearAllFilters', 'toggleAllCats', 'fieldMeta',
+  'detailLoading', 'detail', 'detailTab', 'onlyNonEmpty', 'loadFieldMeta', 'hasValue',
+  'nonEmptyCount', 'groupedFields', 'extraPairs', 'playGroups', 'posterOf', 'markPicFailed',
+  'episodeLabel', 'scoreOf', 'metaLine', 'tagListOf', 'playerEl', 'activeGroup', 'activeEp',
+  'currentGroup', 'currentEpisodes', 'currentEpisode', 'currentUrl', 'detailSource',
+  'parseEnabled', 'useFrame', 'isHls', 'isDirectVideo', 'isUnknownStream', 'canPlay',
+  'playError', 'onVideoLoaded', 'hlsErrorText', 'videoErrorText', 'onVideoError',
+  'destroyPlayer', 'mountPlayer', 'chooseGroup', 'chooseEp', 'switchDetailTab',
+  'closeDetail', 'openDetail', 'onEsc', 'emptyForm', 'emptyUserForm', 'form',
   'editing', 'sourceOpen', 'resetForm', 'sourcePayload', 'openSourceForm', 'closeSourceForm',
   'editSource', 'importOpen', 'importBusy', 'importFileName', 'importRaw', 'importPreview',
   'importFileEl', 'importPreviewShown', 'exportSources', 'pickImportFile', 'onImportFile',
   'closeImport', 'confirmImport', 'saveSource', 'removeSource', 'clearSourceData', 'toggleSource',
   'startTask', 'crawlAll', 'pauseTask', 'resumeTask', 'retryTask', 'rerunTask', 'barWidth',
-  'isIndeterminate', 'fmtEta', 'taskStatusText', 'searchVideos', 'debouncedSearch', 'clearSearch', 'formatTime', 'modeLabel',
-  'statusLabel', 'short', 'stat', 'jobMessage', 'loginForm', 'loginBusy', 'loginError', 'doLogin',
-  'doLogout', 'pwdModal', 'pwdForm', 'doChangePassword', 'bootstrap', 'userForm', 'userEditing',
-  'userFormOpen', 'openUserForm', 'closeUserForm', 'resetUserForm', 'editUser', 'saveUser',
-  'toggleUser', 'removeUser', 'visibleLabel', 'collectTabs', 'refreshCollectData', 'onVisible',
-  'refresh', 'switchTab', 'navItems', 'currentPageTitle', 'toggleSidebar', 'sidebarCollapsed',
-  'sidebarMobileOpen', 'loadHls',
-  'emptySubForm', 'subscriptions', 'subForm', 'subOpen', 'subBusy', 'subRefreshing',
+  'isIndeterminate', 'fmtEta', 'taskStatusText', 'searchVideos', 'debouncedSearch',
+  'clearSearch', 'formatTime', 'modeLabel', 'statusLabel', 'short', 'stat', 'jobMessage',
+  'loginForm', 'loginBusy', 'loginError', 'doLogin', 'doLogout', 'pwdModal', 'pwdForm',
+  'doChangePassword', 'bootstrap', 'userForm', 'userEditing', 'userFormOpen', 'openUserForm',
+  'closeUserForm', 'resetUserForm', 'editUser', 'saveUser', 'toggleUser', 'removeUser',
+  'visibleLabel', 'collectTabs', 'refreshCollectData', 'onVisible', 'refresh', 'switchTab',
+  'navItems', 'currentPageTitle', 'toggleSidebar', 'sidebarCollapsed', 'sidebarMobileOpen',
+  'loadHls', 'emptySubForm', 'subscriptions', 'subForm', 'subOpen', 'subBusy', 'subRefreshing',
   'subEditing', 'subNameOf', 'subStatusText', 'subIntervalText', 'openSubForm',
   'closeSubForm', 'saveSubscription', 'refreshSubscription', 'toggleSubscription',
   'removeSubscription', 'loadSubscriptions',
@@ -106,15 +107,13 @@ test('登录后拉取资源库列表，状态落到对应 ref 上', async () => 
   assert.ok(calls.some(p => p.startsWith('/api/videos/v1')), '应当拉取资源库列表')
 })
 
-test('筛选联动：选站点后清掉其它站点已选条件', () => {
+test('筛选联动：从分类跳转后站点校正到分类所属站点', () => {
   const app = createApp()
   app.categories.value = [{ id: 10, name: '动作片', sourceId: 1 }, { id: 20, name: '喜剧片', sourceId: 2 }]
-  app.tags.value = []
-  app.areas.value = []
   app.videoCategory.value = '10'
   app.videoSource.value = '2'
   app.applyLinkage()
-  // 分类 / 标签 / 地域是筛选主轴：与站点冲突时，站点被纠正到条件所属的站点。
+  // 分类是筛选主轴：与站点冲突时，站点被纠正到分类所属的站点。
   assert.equal(app.videoSource.value, '1')
   assert.equal(app.videoCategory.value, '10')
 })

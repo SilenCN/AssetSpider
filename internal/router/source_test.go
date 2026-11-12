@@ -170,40 +170,51 @@ func TestSourcePlayRewriteAPI(t *testing.T) {
 		t.Fatalf("播放配置未按预期规范化: parseApi=%q playDomain=%q", src.ParseAPI, src.PlayDomain)
 	}
 
-	// 2. 采集后读取列表：播放地址应已被改写
+	// 2. 采集后按 id 读取详情：播放地址应已被改写（列表只返回卡片投影）
 	if w := doJSON(r, http.MethodPost,
 		"/api/sources/v1/"+strconv.Itoa(int(src.ID))+"/crawls?mode=full", nil); w.Code != http.StatusOK {
 		t.Fatalf("采集失败: %d %s", w.Code, w.Body.String())
 	}
 	want := "https://jx.example.com/?url=https://cdn.example.com/v/1/index.m3u8"
-	listVideos := func() model.Video {
+	videoID := func() uint {
 		t.Helper()
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1?q=改写地址影片", nil))
 		var out struct {
-			Items []model.Video `json:"items"`
+			Items []model.VideoCard `json:"items"`
 		}
 		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &out) != nil || len(out.Items) != 1 {
 			t.Fatalf("查询影片失败: %d %s", w.Code, w.Body.String())
 		}
-		return out.Items[0]
+		return out.Items[0].ID
 	}
-	v := listVideos()
+	detailOf := func(id uint) model.Video {
+		t.Helper()
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, authReq(http.MethodGet, "/api/videos/v1/"+strconv.Itoa(int(id)), nil))
+		var v model.Video
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &v) != nil {
+			t.Fatalf("详情接口异常: %d %s", w.Code, w.Body.String())
+		}
+		return v
+	}
+	vid := videoID()
+	v := detailOf(vid)
 	var groups []model.PlayGroup
 	if err := json.Unmarshal([]byte(v.VodPlayList), &groups); err != nil || len(groups) != 1 {
 		t.Fatalf("播放组数据异常: %v %s", err, v.VodPlayList)
 	}
 	if got := groups[0].Episodes[0].Url; got != want {
-		t.Fatalf("列表播放地址改写异常: %q，期望 %q", got, want)
+		t.Fatalf("详情播放地址改写异常: %q，期望 %q", got, want)
 	}
 	if !groups[0].Episodes[0].Frame {
-		t.Error("列表播放组应带 frame=true，供前端用 iframe 承载解析页面")
+		t.Error("详情播放组应带 frame=true，供前端用 iframe 承载解析页面")
 	}
 
 	// 3. 播放组子资源同样改写
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, authReq(http.MethodGet,
-		"/api/videos/v1/"+strconv.Itoa(int(v.ID))+"/play-groups", nil))
+		"/api/videos/v1/"+strconv.Itoa(int(vid))+"/play-groups", nil))
 	var got []model.PlayGroup
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &got) != nil || len(got) != 1 {
 		t.Fatalf("播放组接口异常: %d %s", w.Code, w.Body.String())
@@ -222,7 +233,7 @@ func TestSourcePlayRewriteAPI(t *testing.T) {
 	}); w.Code != http.StatusOK {
 		t.Fatalf("更新站点失败: %d %s", w.Code, w.Body.String())
 	}
-	v = listVideos()
+	v = detailOf(vid)
 	groups = nil
 	if err := json.Unmarshal([]byte(v.VodPlayList), &groups); err != nil || len(groups) != 1 {
 		t.Fatalf("播放组数据异常: %v", err)

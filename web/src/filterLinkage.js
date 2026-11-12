@@ -1,13 +1,14 @@
 // 资源库筛选条件的联动规则（纯逻辑，不依赖 Vue，可单独测试）。
 //
-// 分类 / 标签 / 地域都归属于某个站点（sourceId），站点是筛选的主轴：
-//   - 选中站点：其它三类下拉只列该站点的选项，跨站点的已选条件被清掉；
-//   - 选中分类 / 标签 / 地域：站点自动定位到它的所属站点，并清掉跨站点的条件；
-//   - 从分类树、卡片标签跳转过来（changed 为 null）：按已有条件推断站点并校正。
+// 分类归属于某个站点（sourceId），站点是筛选的主轴：
+//   - 选中站点：分类下拉只列该站点的选项，跨站点的已选分类被清掉；
+//   - 选中分类：站点自动定位到它所属的站点；
+//   - 从分类树跳转过来（changed 为 null）：按已选分类推断站点并校正。
 //
+// 标签 / 地域 / 年份筛选已移除，只剩分类一个带站点归属的维度。
 // 所有 id 统一按字符串比较：下拉的 value 既可能是数字也可能是字符串。
 
-export const FILTER_KINDS = ['category', 'tag', 'area']
+export const FILTER_KINDS = ['category']
 
 // 按当前站点收窄候选项；站点为空时返回全部。
 export function scopeOptions(items, sourceId) {
@@ -24,9 +25,9 @@ export function ownerOf(kind, id, dataset) {
 }
 
 // 计算联动后的筛选状态，不修改入参。
-// state:   { source, category, tag, area }
-// changed: 'source' | 'category' | 'tag' | 'area' | null
-// dataset: { category: [...], tag: [...], area: [...] }
+// state:   { source, category }
+// changed: 'source' | 'category' | null
+// dataset: { category: [...] }
 export function linkedFilters(state, changed, dataset) {
   const next = { ...state }
   let sid = 0

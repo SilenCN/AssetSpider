@@ -62,7 +62,6 @@ export function createState() {
   const videos = ref([])
   const categories = ref([])
   const categoryTree = ref([])
-  const tags = ref([])
   const jobs = ref([])
   const tasks = ref([])
   const users = ref([])
@@ -83,15 +82,12 @@ export function createState() {
   }
 
   // ---------- 资源库筛选 ----------
+  // 筛选维度只保留关键词 + 站点 + 分类：标签 / 地域 / 年份筛选与评分排序已移除，
+  // 影片上的这些原始字段仍保留，作为卡片与详情页的纯信息展示。
   const videoQuery = ref('')
   const videoSource = ref('')
   const videoCategory = ref('')
-  const videoTag = ref('')
-  const videoAreaId = ref('')
-  const videoYear = ref('')
   const videoSort = ref('id_desc')
-  const areas = ref([])
-  const years = ref([])
   const videoPage = ref(1)
   const videoSize = ref(24)
   // 列表接口只返回 items/page/size：不返回总数、也不返回 hasMore。
@@ -105,6 +101,8 @@ export function createState() {
 
   // ---------- 影片详情与播放 ----------
   const fieldMeta = ref({ groups: [], fields: [], total: 0 })
+  // 列表只返回卡片投影，点开影片后按 id 拉完整详情；加载期间显示占位，避免重复点击。
+  const detailLoading = ref(false)
   const detail = ref(null)
   const detailTab = ref('fields')
   const onlyNonEmpty = ref(true)
@@ -150,12 +148,12 @@ export function createState() {
   return {
     TOKEN_KEY, TAB_KEY, SIDEBAR_KEY, emptyForm, emptyUserForm, emptySubForm,
     token, me, authReady, initialized, isAdmin, currentUsername, clearAuth, setAuth,
-    tab, health, sources, videos, categories, categoryTree, tags, jobs, tasks, users, capacity,
+    tab, health, sources, videos, categories, categoryTree, jobs, tasks, users, capacity,
     settings, settingsForm, settingsDirty, settingsSaving, error, notice, notify,
-    videoQuery, videoSource, videoCategory, videoTag, videoAreaId, videoYear, videoSort,
-    areas, years, videoPage, videoSize, videoHasMore, videoLoading, videoLoadingMore,
+    videoQuery, videoSource, videoCategory, videoSort,
+    videoPage, videoSize, videoHasMore, videoLoading, videoLoadingMore,
     videoEnd, videoSentinel,
-    fieldMeta, detail, detailTab, onlyNonEmpty, listScrollY,
+    fieldMeta, detailLoading, detail, detailTab, onlyNonEmpty, listScrollY,
     playerEl, activeGroup, activeEp, playError,
     loginForm, loginBusy, loginError, pwdModal, pwdForm,
     form, sourceOpen, importOpen, importBusy, importFileName, importRaw, importPreview, importFileEl,

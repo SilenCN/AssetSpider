@@ -5,6 +5,10 @@ import { DEFAULT_TAB, detailHash, detailIdFromHash, tabToHash } from '../layout.
 import { createPlayer } from './player.js'
 
 export function createDetail(ctx) {
+  // 请求序号：连续点开不同影片 / 快速前进后退时只认最后一次详情请求，
+  // 避免先发后到的旧响应把当前影片覆盖掉。
+  let detailSeq = 0
+
   // ---------- 全字段详情 ----------
   async function loadFieldMeta() {
     try { ctx.fieldMeta.value = await ctx.request('/api/meta/v1/fields') } catch (e) { /* 元数据不影响主流程 */ }
@@ -86,6 +90,28 @@ export function createDetail(ctx) {
     player.mountPlayer() // 内部会 await nextTick() 等详情组件挂载出 <video>
   }
 
+  // 列表只返回卡片投影，完整记录一律按 id 调详情接口：列表缓存对象不能再复用，
+  // 否则播放组 / 简介 / 扩展字段等会缺失。加载期间用 detailLoading 占位，避免重复点击。
+  async function loadDetailById(id) {
+    const seq = ++detailSeq
+    ctx.detailLoading.value = true
+    try {
+      const v = await ctx.request(`/api/videos/v1/${id}`)
+      if (seq !== detailSeq) return // 已有更新的详情请求，丢弃这次结果
+      await showVideoDetail(v)
+    } catch (e) {
+      if (seq !== detailSeq) return
+      ctx.error.value = `影片不存在或已移除：${e.message}`
+      ctx.notify('影片不存在或已移除', 'err')
+      leaveDetail()
+      history.replaceState(null, '', tabToHash(DEFAULT_TAB))
+      ctx.tab.value = DEFAULT_TAB
+      ctx.loadVideos().catch(() => {})
+    } finally {
+      if (seq === detailSeq) ctx.detailLoading.value = false
+    }
+  }
+
   // 从资源库点开影片：作为一次页面跳转，pushState 让浏览器后退能回到列表。
   // 已在详情页时改用 replaceState，避免历史栈里堆一串影片。
   async function openDetail(v) {
@@ -95,24 +121,12 @@ export function createDetail(ctx) {
     const h = detailHash(v.id)
     if (detailIdFromHash(location.hash) == null) history.pushState(null, '', h)
     else if (location.hash !== h) history.replaceState(null, '', h)
-    await showVideoDetail(v)
+    await loadDetailById(v.id)
   }
 
   // 刷新 / 分享链接 / 浏览器前进后退落到 #/video/<id>：按 ID 重新取详情。
-  // 优先复用列表里已有的对象，否则调后端详情接口（返回结构与列表项一致）。
   async function openDetailById(id) {
-    try {
-      const cached = ctx.videos.value.find(x => Number(x.id) === Number(id))
-      const v = cached || await ctx.request(`/api/videos/v1/${id}`)
-      await showVideoDetail(v)
-    } catch (e) {
-      ctx.error.value = `影片不存在或已移除：${e.message}`
-      ctx.notify('影片不存在或已移除', 'err')
-      leaveDetail()
-      history.replaceState(null, '', tabToHash(DEFAULT_TAB))
-      ctx.tab.value = DEFAULT_TAB
-      ctx.loadVideos().catch(() => {})
-    }
+    await loadDetailById(id)
   }
 
   return {

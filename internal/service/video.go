@@ -10,31 +10,26 @@ import (
 )
 
 // VideoList 是影片分页查询的结果 DTO。
-// 只返回本页数据与分页参数：不返回 total（要全量 COUNT），也不返回 hasMore，
+// 只返回本页卡片与分页参数：不返回 total（要全量 COUNT），也不返回 hasMore，
 // 前端按「本页条数 >= size」判断是否还有下一页。
+//
+// Items 是轻量卡片投影而非完整 Video：列表不携带播放组、简介、扩展字段等大文本，
+// 用户点开影片时前端按 id 调详情接口取完整记录。
 type VideoList struct {
-	Items []model.Video `json:"items"`
-	Page  int           `json:"page"`
-	Size  int           `json:"size"`
+	Items []model.VideoCard `json:"items"`
+	Page  int               `json:"page"`
+	Size  int               `json:"size"`
 }
 
-// VideoListQuery 是影片列表的查询入参（检索 + 筛选 + 排序 + 分页）。
+// VideoListQuery 是影片列表的查询入参（关键词 + 站点 + 分类 + 排序 + 分页）。
+// 标签 / 地域 / 年份筛选与评分排序已移除，但影片上的这些原始字段仍保留。
 type VideoListQuery struct {
 	SourceID   uint
 	CategoryID uint
-	TagID      uint
-	AreaID     uint
-	Year       string
 	Keyword    string
 	Sort       string
 	Page       int
 	Size       int
-}
-
-// YearView 是年份筛选项：年份 + 该年份下的影片数。
-type YearView struct {
-	Year       string `json:"year"`
-	VideoCount int64  `json:"videoCount"`
 }
 
 // VideoService 处理入库影片的查询与分页规则。
@@ -114,6 +109,17 @@ func applyPlayRewrite(v *model.Video, r URLRewriter) {
 	}
 }
 
+// applyCardPicRewrite 就地改写列表卡片的封面地址。
+// 卡片只携带三张卡片用得到的图，详情里的原图 / 截图集由 applyPicRewrite 处理。
+func applyCardPicRewrite(c *model.VideoCard, r URLRewriter) {
+	if !r.Enabled() {
+		return
+	}
+	c.VodPic = r.Rewrite(c.VodPic)
+	c.VodPicThumb = r.Rewrite(c.VodPicThumb)
+	c.VodPicSlide = r.Rewrite(c.VodPicSlide)
+}
+
 // applyPicRewrite 就地改写影片的封面类图片地址。
 // 与播放地址一样只改内存副本；vod_pic_screenshot 是 # 连接的截图集合，
 // 逐段改写后按原分隔符拼回。
@@ -140,15 +146,16 @@ func applyRewrite(v *model.Video, r sourceRewriter) {
 	applyPicRewrite(v, r.pic)
 }
 
-// rewriteVideos 按站点配置批量改写播放地址与图片地址。
-func (s *VideoService) rewriteVideos(items []model.Video) error {
+// rewriteVideoCards 按站点配置批量改写列表卡片的封面地址。
+// 列表不再携带播放组，因此只做图片改写；播放地址改写留给详情接口。
+func (s *VideoService) rewriteVideoCards(items []model.VideoCard) error {
 	rewriters, err := s.rewriters()
 	if err != nil {
 		return err
 	}
 	for i := range items {
 		if r, ok := rewriters[items[i].SourceID]; ok {
-			applyRewrite(&items[i], r)
+			applyCardPicRewrite(&items[i], r.pic)
 		}
 	}
 	return nil
@@ -165,9 +172,6 @@ func (s *VideoService) List(query VideoListQuery, p ...Principal) (VideoList, er
 	items, err := s.videos.ListVideos(repository.VideoQuery{
 		SourceID:         query.SourceID,
 		CategoryID:       query.CategoryID,
-		TagID:            query.TagID,
-		AreaID:           query.AreaID,
-		Year:             strings.TrimSpace(query.Year),
 		Keyword:          strings.TrimSpace(query.Keyword),
 		Sort:             strings.TrimSpace(query.Sort),
 		Page:             page,
@@ -177,25 +181,10 @@ func (s *VideoService) List(query VideoListQuery, p ...Principal) (VideoList, er
 	if err != nil {
 		return VideoList{}, err
 	}
-	// 列表里带 vod_play_list，详情弹窗直接复用，因此这里也要应用站点改写。
-	if err := s.rewriteVideos(items); err != nil {
+	if err := s.rewriteVideoCards(items); err != nil {
 		return VideoList{}, err
 	}
 	return VideoList{Items: items, Page: page, Size: size}, nil
-}
-
-// Years 返回库中出现过的年份（按年份倒序）及各自的影片数，供年份筛选下拉使用。
-// 与标签 / 地域不同，年份是影片上的单值属性，不做实体拆分，直接按 vod_year 聚合。
-func (s *VideoService) Years(sourceID uint, p ...Principal) ([]YearView, error) {
-	items, err := s.videos.ListVideoYears(sourceID, principalOf(p...).Visible())
-	if err != nil {
-		return nil, err
-	}
-	out := make([]YearView, 0, len(items))
-	for _, it := range items {
-		out = append(out, YearView{Year: it.Year, VideoCount: it.Count})
-	}
-	return out, nil
 }
 
 // Get 返回单条影片完整记录（含原始 JSON 与扩展字段）；不可见站点按不存在处理。

@@ -22,7 +22,7 @@ const {
   isAdmin, currentUsername, token, clearAuth, setAuth, pwdModal, pwdForm, doChangePassword,
   tab, switchTab, navItems, currentPageTitle, sidebarCollapsed, sidebarMobileOpen, toggleSidebar,
   health, sources, capacity, settings, settingsForm, settingsDirty, settingsSaving, saveSettings,
-  error, notice, detail, loadVideos,
+  error, notice, detail, detailLoading, loadVideos,
   form, editing, sourceOpen, openSourceForm, closeSourceForm, editSource, saveSource,
   removeSource, clearSourceData, toggleSource, sourcePayload, emptyForm, resetForm,
   cronFeedback, cronNextText, exportSources, importOpen, importBusy, importFileName,
@@ -33,14 +33,14 @@ const {
   editUser, saveUser, toggleUser, removeUser, visibleLabel, users,
   activeTaskOf, queuedCountOf, crawlAll, startTask, pauseTask, resumeTask, retryTask, rerunTask,
   modeLabel, statusLabel, formatTime, short, stat, jobMessage, barWidth, isIndeterminate,
-  fmtEta, taskStatusText, searchVideos, onFilterChange, clearAllFilters, filterByTag,
+  fmtEta, taskStatusText, searchVideos, onFilterChange, clearAllFilters,
   showCategoryVideos, toggleAllCats, toggleCat, isCatCollapsed, catKey, catTotal, catVideoCount,
-  categoryForest, catSelectLabel, tagSelectLabel, siteNameOf, categoryName, visibleVideoTotal,
-  videoQuery, videoSource, videoCategory, videoTag, videoAreaId, videoYear, videoSort,
-  videos, areas, years, visibleCategories, visibleTags, visibleAreas, hasActiveFilters,
-  areaGroups, videoEnd, videoLoading, videoLoadingMore, videoSentinel, videoPage, videoSize,
-  fetchVideos, loadMoreVideos, kickSentinel, loadAreas, loadYears, loadJobs, loadTasks,
-  loadSources, loadCategories, loadCategoryTree, loadTags, loadUsers, loadHealth, loadSettings,
+  categoryForest, catSelectLabel, siteNameOf, categoryName, visibleVideoTotal,
+  videoQuery, videoSource, videoCategory, videoSort,
+  videos, visibleCategories, hasActiveFilters,
+  videoEnd, videoLoading, videoLoadingMore, videoSentinel, videoPage, videoSize,
+  fetchVideos, loadMoreVideos, kickSentinel, loadJobs, loadTasks,
+  loadSources, loadCategories, loadCategoryTree, loadUsers, loadHealth, loadSettings,
   request, jsonOptions, notify,
   fieldMeta, detailTab, onlyNonEmpty, loadFieldMeta, hasValue, nonEmptyCount, groupedFields,
   extraPairs, playGroups, posterOf, markPicFailed, episodeLabel, scoreOf, metaLine, tagListOf,
@@ -157,8 +157,11 @@ const {
         <div v-if="notice" class="notice" :class="notice.type">{{ notice.text }}</div>
         <p v-if="error" class="error">{{ error }}</p>
 
-        <!-- 影片详情是独立页面，占据整个主内容区；其余按侧边栏切换 -->
+        <!-- 影片详情是独立页面，占据整个主内容区；按 id 拉详情期间显示占位 -->
         <VideoDetailView v-if="detail" />
+        <div v-else-if="detailLoading" class="card detail-loading">
+          <span class="spinner"></span><span>正在加载影片详情…</span>
+        </div>
         <template v-else>
           <SourcesView v-if="tab === 'sources'" />
           <CategoriesView v-else-if="tab === 'categories'" />

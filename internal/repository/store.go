@@ -135,21 +135,10 @@ func Open(path string) (*Repositories, error) {
 		bigramOK = false
 	}
 	prepareDatabase(db)
-	// 评分排序表达式索引必须**同步**建在 Open 里：CREATE INDEX 会改 sqlite_master，
-	// 期间其它连接连 prepare 语句都会拿到 SQLITE_BUSY，busy_timeout 对这种
-	// schema 锁不生效，放后台必然与刚启动的采集写冲突。它是一次性秒级操作
-	//（15 万行约 0.8 s，54 万行几秒到十几秒），远小于健康检查窗口；真正
-	// 分钟级的是 bigram 历史回灌，那个才放后台。
-	if videoSortIndexesMissing(db) {
-		for _, stmt := range videoSortIndexDDL() {
-			if err := db.Exec(stmt).Error; err != nil {
-				log.Printf("创建评分排序表达式索引失败（评分排序将退回全表排序）: %v", err)
-				break
-			}
-		}
-	}
 	// 分钟级的历史数据回灌放后台，服务立即开始监听；同步做会让部署健康检查
 	// 超时回滚，回滚又 kill 掉回灌，形成「每次部署都失败、回灌永远做不完」的死循环。
+	// 评分排序移除后不再有同步 CREATE INDEX：大库首次启动不再需要为两条表达式
+	// 索引等待，健康检查回到秒级。
 	var mt *videoMaintenance
 	if bigramOK && videoBigramNeedsBackfill(db) {
 		mt = startVideoMaintenance(path)

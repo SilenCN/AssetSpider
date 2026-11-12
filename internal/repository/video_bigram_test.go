@@ -242,7 +242,8 @@ func TestVideoBigramFallsBackToLike(t *testing.T) {
 	}
 }
 
-// 两个已废弃的单列索引在升级后的库里不应再存在，AutoMigrate 也不该把它们建回来。
+// 废弃索引（两个闲置单列索引 + 两个评分排序表达式索引）在升级后的库里不应再存在，
+// AutoMigrate 也不该把它们建回来。评分排序移除后 DROP 可省空间与写入维护成本。
 func TestRetiredVideoIndexesAreDropped(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 	raw, err := gorm.Open(sqlite.Open(path), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
@@ -255,6 +256,8 @@ func TestRetiredVideoIndexesAreDropped(t *testing.T) {
 	for _, s := range []string{
 		"CREATE INDEX IF NOT EXISTS idx_videos_vod_name ON videos(vod_name)",
 		"CREATE INDEX IF NOT EXISTS idx_videos_hash ON videos(hash)",
+		"CREATE INDEX IF NOT EXISTS idx_videos_score_desc ON videos(CAST(NULLIF(TRIM(vod_score), '') AS REAL) DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_videos_score_asc ON videos(CAST(NULLIF(TRIM(vod_score), '') AS REAL) ASC)",
 	} {
 		if err := raw.Exec(s).Error; err != nil {
 			t.Fatal(err)
@@ -269,7 +272,10 @@ func TestRetiredVideoIndexesAreDropped(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	for _, name := range []string{"idx_videos_vod_name", "idx_videos_hash"} {
+	for _, name := range []string{
+		"idx_videos_vod_name", "idx_videos_hash",
+		"idx_videos_score_desc", "idx_videos_score_asc",
+	} {
 		var n int64
 		if err := r.db.Raw("SELECT count(*) FROM sqlite_master WHERE type='index' AND name = ?", name).
 			Scan(&n).Error; err != nil {

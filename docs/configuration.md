@@ -117,7 +117,7 @@ auth:
 
 ## 检索与索引
 
-影片列表是读得最重的接口：一次请求要同时完成「关键词 + 站点 / 分类 / 地域 / 标签筛选 + 时间或评分排序 + 分页」。索引与查询都按这条链路设计。接口**不返回命中总数**，也就不做任何 `COUNT` 全表扫描。
+影片列表是读得最重的接口：一次请求完成「关键词 + 站点 / 分类筛选 + 排序 + 分页」。标签 / 地域 / 年份筛选与评分排序已移除，索引与查询按保留的链路设计。接口**不返回命中总数**，也就不做任何 `COUNT` 全表扫描；列表只 `SELECT` 卡片字段，完整记录在点开影片时按 id 单独返回。
 
 **B-Tree 复合索引**（`model` 里的 GORM 标签，`AutoMigrate` 自动建）：
 
@@ -126,15 +126,14 @@ auth:
 | `idx_source_vod` | (source_id, vod_id) 唯一 | 采集 upsert、vod_id 反查主键 |
 | `idx_videos_source_time` | (source_id, vod_time) | 单站点按更新时间排序 / 翻页 |
 | `idx_videos_source_id` | (source_id, id) | 单站点 + 默认 id 倒序 |
-| `idx_videos_vod_year` | (vod_year) | 年份筛选与年份下拉的 `GROUP BY` |
 | `idx_videos_category_id` | (category_id) | 分类筛选、按分类聚合影片数 |
-| `idx_video_tags_tag` | (tag_id, video_id) | 按标签筛选（主键反向查询会全表扫描） |
+| `idx_video_tags_tag` | (tag_id, video_id) | 采集归档时按标签统计影片数（标签筛选已移除） |
 | `idx_categories_source_type` | (source_id, type_id) | 采集时按 `type_pid` 归树找父分类 |
 | `idx_jobs_source_mode` | (source_id, mode, id) | 取「本站点本模式最近一条任务」判断续采 |
 
 SQLite 的索引末尾隐含 rowid（即 `id`），所以 `(source_id, vod_time)` 同时满足 `ORDER BY vod_time DESC, id DESC`，不必再补 id 列。
 
-`vod_name` / `hash` 的单列索引已移除：关键词检索走下面的倒排索引，前置通配符的 `LIKE` 用不上 B-Tree；`hash` 只在 Go 侧比对内容指纹，SQL 里没有按它过滤的查询。历史库里已建出的这两个索引由启动时幂等的 `DROP INDEX IF EXISTS` 清理，**不提升 `schemaVersion`**——删索引不需要重算统计信息，更不该把 v6 的整表回灌 + `ANALYZE` 重新触发一遍。
+`vod_name` / `hash` 的单列索引、以及评分排序的两条表达式索引已移除（评分排序能力下线）：关键词检索走下面的倒排索引，前置通配符的 `LIKE` 用不上 B-Tree；`hash` 只在 Go 侧比对内容指纹，SQL 里没有按它过滤的查询。历史库里已建出的这几个索引由启动时幂等的 `DROP INDEX IF EXISTS` 清理，**不提升 `schemaVersion`**——删索引不需要重算统计信息，更不该把 v6 的整表回灌 + `ANALYZE` 重新触发一遍。
 
 **关键词索引（FTS5 + bigram）**：关键词检索原来是对 6 列做 `LIKE '%词%'`，前置通配符让索引彻底失效，每次搜索全表扫描。现在按长度分三条路径，参与检索的列始终一致：`vod_name / vod_en / vod_actor / vod_director / vod_class / vod_area`。
 
@@ -150,16 +149,16 @@ trigram 把文本切成三字符片段，天然支持中文子串与英文子串
 >
 > **为什么回灌必须异步**：一次性回灌在大库上要几分钟。曾把它放在 `repository.Open` 里同步执行，结果 54 万行的生产库部署时服务迟迟不监听，健康检查等满 180 秒后回滚，回滚又 kill 掉回灌——形成每次部署都失败、回灌永远做不完的死循环（与早期 v7 同类问题）。现在后台任务用**独立的 SQLite 连接**（不占主连接池的 `SetMaxOpenConns(1)`）、每批之间让出 30 ms、连接串统一带 `_pragma=busy_timeout(30000)`（写在 DSN 上，每个新建连接都生效），服务启动后立刻可响应，实测回灌期间在线读最大延迟 1 ms。完成前两字检索降级走 `LIKE`，结果始终正确；完成后查询侧动态读一次状态表即切到倒排表，无需重启。回灌只插入新表、不改写 `videos`，也不触发 `PRAGMA user_version` 升级。
 >
-> **评分排序索引**：`score_desc` / `score_asc` 用 `CAST(NULLIF(TRIM(vod_score),'') AS REAL)` 把字符串评分转成数值排序，表达式上用不了普通 B-Tree，原先只能全表扫描 + 临时 B-Tree 排序（15 万行约 500 ms）。现在启动时幂等创建两条**表达式索引** `idx_videos_score_desc` / `idx_videos_score_asc`，把排序值物化进索引，降到 1 ms 以内；两条分别对应降序 / 升序，次级排序仍是 `vod_time DESC, id DESC`，行为不变。索引由 SQLite 在 `CREATE INDEX` 时自行扫一遍现有数据填满、之后随写入自动维护，不需要回灌代码、状态表或 `schemaVersion` 升级。它必须与在线请求串行：`CREATE INDEX` 会改 `sqlite_master`，期间其它连接连 `prepare` 都会拿到 `SQLITE_BUSY`（`busy_timeout` 对 schema 锁不生效），所以放在 `Open` 里同步执行。本地 15 万行约 0.8 s，但 54 万行的生产库（慢盘）实测约 **165 秒**——健康检查险些撞上 180 秒窗口，因此部署的 `HEALTH_TIMEOUT` 已放宽到 600 秒（见[部署](deployment.md)）。索引是一次性的，建好后后续启动 `IF NOT EXISTS` 空转，健康检查回到秒级；这与分钟级、必须放后台的 bigram 回灌不是一回事。
+> **评分排序已移除**：此前 `score_desc` / `score_asc` 依赖 `CAST(NULLIF(TRIM(vod_score),'') AS REAL)` 上的两条表达式索引 `idx_videos_score_desc` / `idx_videos_score_asc`，生产 54 万行库首次同步创建曾耗时约 **165 秒**、一度把健康检查窗口逼到极限。评分排序能力下线后，这两条索引由 `dropRetiredVideoIndexes` 幂等 `DROP INDEX IF EXISTS` 清理，启动路径不再有任何同步 `CREATE INDEX`，也不必再为它放宽 `HEALTH_TIMEOUT`（详见[部署](deployment.md)）。这与分钟级、必须放后台的 bigram 回灌不是一回事。
 >
-> **边界与降级**：若底层 SQLite 未编译 FTS5，建表失败只打日志并整体退回 `LIKE`；bigram 表建立 / 回灌失败、表达式索引创建失败同样只降级（评分排序退回全表排序），都不影响启动。1 字关键词仍走 `LIKE` 全表扫描。
+> **边界与降级**：若底层 SQLite 未编译 FTS5，建表失败只打日志并整体退回 `LIKE`；bigram 表建立 / 回灌失败同样只降级，都不影响启动。1 字关键词仍走 `LIKE` 全表扫描。
 >
 > **存储代价**：15 万条影片的库从 73 MB 涨到 105 MB（+43%，主要是 6 列文本的 trigram 倒排表）；在大文本量的真实库上，bigram 倒排表额外约 +12%（578 MB → 650 MB，272 万条片段，含按 `video_id` 反查的二级索引）。若要压缩，可只把真正会被搜索的列放进索引，代价是这几列以外的字段不再参与关键词检索。
 
 **查询侧的两处配合**：
 
 - `PRAGMA user_version` 记录检索层版本（`schemaVersion`，当前 6），升级时按版本跑一次性数据回灌（v3 地域、v5 分类父级），并整库 `ANALYZE` 一次，之后每次启动 `PRAGMA optimize`。**版本号先推进、`ANALYZE` 后执行**：分析只影响查询计划选择，失败不应让迁移「永远没完成」——否则下次启动会重跑全部整表回灌 + 全库分析，在大库上把带健康检查的部署拖死。曾短暂存在的 v7（物理删除 23 个已裁剪列）已整体回滚且从未成功提交，号段回收不复用。没有统计信息时计划器会误判——例如「多站点可见 + 时间倒序」会选「先按站点过滤再全量排序」，有了统计信息才改走「按时间索引倒序扫描 + 边扫边过滤 + 凑满 LIMIT 即停」。
-- 列表查询**一次 SQL 拿本页数据**：`ORDER BY ... LIMIT size OFFSET (page-1)*size`，不做 `COUNT`、不多取一条、不返回 `total` / `hasMore`。前端按「本页条数 >= size」认为还有下一页，不足一页即到底；数据刚好整页时会多发一次拿到空页的请求，代价远小于一次全量 `COUNT`。健康检查里的影片总数也不再查 `videos`，改为累加站点表的 `video_count` 快照。
+- 列表查询**一次 SQL 拿本页数据**：`ORDER BY ... LIMIT size OFFSET (page-1)*size`，不做 `COUNT`、不多取一条、不返回 `total` / `hasMore`。前端按「本页条数 >= size」认为还有下一页，不足一页即到底；数据刚好整页时会多发一次拿到空页的请求，代价远小于一次全量 `COUNT`。列表 SQL 用 `SELECT` 只取卡片投影（`model.VideoCard`）需要的列，不再 `SELECT *` 带出播放组、简介与扩展字段等大文本；点开影片时前端按 id 调 `/api/videos/v1/:id`，由 `GetVideo` 返回完整 `model.Video`。健康检查里的影片总数也不再查 `videos`，改为累加站点表的 `video_count` 快照。
 
 **实测**（15 万条影片 / 6 站点 / 400 分类 / 30 万条标签关联，取 5 次最小值）：
 
@@ -167,18 +166,14 @@ trigram 把文本切成三字符片段，天然支持中文子串与英文子串
 | --- | --- | --- |
 | 可见性（3 站点）+ 时间倒序 | 138 ms | **3.0 ms** |
 | 站点 + 时间倒序 | 46 ms | **1.0 ms** |
-| 地域 + 时间倒序 | 54 ms | **12 ms** |
-| 地域下拉（原 `DISTINCT vod_area`） | 99 ms | **<1 ms**（改读 `areas` 表） |
-| 标签筛选 | 25 ms | **5.7 ms** |
 | 关键词 4 字「流浪地球」 | 87 ms | **2.0 ms** |
 | 关键词 2 字（bigram 索引） | 83 ms | **2~38 ms** |
-| 评分排序 `score_desc` / `score_asc` | 约 500 ms | **约 1 ms**（表达式索引） |
 | 1 字关键词（回退 LIKE） | 140 ms | **140 ms**（改走主表，避开更慢的 FTS 外部表 200 ms） |
 | 默认列表第一页 | 0.5 ms | 0.5 ms |
 
-> 关键词 2 字这一行的「优化后」在 578 MB / 15 万行的真实库上单独复测：低频词 **2 ms**、高频词（命中全库）**33 ms**，同一库上六列 `LIKE` 约 **250 ms**；`EXPLAIN QUERY PLAN` 确认走 `SEARCH video_bigrams USING PRIMARY KEY (gram=?)`。其余行沿用早期基准库，绝对值不直接横比。该库一次性回灌约 18 秒，改为后台执行后 `Open` 约 **1.1 秒**（含同步创建两条评分索引约 0.8 秒；此前同步回灌要 16 秒起步，生产库更是数分钟），完成后写入 `done` 状态，后续启动索引与回灌都直接跳过。评分排序在同一库上从约 500 ms 降到约 1 ms，`EXPLAIN QUERY PLAN` 确认 `SCAN videos USING INDEX idx_videos_score_desc / _asc`；建索引期间并发写入无 `SQLITE_BUSY`。
+> 关键词 2 字这一行的「优化后」在 578 MB / 15 万行的真实库上单独复测：低频词 **2 ms**、高频词（命中全库）**33 ms**，同一库上六列 `LIKE` 约 **250 ms**；`EXPLAIN QUERY PLAN` 确认走 `SEARCH video_bigrams USING PRIMARY KEY (gram=?)`。其余行沿用早期基准库，绝对值不直接横比。该库一次性回灌约 18 秒，改为后台执行后 `Open` 约 **1.1 秒**（此前同步回灌要 16 秒起步，生产库更是数分钟），完成后写入 `done` 状态，后续启动索引与回灌都直接跳过。。
 
-写入侧由行级触发器同步维护 FTS5 与 bigram 两套倒排索引、由 SQLite 自动维护评分表达式索引；批量 upsert 仍是 `CreateInBatches` / `ON CONFLICT` 的少量 SQL，触发器开销远小于逐行更新上百列本身。回灌用静默 logger，不会每批刷一条 SLOW SQL 日志。
+写入侧由行级触发器同步维护 FTS5 与 bigram 两套倒排索引；批量 upsert 仍是 `CreateInBatches` / `ON CONFLICT` 的少量 SQL，触发器开销远小于逐行更新上百列本身。回灌用静默 logger，不会每批刷一条 SLOW SQL 日志。
 
 ## 清空站点数据（保留站点配置）
 

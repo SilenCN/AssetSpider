@@ -42,7 +42,7 @@ cat ~/.ssh/assetspider_deploy        # 全文复制，填到 Secret DEPLOY_SSH_K
 | Variable | `DEPLOY_PATH` | 可选 | `/opt/assetspider` | 部署根目录 |
 | Variable | `DEPLOY_MODE` | 可选 | `auto` | `auto` / `systemd` / `process`（无 systemd 时降级为 nohup 进程） |
 | Variable | `HEALTH_URL` | 可选 | 自动推导 | 改了服务端口时建议显式填写完整健康检查地址 |
-| Variable | `HEALTH_TIMEOUT` | 可选 | `600` | 健康检查最长等待秒数。大库首次启动要同步创建评分排序表达式索引（生产 54 万行实测约 165 秒），180 秒会误判为启动失败并回滚；索引建好后后续启动是空转，健康检查回到秒级 |
+| Variable | `HEALTH_TIMEOUT` | 可选 | `600` | 健康检查最长等待秒数。留足余量应对大库首次启动的一次性维护（历史数据后台回灌、统计信息更新等）；评分排序表达式索引移除后启动路径不再有同步 `CREATE INDEX`，实际探活通常秒级完成 |
 
 > 未配置 `DEPLOY_SSH_KEY` 时，工作流**只做构建校验、跳过部署**（保持绿色并给出警告）；配好后可在 Actions 页面点 **Run workflow** 手动重跑，不必空推一次。纯文档改动（`**.md`）不触发部署，`workflow_dispatch` 可随时手动触发；多次 push 串行执行，不会并发写同一台服务器。
 

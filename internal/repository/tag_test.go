@@ -34,7 +34,8 @@ func TestParseTags(t *testing.T) {
 	}
 }
 
-// TestTagEnsureAndLink 验证标签的「创建 → 关联 → 列表/计数 → 按标签筛选」全链路。
+// TestTagEnsureAndLink 验证标签的「创建 → 关联 → 列表 / 计数」全链路
+// （资源库标签筛选维度已移除，归档数据仍保留）。
 func TestTagEnsureAndLink(t *testing.T) {
 	r := newTestRepos(t)
 	src := model.Source{Name: "站点A", APIBase: "http://a.example/api.php/provide/vod/"}
@@ -100,13 +101,10 @@ func TestTagEnsureAndLink(t *testing.T) {
 		t.Fatalf("「科幻」影片数应为 2，实际 %d（%+v）", counts[scifi.ID], counts)
 	}
 
-	// 按标签筛选：科幻应命中 a、b 两条。
-	_, total, err := listVideosForTest(r.Videos, VideoQuery{SourceID: src.ID, TagID: scifi.ID, Page: 1, Size: 20})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 2 {
-		t.Fatalf("按「科幻」筛选应命中 2 条，实际 %d", total)
+	// 资源库已移除标签筛选维度：采集仍自动归档标签（列表/计数在上面验证），
+	// 但列表不再提供 tag_id 过滤，这里只复核归档计数的一致性。
+	if got := counts[scifi.ID]; got != 2 {
+		t.Fatalf("「科幻」归档影片数应为 2，实际 %d", got)
 	}
 
 	// 幂等：重复 Ensure + Link 不重复建标签、不重复关联。

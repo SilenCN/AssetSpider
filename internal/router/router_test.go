@@ -110,7 +110,7 @@ func TestAPIRoutesFollowModuleVersionConvention(t *testing.T) {
 	r, _ := newTestRouter(t)
 	modules := map[string]bool{
 		"system": true, "assets": true, "sources": true,
-		"crawls": true, "videos": true, "categories": true, "tags": true, "areas": true,
+		"crawls": true, "videos": true, "categories": true,
 		"meta": true, "jobs": true, "tasks": true,
 		"auth": true, "users": true, "settings": true, "subscriptions": true,
 	}
