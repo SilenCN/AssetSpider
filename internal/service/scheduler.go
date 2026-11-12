@@ -17,7 +17,14 @@ type ScheduledCrawler interface {
 	StartScheduled(sourceID uint) error
 }
 
-// ScheduleService 按分钟检查各站点的 cron 配置，到点自动发起增量采集。
+// SubscriptionRefresher 是调度器需要的订阅刷新能力。同样用接口注入，
+// 调度器不必知道订阅是怎么拉取、怎么落库的。
+type SubscriptionRefresher interface {
+	RefreshDue(now time.Time) int
+}
+
+// ScheduleService 按分钟检查各站点的 cron 配置，到点自动发起增量采集；
+// 同时顺带检查站点配置订阅是否到期（订阅间隔以小时计，分钟级检查足够细）。
 //
 // 设计取舍：
 //   - 只在「当前分钟」判断命中，进程停机期间错过的时刻不补跑（补跑容易在重启时
@@ -29,6 +36,7 @@ type ScheduledCrawler interface {
 type ScheduleService struct {
 	sources repository.SourceRepository
 	crawl   ScheduledCrawler
+	subs    SubscriptionRefresher // 可选：未注入时不检查订阅
 
 	startOnce sync.Once
 	stopOnce  sync.Once
@@ -38,6 +46,12 @@ type ScheduleService struct {
 
 func NewScheduleService(sources repository.SourceRepository, crawl ScheduledCrawler) *ScheduleService {
 	return &ScheduleService{sources: sources, crawl: crawl, stop: make(chan struct{})}
+}
+
+// AttachSubscriptions 挂上订阅刷新能力（可选）。与采集不同，订阅刷新放在
+// 每分钟检查的末尾：即使某个订阅地址很慢，也不会耽误到点的采集触发。
+func (s *ScheduleService) AttachSubscriptions(subs SubscriptionRefresher) {
+	s.subs = subs
 }
 
 // Start 启动后台检查循环（幂等）。先等到下一个整分钟，之后每分钟检查一次，
@@ -120,6 +134,9 @@ func (s *ScheduleService) runOnce(now time.Time) int {
 		}
 		log.Printf("站点 #%d（%s）定时增量采集已触发（%s）", src.ID, src.Name, cron)
 		triggered++
+	}
+	if s.subs != nil {
+		s.subs.RefreshDue(now)
 	}
 	return triggered
 }

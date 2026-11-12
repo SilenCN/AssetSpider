@@ -466,6 +466,12 @@ tr.fail-row td { background: #fff6f6; color: var(--danger, #d93a3f); font-size: 
   .url, .msg { max-width: 160px; }
   .ops { gap: 4px; }
   .ops button.mini { padding: 5px 7px; }
+  /* 窄屏下操作列常被挤到 50px 上下，按钮只能一个个竖排，单行就撑到 150px+；
+     给一个下限让按钮 2~3 个一行换行，行高回到可读范围。 */
+  td.ops { min-width: 128px; }
+  /* 单元格里的附加说明（定时 / 订阅 / 解析 / 刷新结果）默认 nowrap，会把整张表
+     撑宽；窄屏允许换行，操作按钮才不会跑到屏幕外还要横滚才能点到。 */
+  td .tiny { white-space: normal; }
 
   /* 弹窗全屏；详情页面与播放器按比例收敛高度 */
   .modal-mask { padding: 0; align-items: stretch; }

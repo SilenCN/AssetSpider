@@ -48,6 +48,8 @@ func New(cfg *config.Config) (*App, error) {
 	// 采集调度先构造：站点服务在清空数据前要问它「该站点是否还在采集」。
 	crawlSvc := service.NewCrawlService(repos.Sources, repos.Videos, repos.Categories, repos.Tags, repos.Areas, repos.Jobs, cfg.Collector, cfgStore)
 	sourceSvc := service.NewSourceService(repos.Sources, crawlSvc)
+	// 站点配置订阅：按订阅地址拉取站点 JSON 并写进站点表，可手动刷新、也可按间隔自动刷新。
+	subscriptionSvc := service.NewSubscriptionService(repos.Subscriptions, repos.Sources, cfg.Collector)
 	settingsSvc := service.NewSettingsService(cfgStore, crawlSvc)
 	// 启动钩子：自动恢复因进程重启而中断的采集任务（用户手动暂停的任务不动）。
 	// 恢复是异步的，且失败只记日志、不阻断服务启动，避免单个坏记录拖垮整个服务。
@@ -67,27 +69,29 @@ func New(cfg *config.Config) (*App, error) {
 	// 定时增量采集：按站点上的 cron 配置，到点自动发起 incremental 任务。
 	// 启动即挂上后台循环，Close 时先停它再关数据库。
 	schedSvc := service.NewScheduleService(repos.Sources, crawlSvc)
+	schedSvc.AttachSubscriptions(subscriptionSvc)
 	schedSvc.Start()
 	// 认证与站点授权：同一个服务同时支撑登录控制器与用户管理控制器。
 	authSvc := service.NewAuthService(repos.Users, cfg.Auth)
 
 	// 第 2 层：HTTP 控制器（注入对应服务）
 	set := controller.Set{
-		Health:   controller.NewHealthController(healthSvc),
-		Asset:    controller.NewAssetController(assetSvc),
-		Source:   controller.NewSourceController(sourceSvc),
-		Crawl:    controller.NewCrawlController(crawlSvc),
-		Task:     controller.NewTaskController(crawlSvc),
-		Video:    controller.NewVideoController(videoSvc),
-		Category: controller.NewCategoryController(categorySvc),
-		Tag:      controller.NewTagController(tagSvc),
-		Area:     controller.NewAreaController(areaSvc),
-		Meta:     controller.NewMetaController(metaSvc),
-		Job:      controller.NewJobController(jobSvc),
-		Auth:     controller.NewAuthController(authSvc),
-		Users:    controller.NewUserController(authSvc),
-		Settings: controller.NewSettingsController(settingsSvc),
-		Page:     controller.NewPageController(cfg.Web.Dir),
+		Health:       controller.NewHealthController(healthSvc),
+		Asset:        controller.NewAssetController(assetSvc),
+		Source:       controller.NewSourceController(sourceSvc),
+		Subscription: controller.NewSubscriptionController(subscriptionSvc),
+		Crawl:        controller.NewCrawlController(crawlSvc),
+		Task:         controller.NewTaskController(crawlSvc),
+		Video:        controller.NewVideoController(videoSvc),
+		Category:     controller.NewCategoryController(categorySvc),
+		Tag:          controller.NewTagController(tagSvc),
+		Area:         controller.NewAreaController(areaSvc),
+		Meta:         controller.NewMetaController(metaSvc),
+		Job:          controller.NewJobController(jobSvc),
+		Auth:         controller.NewAuthController(authSvc),
+		Users:        controller.NewUserController(authSvc),
+		Settings:     controller.NewSettingsController(settingsSvc),
+		Page:         controller.NewPageController(cfg.Web.Dir),
 	}
 
 	// 第 1 层：路由

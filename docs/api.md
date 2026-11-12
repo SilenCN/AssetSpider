@@ -32,6 +32,11 @@
 | sources | POST | `/api/sources/v1/:id/crawls` | 为该站点执行一次采集，**同步**返回结果摘要（脚本/命令行用） |
 | sources | GET | `/api/sources/v1/export` | 导出当前主体可见站点的配置 JSON（管理员为全部），只含可编辑字段 |
 | sources | POST | `/api/sources/v1/import` | 导入配置 JSON（仅管理员）：按站点名称 upsert，返回新增 / 更新 / 失败统计与逐条错误 |
+| subscriptions | GET | `/api/subscriptions/v1` | 站点配置订阅列表，附带按间隔现算的下次刷新时刻 `nextRefreshAt`，以及上次刷新结果（`lastStatus` / `lastCreated` / `lastUpdated` / `lastDisabled` / `lastSkipped` / `lastError`） |
+| subscriptions | POST | `/api/subscriptions/v1` | 新增订阅（**仅管理员**）：`{name, url, intervalHours, enabled}`；`intervalHours=0` 表示只手动刷新 |
+| subscriptions | PUT | `/api/subscriptions/v1/:id` | 修改订阅（**仅管理员**，重名返回 409），刷新状态保持不变 |
+| subscriptions | DELETE | `/api/subscriptions/v1/:id` | 删除订阅（**仅管理员**）：名下站点**解绑保留**（`subscriptionId` 归 0），影片与采集记录不受影响 |
+| subscriptions | POST | `/api/subscriptions/v1/:id/refreshes` | 手动刷新（**仅管理员**）：拉取订阅地址并同步站点配置，返回 `{total, created, updated, disabled, skipped, issues[]}`；地址不可达 / 内容非法时返回 5xx，`error` 里是「人话 + 技术细节」 |
 | crawls | POST | `/api/crawls/v1` | 对全部启用站点批量发起**同步**采集（超上限的排队） |
 | settings | GET | `/api/settings/v1` | 系统设置：可编辑的 `collector` 配置 + `fields[]` 元信息 + `envLocked` 只读字段 + 只读启动项 `static`（登录可读） |
 | settings | PUT | `/api/settings/v1` | 在线更新采集配置（**仅管理员**）：校验后写回 `conf/config.yaml` 并即时生效；支持只提交部分字段，被环境变量接管的字段拒绝修改 |
@@ -99,6 +104,11 @@ api -X POST http://localhost:8080/api/sources/v1/1/crawls \
   -H 'Content-Type: application/json' -d '{"mode":"full"}'
 api -X POST http://localhost:8080/api/crawls/v1 \
   -H 'Content-Type: application/json' -d '{"mode":"incremental"}'
+# 站点配置订阅：远程 JSON 里维护一批站点，按间隔自动刷新，也可以手动点刷新
+api -X POST http://localhost:8080/api/subscriptions/v1 \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"公共站点列表","url":"https://example.com/assetspider-sources.json","intervalHours":6}'
+api -X POST http://localhost:8080/api/subscriptions/v1/1/refreshes
 api 'http://localhost:8080/api/videos/v1?page=1&size=20'
 api 'http://localhost:8080/api/categories/v1'
 api 'http://localhost:8080/api/videos/v1?category_id=1'

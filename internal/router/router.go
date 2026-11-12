@@ -71,6 +71,16 @@ func registerV1(api *gin.RouterGroup, set controller.Set) {
 	// 只清空站点名下的数据（影片/分类/标签/采集记录），站点配置保留。
 	adminSources.DELETE("/:id/data", set.Source.Clear)
 
+	// 站点配置订阅：从远程 JSON 地址批量同步站点配置；刷新是订阅的子资源 refreshes
+	// （路径段用名词，动作由 HTTP 动词表达）。
+	subscriptions := secured.Group("/subscriptions/" + APIVersion)
+	subscriptions.GET("", set.Subscription.List)
+	adminSubs := admin.Group("/subscriptions/" + APIVersion)
+	adminSubs.POST("", set.Subscription.Create)
+	adminSubs.PUT("/:id", set.Subscription.Update)
+	adminSubs.DELETE("/:id", set.Subscription.Delete)
+	adminSubs.POST("/:id/refreshes", set.Subscription.Refresh)
+
 	// 批量采集：POST 创建一次覆盖全部可见启用站点的采集任务
 	crawls := secured.Group("/crawls/" + APIVersion)
 	crawls.POST("", set.Crawl.RunAll)

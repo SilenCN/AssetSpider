@@ -157,7 +157,7 @@ type SourceCollector interface {
 
 // SourceService 处理站点配置的校验、默认值与读写编排。
 type SourceService struct {
-	sources  repository.SourceRepository
+	sources   repository.SourceRepository
 	collector SourceCollector // 可选：未注入时不做采集冲突检查，也不自动采集
 }
 

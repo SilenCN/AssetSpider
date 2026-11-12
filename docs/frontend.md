@@ -21,6 +21,7 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 | `app/detail.js` | 详情页：全字段资料、播放组解析、hash 路由进出详情、列表滚动恢复 |
 | `app/player.js` | 播放器：线路/选集、hls.js / iframe / 直链挂载与错误提示 |
 | `app/sources.js` | 站点增删改查、启停、清空数据、JSON 导入导出、cron 实时校验 |
+| `app/subscriptions.js` | 站点订阅：新增 / 编辑 / 启停 / 删除、手动刷新与结果提示 |
 | `app/tasks.js` | 采集任务入队/暂停/继续/重试/重跑、采集记录、活动任务查询 |
 | `app/settings.js` / `app/users.js` | 系统设置、用户管理 |
 | `app/auth.js` / `app/shell.js` | 登录会话；页签与 hash 路由、1.5s 轮询、Esc、侧边栏 |

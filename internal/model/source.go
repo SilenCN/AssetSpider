@@ -53,6 +53,11 @@ type Source struct {
 	ScheduleCron    string     `gorm:"size:64" json:"scheduleCron"`
 	ScheduleLastAt  *time.Time `json:"scheduleLastAt"`
 
+	// SubscriptionID 是站点来源订阅；0 表示手动添加。
+	// 刷新订阅时按「同一订阅 + 接口地址」匹配已有站点，因此该字段决定了
+	// 「这条配置归谁管」：改它会影响下次刷新是否覆盖本站点。
+	SubscriptionID uint `gorm:"not null;default:0" json:"subscriptionId"`
+
 	// 采集状态与增量游标（由采集器回写，前端只读）。
 	LastSyncAt     *time.Time `json:"lastSyncAt"`
 	LastFullSyncAt *time.Time `json:"lastFullSyncAt"`

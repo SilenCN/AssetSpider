@@ -7,7 +7,9 @@ const {
   editSource, exportSources, fmtEta, formatTime, importFileEl, isAdmin,
   isIndeterminate, modeLabel, onImportFile, openSourceForm, pauseTask,
   pickImportFile, queuedCountOf, removeSource, resumeTask, short,
-  sources, startTask, statusLabel, taskStatusText, tasks, toggleSource
+  sources, startTask, statusLabel, taskStatusText, tasks, toggleSource,
+  subscriptions, openSubForm, refreshSubscription, removeSubscription,
+  toggleSubscription, subRefreshing, subStatusText, subIntervalText, subNameOf
 } = inject('app')
 </script>
 
@@ -74,6 +76,68 @@ const {
       <section class="card">
         <div class="list-head">
           <div class="list-head-l">
+            <h2>站点订阅</h2>
+            <span class="muted">共 {{ subscriptions.length }} 个 · 从远程 JSON 同步站点配置</span>
+          </div>
+          <div class="ops">
+            <button v-if="isAdmin" @click="openSubForm()">+ 新增订阅</button>
+          </div>
+        </div>
+        <p v-if="!subscriptions.length" class="empty">
+          {{ isAdmin ? '还没有订阅。点右上角「新增订阅」填一个返回站点 JSON 的地址，即可批量同步站点配置。' : '管理员尚未配置站点订阅。' }}
+        </p>
+        <div v-else class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>名称</th><th class="hide-sm">订阅地址</th><th class="hide-sm">刷新间隔</th>
+                <th class="hide-sm">上次刷新</th><th>结果</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template v-for="b in subscriptions" :key="b.id">
+                <tr>
+                  <td class="host">
+                    {{ b.name }}
+                    <div class="tiny muted">
+                      <template v-if="b.intervalHours > 0 && b.nextRefreshAt">每 {{ b.intervalHours }} 小时 · 下次 {{ formatTime(b.nextRefreshAt) }}</template>
+                      <template v-else>仅手动刷新</template>
+                      <template v-if="!b.enabled"> · 订阅已停用</template>
+                    </div>
+                  </td>
+                  <td class="url hide-sm" :title="b.url">{{ short(b.url, 42) }}</td>
+                  <td class="muted hide-sm">{{ subIntervalText(b) }}</td>
+                  <td class="muted hide-sm">{{ formatTime(b.lastSyncAt) }}</td>
+                  <td>
+                    <span class="badge" :class="b.lastStatus || 'never'">{{ subStatusText(b.lastStatus) }}</span>
+                    <div v-if="b.lastStatus === 'success'" class="tiny muted">
+                      新增 {{ b.lastCreated }} / 更新 {{ b.lastUpdated }} / 停用 {{ b.lastDisabled }}<template v-if="b.lastSkipped"> / 跳过 {{ b.lastSkipped }}</template>
+                    </div>
+                  </td>
+                  <td class="ops">
+                    <button class="mini" :disabled="subRefreshing === b.id" @click="refreshSubscription(b)">
+                      {{ subRefreshing === b.id ? '刷新中…' : '刷新' }}
+                    </button>
+                    <template v-if="isAdmin">
+                      <button class="mini ghost" @click="openSubForm(b)">编辑</button>
+                      <button class="mini ghost" @click="toggleSubscription(b)">{{ b.enabled ? '停用' : '启用' }}</button>
+                      <button class="mini danger" @click="removeSubscription(b)">删除</button>
+                    </template>
+                  </td>
+                </tr>
+                <!-- 刷新失败原因单独一行：技术细节很长，挤在「结果」列等于看不到。 -->
+                <tr v-if="b.lastStatus === 'failed' && b.lastError" class="fail-row">
+                  <td colspan="6">刷新失败：{{ b.lastError }}</td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="list-head">
+          <div class="list-head-l">
             <h2>站点列表</h2><span class="muted">共 {{ sources.length }} 个</span>
           </div>
           <div class="ops import-ops">
@@ -97,6 +161,9 @@ const {
                 <td class="mono hide-sm">{{ s.id }}</td>
                 <td class="host">
                   {{ s.name }}
+                  <div v-if="s.subscriptionId" class="tiny muted" :title="'由订阅「' + subNameOf(s.subscriptionId) + '」同步，刷新该订阅会覆盖这里的配置'">
+                    订阅：{{ subNameOf(s.subscriptionId) }}
+                  </div>
                   <div v-if="s.scheduleEnabled" class="tiny muted"
                        :title="`定时增量：${s.scheduleCron}｜下次 ${formatTime(s.nextScheduleAt)}｜上次触发 ${formatTime(s.scheduleLastAt)}`">
                     ⏰ {{ s.scheduleCron }} · 下次 {{ formatTime(s.nextScheduleAt) }}

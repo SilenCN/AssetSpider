@@ -17,6 +17,9 @@ export function createShell(ctx) {
   async function loadCategoryTree() {
     ctx.categoryTree.value = (await ctx.request('/api/categories/v1/tree')) || []
   }
+  async function loadSubscriptions() {
+    ctx.subscriptions.value = (await ctx.request('/api/subscriptions/v1')) || []
+  }
   async function loadTags() {
     ctx.tags.value = (await ctx.request('/api/tags/v1')) || []
   }
@@ -27,6 +30,7 @@ export function createShell(ctx) {
       const pending = [
         loadHealth(), loadSources(), ctx.loadVideos(), ctx.loadJobs(),
         loadCategories(), loadCategoryTree(), loadTags(), ctx.loadAreas(), ctx.loadYears(), ctx.loadTasks(),
+        loadSubscriptions(),
       ]
       if (ctx.isAdmin.value) pending.push(ctx.loadUsers(), ctx.loadSettings())
       await Promise.all(pending)
@@ -119,6 +123,7 @@ export function createShell(ctx) {
   function onEsc(e) {
     if (e.key !== 'Escape') return
     if (ctx.importOpen.value) { ctx.closeImport(); return }
+    if (ctx.subOpen.value) { ctx.closeSubForm(); return }
     if (ctx.sourceOpen.value) { ctx.closeSourceForm(); return }
     if (ctx.userFormOpen.value) { ctx.closeUserForm(); return }
     if (ctx.pwdModal.value) { ctx.pwdModal.value = false; return }
@@ -130,7 +135,7 @@ export function createShell(ctx) {
   const collectTabs = ['sources', 'jobs']
   function refreshCollectData() {
     // 站点配置页看任务卡片与站点「上次采集」状态；采集记录页看记录（含运行中的 live 进度）。
-    if (ctx.tab.value === 'sources') return Promise.all([ctx.loadTasks(), loadSources()])
+    if (ctx.tab.value === 'sources') return Promise.all([ctx.loadTasks(), loadSources(), loadSubscriptions()])
     if (ctx.tab.value === 'jobs') return ctx.loadJobs()
     return Promise.resolve()
   }
@@ -168,7 +173,7 @@ export function createShell(ctx) {
   onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible))
 
   return {
-    loadHealth, loadSources, loadCategories, loadCategoryTree, loadTags, refresh,
+    loadHealth, loadSources, loadSubscriptions, loadCategories, loadCategoryTree, loadTags, refresh,
     toggleSidebar, navItems, currentPageTitle, switchTab, onHashChange, onEsc,
     collectTabs, refreshCollectData, onVisible,
   }

@@ -78,7 +78,10 @@ router  →  controller  →  service  →  repository
 │   │   ├── task.go               # 任务对外 API：入队 / 暂停 / 继续 / 重试 / 重跑 / 列表 / 容量
 │   │   ├── task_state.go         # crawlTask 运行时状态机（协作式暂停、进度快照）
 │   │   ├── task_run.go           # 任务执行：分页抓取、失败退避重试、进度落库、站点串行闸门
-│   │   ├── scheduler.go          # 按站点 cron 到点触发增量任务
+│   │   ├── scheduler.go          # 按站点 cron 到点触发增量任务；顺带检查订阅是否到期
+│   │   ├── subscription.go       # 站点配置订阅：增删改查、到期判定、刷新结果汇总
+│   │   ├── subscription_sync.go  # 订阅同步：拉取 → 解析 → 按接口地址 upsert 站点 → 停用已移除
+│   │   ├── source_bundle.go      # 站点配置 JSON 解析（文件导入与订阅共用同一套）
 │   │   ├── settings.go           # 系统设置：采集运行时配置的读写编排
 │   │   ├── errors.go             # 业务错误语义
 │   │   ├── errtext.go            # 采集失败原因归类（超时 / DNS / 拒绝连接 / 非 JSON…）
@@ -94,11 +97,13 @@ router  →  controller  →  service  →  repository
 │   │   ├── category.go           # CategoryRepository   → model.Category（自动归档）
 │   │   ├── tag.go                # TagRepository        → model.Tag / VideoTag（自动归档、多对多）
 │   │   ├── job.go                # JobRepository        → model.CrawlJob
+│   │   ├── subscription.go        # SubscriptionRepository → model.Subscription
 │   │   └── *_test.go             # 每个实体各一份测试 + store_test.go
 │   ├── model/                    # 横切：GORM 模型
 │   │   ├── video.go              # 全字段 Video 实体（含 CategoryID）
 │   │   ├── user.go               # User / Session / UserSource（认证与站点授权）
 │   │   ├── category.go           # Category 实体（按站点隔离）
+│   │   ├── subscription.go       # Subscription 实体（订阅地址 / 间隔 / 刷新状态）
 │   │   ├── tag.go                # Tag 实体 + VideoTag 多对多连接表
 │   │   └── video_fields.go       # VodFields 字段清单（唯一数据源）
 │   ├── config/                   # 横切：配置加载、校验与运行时热更新
@@ -122,8 +127,10 @@ router  →  controller  →  service  →  repository
 │   │   │   ├── lookup.js         #   纯展示工具（时间 / 状态 / 标签 / 进度格式化）
 │   │   │   ├── videos.js         #   资源库：筛选联动、分页、无限滚动
 │   │   │   ├── catalog.js        #   分类树 / 分类与标签下拉标签
-│   │   │   ├── detail.js         #   详情页与播放器（hls.js / iframe / 直链）
+│   │   │   ├── detail.js         #   详情页：全字段资料、播放组解析、hash 路由
+│   │   │   ├── player.js         #   播放器：线路 / 选集、hls.js / iframe / 直链
 │   │   │   ├── sources.js        #   站点配置、JSON 导入导出、cron 校验反馈
+│   │   │   ├── subscriptions.js  #   站点订阅：新增 / 编辑 / 手动刷新 / 启停
 │   │   │   ├── tasks.js          #   采集任务与采集记录
 │   │   │   ├── settings.js       #   系统设置
 │   │   │   ├── users.js          #   用户管理

@@ -55,6 +55,10 @@ const REQUIRED = [
   'toggleUser', 'removeUser', 'visibleLabel', 'collectTabs', 'refreshCollectData', 'onVisible',
   'refresh', 'switchTab', 'navItems', 'currentPageTitle', 'toggleSidebar', 'sidebarCollapsed',
   'sidebarMobileOpen', 'loadHls',
+  'emptySubForm', 'subscriptions', 'subForm', 'subOpen', 'subBusy', 'subRefreshing',
+  'subEditing', 'subNameOf', 'subStatusText', 'subIntervalText', 'openSubForm',
+  'closeSubForm', 'saveSubscription', 'refreshSubscription', 'toggleSubscription',
+  'removeSubscription', 'loadSubscriptions',
 ]
 
 test('createApp 暴露页面组件依赖的全部键', () => {
@@ -78,6 +82,7 @@ test('登录后拉取资源库列表，状态落到对应 ref 上', async () => 
     '/api/auth/v1/sessions': { token: 'tk-1', user: { id: 1, username: 'admin' }, isAdmin: true },
     '/api/videos/v1': { items: [{ id: 7, vodName: '测试影片' }], page: 1, size: 24 },
     '/api/system/v1/health': { database: 'ok' },
+    '/api/subscriptions/v1': [],
   }
   const calls = []
   globalThis.fetch = async (path) => {

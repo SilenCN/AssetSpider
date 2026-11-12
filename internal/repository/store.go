@@ -57,14 +57,15 @@ const schemaVersion = 6
 // Repositories 是各实体仓储的容器。
 // 它只是装配结果，不是「大杂烩仓储」：任何实体读写都必须走对应的那个对象。
 type Repositories struct {
-	Assets     AssetRepository
-	Sources    SourceRepository
-	Videos     VideoRepository
-	Categories CategoryRepository
-	Tags       TagRepository
-	Areas      AreaRepository
-	Jobs       JobRepository
-	Users      UserRepository
+	Assets        AssetRepository
+	Sources       SourceRepository
+	Videos        VideoRepository
+	Categories    CategoryRepository
+	Tags          TagRepository
+	Areas         AreaRepository
+	Jobs          JobRepository
+	Users         UserRepository
+	Subscriptions SubscriptionRepository
 
 	db   *gorm.DB
 	path string
@@ -101,6 +102,7 @@ func Open(path string) (*Repositories, error) {
 		&model.User{},
 		&model.Session{},
 		&model.UserSource{},
+		&model.Subscription{},
 	); err != nil {
 		return nil, fmt.Errorf("迁移表结构: %w", err)
 	}
@@ -111,16 +113,17 @@ func Open(path string) (*Repositories, error) {
 	}
 	prepareDatabase(db)
 	return &Repositories{
-		Assets:     NewAssetRepository(db),
-		Sources:    NewSourceRepository(db),
-		Videos:     NewVideoRepository(db),
-		Categories: NewCategoryRepository(db),
-		Tags:       NewTagRepository(db),
-		Areas:      NewAreaRepository(db),
-		Jobs:       NewJobRepository(db),
-		Users:      NewUserRepository(db),
-		db:         db,
-		path:       path,
+		Assets:        NewAssetRepository(db),
+		Sources:       NewSourceRepository(db),
+		Videos:        NewVideoRepository(db),
+		Categories:    NewCategoryRepository(db),
+		Tags:          NewTagRepository(db),
+		Areas:         NewAreaRepository(db),
+		Jobs:          NewJobRepository(db),
+		Subscriptions: NewSubscriptionRepository(db),
+		Users:         NewUserRepository(db),
+		db:            db,
+		path:          path,
 	}, nil
 }
 

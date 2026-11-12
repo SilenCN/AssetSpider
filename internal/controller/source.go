@@ -1,8 +1,6 @@
 package controller
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -119,7 +117,7 @@ func (s *SourceController) Import(c *gin.Context) {
 		badRequest(c, "导入文件过大（上限 2 MB）")
 		return
 	}
-	items, err := decodeSourceBundle(body)
+	items, err := service.DecodeSourceBundle(body)
 	if err != nil {
 		badRequest(c, err.Error())
 		return
@@ -130,35 +128,4 @@ func (s *SourceController) Import(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
-}
-
-func decodeSourceBundle(body []byte) ([]service.SourceInput, error) {
-	body = bytes.TrimSpace(body)
-	if len(body) == 0 {
-		return nil, fmt.Errorf("导入内容为空，请选择 JSON 文件")
-	}
-	if body[0] == '{' {
-		var probe map[string]json.RawMessage
-		if err := json.Unmarshal(body, &probe); err != nil {
-			return nil, fmt.Errorf("JSON 解析失败：%v", err)
-		}
-		if raw, ok := probe["sources"]; ok {
-			var items []service.SourceInput
-			if err := json.Unmarshal(raw, &items); err != nil {
-				return nil, fmt.Errorf("sources 字段不是合法的站点数组：%v", err)
-			}
-			return items, nil
-		}
-		// 也允许直接贴一条站点对象。
-		var one service.SourceInput
-		if err := json.Unmarshal(body, &one); err != nil {
-			return nil, fmt.Errorf("JSON 解析失败：%v", err)
-		}
-		return []service.SourceInput{one}, nil
-	}
-	var items []service.SourceInput
-	if err := json.Unmarshal(body, &items); err != nil {
-		return nil, fmt.Errorf("JSON 解析失败（应为站点数组、单条对象或含 sources 的导出文件）：%v", err)
-	}
-	return items, nil
 }

@@ -8,6 +8,7 @@ import { createVideos } from './videos.js'
 import { createCatalog } from './catalog.js'
 import { createDetail } from './detail.js'
 import { createSources } from './sources.js'
+import { createSubscriptions } from './subscriptions.js'
 import { createTasks } from './tasks.js'
 import { createSettings } from './settings.js'
 import { createUsers } from './users.js'
@@ -23,6 +24,7 @@ export function createApp() {
   Object.assign(ctx, createCatalog(ctx))
   Object.assign(ctx, createDetail(ctx))
   Object.assign(ctx, createSources(ctx))
+  Object.assign(ctx, createSubscriptions(ctx))
   Object.assign(ctx, createTasks(ctx))
   Object.assign(ctx, createSettings(ctx))
   Object.assign(ctx, createUsers(ctx))

@@ -28,6 +28,7 @@ const {
   cronFeedback, cronNextText, exportSources, importOpen, importBusy, importFileName,
   importPreview, importFileEl, importPreviewShown, pickImportFile, onImportFile,
   closeImport, confirmImport, onEsc, refresh,
+  subForm, subOpen, subBusy, subEditing, closeSubForm, saveSubscription,
   userForm, userEditing, userFormOpen, openUserForm, closeUserForm, resetUserForm,
   editUser, saveUser, toggleUser, removeUser, visibleLabel, users,
   activeTaskOf, queuedCountOf, crawlAll, startTask, pauseTask, resumeTask, retryTask, rerunTask,
@@ -292,6 +293,42 @@ const {
             <button type="button" class="ghost" @click="closeSourceForm">取消</button>
           </div>
           <p v-if="error" class="error full">{{ error }}</p>
+        </form>
+      </div>
+    </div>
+
+    <!-- 站点订阅弹窗（新增 / 编辑共用，仅管理员） -->
+    <div v-if="subOpen && isAdmin" class="modal-mask" @click.self="closeSubForm">
+      <div class="modal narrow">
+        <div class="modal-head">
+          <div>
+            <h3>{{ subEditing ? '编辑站点订阅' : '新增站点订阅' }}</h3>
+            <p class="muted">远程 JSON：站点数组、单条站点对象，或本系统导出的 <code>{ sources: [...] }</code></p>
+          </div>
+          <button class="ghost" @click="closeSubForm">关闭</button>
+        </div>
+        <form class="modal-body sf-form" @submit.prevent="saveSubscription">
+          <label class="sf-item">
+            <span>订阅名称 *</span>
+            <input v-model="subForm.name" placeholder="例：公共站点列表" required />
+          </label>
+          <label class="sf-item">
+            <span>刷新间隔（小时，0 = 仅手动）</span>
+            <input v-model.number="subForm.intervalHours" type="number" min="0" />
+          </label>
+          <label class="sf-item full">
+            <span>订阅地址 *</span>
+            <input v-model="subForm.url" placeholder="https://example.com/assetspider-sources.json" required />
+          </label>
+          <label class="check full"><input v-model="subForm.enabled" type="checkbox" /> 启用该订阅（关闭后仍可手动刷新）</label>
+          <p class="hint full">
+            刷新按<strong>接口地址</strong>匹配已有站点：命中则更新配置、未命中则新增；订阅里已移除的站点只<strong>停用不删除</strong>，影片与采集记录都保留。<br />
+            已有站点的启用状态以本地为准（不会被订阅重新打开）；刷新只同步配置，<strong>不触发采集</strong>，采集仍按站点自己的定时与开关执行。
+          </p>
+          <div class="sf-actions full">
+            <button type="submit" :disabled="subBusy">{{ subBusy ? '保存中…' : (subEditing ? '保存修改' : '添加订阅') }}</button>
+            <button type="button" class="ghost" @click="closeSubForm">取消</button>
+          </div>
         </form>
       </div>
     </div>

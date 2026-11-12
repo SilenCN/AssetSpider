@@ -30,6 +30,10 @@ type SourceRepository interface {
 	UpdateVideoCount(id uint, count int64) error
 	// RefreshVideoCounts 按 videos 表重算全部站点的影片总数，用于启动时校准历史数据。
 	RefreshVideoCounts() error
+	// ListSourcesBySubscription 返回由某个订阅导入的站点（含已停用）。
+	ListSourcesBySubscription(subscriptionID uint) ([]model.Source, error)
+	// SetSourcesEnabled 批量启停站点，用于「订阅里已移除」的站点下线。
+	SetSourcesEnabled(ids []uint, enabled bool) error
 }
 
 // sourceRepository 是 Source 实体专属的仓储对象。
@@ -296,4 +300,25 @@ func (r *sourceRepository) RefreshVideoCounts() error {
 		UPDATE sources
 		SET video_count = (SELECT COUNT(*) FROM videos WHERE videos.source_id = sources.id)
 	`).Error
+}
+
+// ListSourcesBySubscription 返回某个订阅导入的全部站点（含已被订阅移除而停用的）。
+func (r *sourceRepository) ListSourcesBySubscription(subscriptionID uint) ([]model.Source, error) {
+	var items []model.Source
+	if err := r.db.Where("subscription_id = ?", subscriptionID).Order("id ASC").Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// SetSourcesEnabled 批量设置启用状态。
+//
+// 用 UpdateColumn 不刷新 updated_at：这是订阅同步带来的状态变化，
+// 不代表用户编辑过站点配置。
+func (r *sourceRepository) SetSourcesEnabled(ids []uint, enabled bool) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return r.db.Model(&model.Source{}).Where("id IN ?", ids).
+		UpdateColumn("enabled", enabled).Error
 }

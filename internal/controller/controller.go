@@ -15,21 +15,22 @@ import (
 
 // Set 聚合全部控制器，由装配层构造后交给 router。
 type Set struct {
-	Health   *HealthController
-	Asset    *AssetController
-	Source   *SourceController
-	Crawl    *CrawlController
-	Task     *TaskController
-	Video    *VideoController
-	Category *CategoryController
-	Tag      *TagController
-	Area     *AreaController
-	Meta     *MetaController
-	Job      *JobController
-	Auth     *AuthController
-	Users    *UserController
-	Settings *SettingsController
-	Page     *PageController
+	Health       *HealthController
+	Asset        *AssetController
+	Source       *SourceController
+	Subscription *SubscriptionController
+	Crawl        *CrawlController
+	Task         *TaskController
+	Video        *VideoController
+	Category     *CategoryController
+	Tag          *TagController
+	Area         *AreaController
+	Meta         *MetaController
+	Job          *JobController
+	Auth         *AuthController
+	Users        *UserController
+	Settings     *SettingsController
+	Page         *PageController
 }
 
 // writeError 把 service 层的哨兵错误翻译成 HTTP 状态码。

@@ -29,6 +29,10 @@ export const emptyForm = () => ({
   parseApi: '', playDomain: '', picApi: '', picDomain: '',
 })
 
+// 订阅表单的空白值（新增 / 编辑共用）。间隔 24 小时是个折中：站点配置一般一天
+// 变不了几次，0 则等于「只手动刷新」。
+export const emptySubForm = () => ({ id: null, name: '', url: '', intervalHours: 24, enabled: true })
+
 // 用户表单的空白值（新增 / 编辑共用）。
 export const emptyUserForm = () => ({
   id: null, username: '', password: '', role: 'user', enabled: true, sourceIds: [],
@@ -128,6 +132,13 @@ export function createState() {
   const importPreview = ref([])
   const importFileEl = ref(null)
 
+  // ---------- 站点配置订阅 ----------
+  const subscriptions = ref([])
+  const subForm = reactive(emptySubForm())
+  const subOpen = ref(false)
+  const subBusy = ref(false)
+  const subRefreshing = ref(null) // 正在刷新的订阅 ID，按钮据此禁用
+
   // ---------- 用户管理 ----------
   const userForm = reactive(emptyUserForm())
   const userFormOpen = ref(false)
@@ -137,7 +148,7 @@ export function createState() {
   const sidebarMobileOpen = ref(false)
 
   return {
-    TOKEN_KEY, TAB_KEY, SIDEBAR_KEY, emptyForm, emptyUserForm,
+    TOKEN_KEY, TAB_KEY, SIDEBAR_KEY, emptyForm, emptyUserForm, emptySubForm,
     token, me, authReady, initialized, isAdmin, currentUsername, clearAuth, setAuth,
     tab, health, sources, videos, categories, categoryTree, tags, jobs, tasks, users, capacity,
     settings, settingsForm, settingsDirty, settingsSaving, error, notice, notify,
@@ -148,6 +159,7 @@ export function createState() {
     playerEl, activeGroup, activeEp, playError,
     loginForm, loginBusy, loginError, pwdModal, pwdForm,
     form, sourceOpen, importOpen, importBusy, importFileName, importRaw, importPreview, importFileEl,
+    subscriptions, subForm, subOpen, subBusy, subRefreshing,
     userForm, userFormOpen, sidebarCollapsed, sidebarMobileOpen,
   }
 }
