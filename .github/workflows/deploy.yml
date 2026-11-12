@@ -32,6 +32,7 @@ jobs:
       DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/assetspider' }}
       DEPLOY_MODE: ${{ vars.DEPLOY_MODE || 'auto' }}
       HEALTH_URL: ${{ vars.HEALTH_URL || '' }}
+      HEALTH_TIMEOUT: ${{ vars.HEALTH_TIMEOUT || '600' }}
 
     steps:
       - name: 检出代码
@@ -162,8 +163,8 @@ jobs:
             "mkdir -p $REMOTE_DIR && tar -xzf $REMOTE_TAR -C $REMOTE_DIR && test -f $REMOTE_DIR/deploy/deploy.sh"
 
           # printf %q 保证各变量在远端 shell 中被正确转义
-          REMOTE_CMD="$(printf 'DEPLOY_PATH=%q DEPLOY_MODE=%q HEALTH_URL=%q SERVICE_NAME=%q bash %q %q' \
-            "$DEPLOY_PATH" "$DEPLOY_MODE" "$HEALTH_URL" "assetspider" \
+          REMOTE_CMD="$(printf 'DEPLOY_PATH=%q DEPLOY_MODE=%q HEALTH_URL=%q HEALTH_TIMEOUT=%q SERVICE_NAME=%q bash %q %q' \
+            "$DEPLOY_PATH" "$DEPLOY_MODE" "$HEALTH_URL" "$HEALTH_TIMEOUT" "assetspider" \
             "$REMOTE_DIR/deploy/deploy.sh" "$REMOTE_TAR")"
           ssh "${SSH_OPTS[@]}" "$TARGET" "$REMOTE_CMD"
           echo "::notice::部署完成，服务已启动。访问 http://$DEPLOY_HOST:8080"

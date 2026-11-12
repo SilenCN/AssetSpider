@@ -10,7 +10,7 @@
 #  · 无 systemd 的环境（容器 / 本地验证）自动降级为 nohup 进程模式
 #
 # 可用环境变量：DEPLOY_PATH / SERVICE_NAME / DEPLOY_MODE / HEALTH_URL /
-#              HEALTH_TIMEOUT（秒，默认 180）/ HEALTH_RETRIES（次数，兼容旧用法）/
+#              HEALTH_TIMEOUT（秒，默认 600）/ HEALTH_RETRIES（次数，兼容旧用法）/
 #              KEEP_RELEASES / ASSETSPIDER_SERVER_ADDR（process 模式）
 set -Eeuo pipefail
 
@@ -193,7 +193,10 @@ wait_health() {
   # 窗口必须留够，否则会把「正在迁移」误判成「启动失败」并回滚——而回滚会
   # kill 掉迁移，使迁移永远无法完成，形成每次部署都失败的死循环。
   # HEALTH_RETRIES（次数，兼容旧用法）优先；否则用 HEALTH_TIMEOUT（秒）。
-  limit="${HEALTH_RETRIES:-${HEALTH_TIMEOUT:-180}}"
+  # 默认放宽到 600：大库首次启动要同步创建评分排序表达式索引（54 万行生产库
+  # 实测约 165 秒），180 秒窗口会误判成启动失败并回滚，而回滚又 kill 掉建索引，
+  # 形成每次部署都失败的死循环。索引建好后后续启动是空转，健康检查仍是秒级。
+  limit="${HEALTH_RETRIES:-${HEALTH_TIMEOUT:-600}}"
   log "等待健康检查（最多 ${limit}s）: $HEALTH_URL"
   for i in $(seq 1 "$limit"); do
     if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$HEALTH_URL" || true)" = "200" ]; then
