@@ -3,7 +3,7 @@
 // 解构出的仍是原始 ref / computed / 函数，模板写法与拆分前一致。
 import { inject } from 'vue'
 const {
-  areaGroups, catSelectLabel, clearAllFilters, episodeLabel, error, filterByTag,
+  areaGroups, catSelectLabel, clearAllFilters, clearSearch, debouncedSearch, episodeLabel, error, filterByTag,
   formatTime, hasActiveFilters, isAdmin, markPicFailed, metaLine, onFilterChange,
   openDetail, posterOf, scoreOf, searchVideos, sources, tagListOf,
   tagSelectLabel, tags, videoAreaId, videoCategory, videoEnd, videoLoading,
@@ -16,7 +16,8 @@ const {
       <section class="card">
         <div class="res-toolbar">
           <div class="search-box">
-            <input v-model="videoQuery" placeholder="搜索片名 / 别名 / 演员 / 导演" @keyup.enter="searchVideos" />
+            <input v-model="videoQuery" placeholder="搜索片名 / 别名 / 演员 / 导演" @input="debouncedSearch" @keyup.enter="searchVideos" />
+            <button v-if="videoQuery" class="ghost btn-search-clear" @click="clearSearch" title="清空搜索词">✕</button>
             <button @click="searchVideos">搜索</button>
           </div>
           <div class="filters">
@@ -59,7 +60,7 @@ const {
           </div>
         </div>
         <div class="res-body">
-          <p v-if="!videos.length && !videoLoading" class="empty">{{ isAdmin ? '暂无采集数据，可到「站点配置」执行一次全量采集。' : '暂无可见的采集数据。' }}</p>
+          <p v-if="!videos.length && !videoLoading" class="empty">{{ hasActiveFilters ? '没有找到匹配的影片，试试换个搜索词或清空筛选。' : (isAdmin ? '暂无采集数据，可到「站点配置」执行一次全量采集。' : '暂无可见的采集数据。') }}</p>
           <div v-if="videos.length || videoLoading" class="res-grid">
             <article v-for="v in videos" :key="v.id" class="res-card" @click="openDetail(v)">
               <div class="res-poster">

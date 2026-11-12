@@ -204,8 +204,8 @@ func TestVideoBigramBackfillsExistingData(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer upgraded.Close()
-	if upgraded.bigram == nil {
-		t.Fatal("有历史数据时应启动后台回灌任务，而不是在 Open 里同步跑")
+	if upgraded.maintenance == nil {
+		t.Fatal("有历史数据时应启动后台维护任务，而不是在 Open 里同步跑")
 	}
 	waitVideoBigramReady(t, upgraded.db)
 	if got := countBigramKeyword(t, upgraded.Videos, "经典"); got != 1 {

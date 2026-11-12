@@ -20,6 +20,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/SilenCN/AssetSpider/internal/model"
@@ -68,9 +69,20 @@ type Repositories struct {
 	Users         UserRepository
 	Subscriptions SubscriptionRepository
 
-	db     *gorm.DB
-	path   string
-	bigram *bigramBackfill // 启动后的后台两字索引回灌任务，Close 时请求停止
+	db          *gorm.DB
+	path        string
+	maintenance *videoMaintenance // 启动后的一次性维护任务，Close 时请求停止
+}
+
+// sqliteDSN 给连接串加上 busy_timeout。它必须写在 DSN 上，由驱动对**每个**
+// 新建连接执行 PRAGMA；Open 之后再用 Exec 设一次，连接池换连接就失效了，
+// 后台建索引与前台写入并发时会立刻 SQLITE_BUSY。
+func sqliteDSN(path string) string {
+	const pragma = "_pragma=busy_timeout(30000)"
+	if strings.Contains(path, "?") {
+		return path + "&" + pragma
+	}
+	return path + "?" + pragma
 }
 
 // Open 打开（必要时创建）path 指定的 SQLite 数据库，自动迁移表结构，
@@ -81,18 +93,17 @@ func Open(path string) (*Repositories, error) {
 			return nil, fmt.Errorf("创建数据库目录 %q: %w", dir, err)
 		}
 	}
-	db, err := gorm.Open(sqlite.Open(path), &gorm.Config{
+	db, err := gorm.Open(sqlite.Open(sqliteDSN(path)), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Warn),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("打开 SQLite %q: %w", path, err)
 	}
 	// SQLite 是单写者数据库，限制连接数可避免批量采集并发写时出现 database is locked。
-	// 后台两字索引回灌另开一条连接，写锁冲突时等待而不是立刻失败。
+	// 后台维护任务另开一条连接，写锁冲突由 DSN 上的 busy_timeout 等待化解。
 	if sqlDB, err := db.DB(); err == nil {
 		sqlDB.SetMaxOpenConns(1)
 	}
-	db.Exec("PRAGMA busy_timeout = 10000")
 	if err := db.AutoMigrate(
 		&model.Asset{},
 		&model.Source{},
@@ -117,19 +128,31 @@ func Open(path string) (*Repositories, error) {
 	}
 	// 历史库里已废弃的单列索引由 AutoMigrate 留着不动，显式清掉（不触发版本升级）。
 	dropRetiredVideoIndexes(db)
-	// 2 字关键词的 bigram 倒排表：这里只同步建表与触发器（毫秒级）。历史数据
-	// 回灌是长操作，放到 prepareDatabase 之后启动后台任务，**绝不放在 HTTP 监听
-	// 之前**——大库回灌几分钟，同步做会让部署健康检查超时回滚，回滚又 kill 掉
-	// 回灌，形成每次部署都失败、回灌永远做不完的死循环（与旧 v7 同类问题）。
+	// 2 字关键词的 bigram 倒排表：这里只同步建表与触发器（毫秒级）。
 	bigramOK := true
 	if err := initVideoBigrams(db); err != nil {
 		log.Printf("建立两字关键词索引失败，2 字检索将退回 LIKE: %v", err)
 		bigramOK = false
 	}
 	prepareDatabase(db)
-	var bg *bigramBackfill
+	// 评分排序表达式索引必须**同步**建在 Open 里：CREATE INDEX 会改 sqlite_master，
+	// 期间其它连接连 prepare 语句都会拿到 SQLITE_BUSY，busy_timeout 对这种
+	// schema 锁不生效，放后台必然与刚启动的采集写冲突。它是一次性秒级操作
+	//（15 万行约 0.8 s，54 万行几秒到十几秒），远小于健康检查窗口；真正
+	// 分钟级的是 bigram 历史回灌，那个才放后台。
+	if videoSortIndexesMissing(db) {
+		for _, stmt := range videoSortIndexDDL() {
+			if err := db.Exec(stmt).Error; err != nil {
+				log.Printf("创建评分排序表达式索引失败（评分排序将退回全表排序）: %v", err)
+				break
+			}
+		}
+	}
+	// 分钟级的历史数据回灌放后台，服务立即开始监听；同步做会让部署健康检查
+	// 超时回滚，回滚又 kill 掉回灌，形成「每次部署都失败、回灌永远做不完」的死循环。
+	var mt *videoMaintenance
 	if bigramOK && videoBigramNeedsBackfill(db) {
-		bg = startVideoBigramBackfill(path)
+		mt = startVideoMaintenance(path)
 	}
 	return &Repositories{
 		Assets:        NewAssetRepository(db),
@@ -143,7 +166,7 @@ func Open(path string) (*Repositories, error) {
 		Users:         NewUserRepository(db),
 		db:            db,
 		path:          path,
-		bigram:        bg,
+		maintenance:   mt,
 	}, nil
 }
 
@@ -193,9 +216,9 @@ func prepareDatabase(db *gorm.DB) {
 
 // Close 关闭底层连接。
 func (r *Repositories) Close() error {
-	// 先停后台回灌，避免它继续往即将关闭的库里写；未跑完的批次下次启动续跑。
-	if r.bigram != nil {
-		r.bigram.Stop(2 * time.Second)
+	// 先停后台维护任务，避免它继续往即将关闭的库里写；未跑完的批次下次启动续跑。
+	if r.maintenance != nil {
+		r.maintenance.Stop(2 * time.Second)
 	}
 	sqlDB, err := r.db.DB()
 	if err != nil {

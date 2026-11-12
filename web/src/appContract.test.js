@@ -48,7 +48,7 @@ const REQUIRED = [
   'importFileEl', 'importPreviewShown', 'exportSources', 'pickImportFile', 'onImportFile',
   'closeImport', 'confirmImport', 'saveSource', 'removeSource', 'clearSourceData', 'toggleSource',
   'startTask', 'crawlAll', 'pauseTask', 'resumeTask', 'retryTask', 'rerunTask', 'barWidth',
-  'isIndeterminate', 'fmtEta', 'taskStatusText', 'searchVideos', 'formatTime', 'modeLabel',
+  'isIndeterminate', 'fmtEta', 'taskStatusText', 'searchVideos', 'debouncedSearch', 'clearSearch', 'formatTime', 'modeLabel',
   'statusLabel', 'short', 'stat', 'jobMessage', 'loginForm', 'loginBusy', 'loginError', 'doLogin',
   'doLogout', 'pwdModal', 'pwdForm', 'doChangePassword', 'bootstrap', 'userForm', 'userEditing',
   'userFormOpen', 'openUserForm', 'closeUserForm', 'resetUserForm', 'editUser', 'saveUser',
@@ -117,4 +117,29 @@ test('筛选联动：选站点后清掉其它站点已选条件', () => {
   // 分类 / 标签 / 地域是筛选主轴：与站点冲突时，站点被纠正到条件所属的站点。
   assert.equal(app.videoSource.value, '1')
   assert.equal(app.videoCategory.value, '10')
+})
+
+test('搜索输入防抖合并连续输入，clearSearch 只清搜索词', async () => {
+  const calls = []
+  globalThis.fetch = async (path) => {
+    calls.push(String(path))
+    return { ok: true, status: 200, json: async () => ({ items: [], page: 1, size: 24 }) }
+  }
+  const app = createApp()
+  app.videoQuery.value = '科幻'
+  app.videoSource.value = '1'
+  app.videoCategory.value = '2'
+  app.debouncedSearch()
+  app.debouncedSearch()
+  // 文件顶部把长延时压到 5ms，等 20ms 足以让防抖落地。
+  await new Promise(r => realSetTimeout(r, 20))
+  const videoCalls = () => calls.filter(p => p.startsWith('/api/videos/v1')).length
+  assert.equal(videoCalls(), 1, '连续输入只应触发一次检索')
+
+  app.clearSearch()
+  assert.equal(app.videoQuery.value, '')
+  assert.equal(app.videoSource.value, '1', '清除搜索词不应清掉站点筛选')
+  assert.equal(app.videoCategory.value, '2', '清除搜索词不应清掉分类筛选')
+  await new Promise(r => realSetTimeout(r, 20))
+  assert.equal(videoCalls(), 2, 'clearSearch 应立即重载一次，且不再有防抖请求')
 })

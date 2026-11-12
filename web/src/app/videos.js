@@ -7,6 +7,10 @@ export function createVideos(ctx) {
   // 避免先发后到的旧响应把新结果覆盖掉。
   let videoSeq = 0
   let videoObserver = null
+  // 输入防抖：连续打字只发最后一次请求；回车 / 按钮 / 切筛选等显式动作
+  // 会立刻重载并取消尚未触发的定时器，避免重复请求。
+  const SEARCH_DEBOUNCE_MS = 300
+  let searchTimer = null
 
   // ---------- 筛选条件双向联动 ----------
   // 分类 / 标签 / 地域都归属于某个站点（sourceId），站点是筛选的主轴：
@@ -88,8 +92,23 @@ export function createVideos(ctx) {
   }
   // 整表重载：搜索、切换筛选、刷新、从别的页签切回来都走这里，回到第一页。
   function loadVideos() {
+    if (searchTimer) { clearTimeout(searchTimer); searchTimer = null }
     ctx.videoPage.value = 1
     return fetchVideos(1, false)
+  }
+  // 输入框连续输入时延迟检索，回车 / 搜索按钮仍走 searchVideos 立即执行。
+  function debouncedSearch() {
+    if (searchTimer) clearTimeout(searchTimer)
+    searchTimer = setTimeout(() => {
+      searchTimer = null
+      loadVideos().catch(e => { ctx.error.value = e.message })
+    }, SEARCH_DEBOUNCE_MS)
+  }
+  // 只清搜索词、保留其余筛选条件（与「清空筛选」区分）。
+  function clearSearch() {
+    if (searchTimer) { clearTimeout(searchTimer); searchTimer = null }
+    ctx.videoQuery.value = ''
+    searchVideos()
   }
   // 底部哨兵进入视口时加载下一页（已加载完或正在加载则忽略）。
   function loadMoreVideos() {
@@ -187,11 +206,15 @@ export function createVideos(ctx) {
     }, { rootMargin: '600px 0px' })
     videoObserver.observe(el)
   })
-  onBeforeUnmount(() => { if (videoObserver) videoObserver.disconnect() })
+  onBeforeUnmount(() => {
+    if (videoObserver) videoObserver.disconnect()
+    if (searchTimer) { clearTimeout(searchTimer); searchTimer = null }
+  })
 
   return {
     visibleCategories, visibleTags, visibleAreas, hasActiveFilters, areaGroups,
     visibleVideoTotal, fetchVideos, kickSentinel, loadVideos, loadMoreVideos, searchVideos,
+    debouncedSearch, clearSearch,
     loadAreas, loadYears, applyFilterLinkage, onFilterChange, applyLinkage, clearAllFilters,
     showCategoryVideos, filterByTag,
   }

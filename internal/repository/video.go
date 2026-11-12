@@ -310,10 +310,11 @@ func videoOrder(sort string) string {
 	case "time_asc":
 		return "vod_time ASC, id ASC"
 	case "score_desc":
-		// vod_score 是字符串列，空值经 NULLIF 转 NULL 后排在末尾（SQLite 中 NULL 在 DESC 时最后）。
-		return "CAST(NULLIF(TRIM(vod_score), '') AS REAL) DESC, vod_time DESC, id DESC"
+		// 表达式必须和 videoSortIndexDDL 完全一致，才能命中后台创建的表达式索引；
+		// 空值经 NULLIF 转 NULL，DESC 时排在末尾。
+		return videoScoreExpr + " DESC, vod_time DESC, id DESC"
 	case "score_asc":
-		return "CAST(NULLIF(TRIM(vod_score), '') AS REAL) ASC, vod_time DESC, id DESC"
+		return videoScoreExpr + " ASC, vod_time DESC, id DESC"
 	default:
 		return "id DESC"
 	}
