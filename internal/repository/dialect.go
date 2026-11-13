@@ -8,6 +8,8 @@ package repository
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -67,6 +69,32 @@ func dialectOf(db *gorm.DB) Dialect {
 		return DialectMySQL
 	}
 	return DialectSQLite
+}
+
+// TestConnection 用给定参数建立一个临时连接并 Ping，验证配置可达，然后关闭。
+// 不迁移表结构、不持久化、不替换运行中的连接：仅用于设置页「测试连接」。
+// SQLite 会按路径创建必要的父目录并打开文件；MySQL 仅做 TCP 连通性与鉴权探测。
+func TestConnection(o Options) error {
+	if o.dialect() == DialectSQLite {
+		if dir := filepath.Dir(o.Path); dir != "" && dir != "." {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return fmt.Errorf("创建数据库目录 %q: %w", dir, err)
+			}
+		}
+	}
+	db, err := openDB(o)
+	if err != nil {
+		return err
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return fmt.Errorf("获取底层连接失败: %w", err)
+	}
+	defer sqlDB.Close()
+	if err := sqlDB.Ping(); err != nil {
+		return fmt.Errorf("连接数据库失败: %w", err)
+	}
+	return nil
 }
 
 // openDB 建立底层连接。SQLite 限制为单连接（单写者模型，避免 database is locked），

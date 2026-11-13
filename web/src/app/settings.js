@@ -51,5 +51,20 @@ export function createSettings(ctx) {
     }
   }
 
-  return { loadSettings, saveSettings }
+  async function testDatabase() {
+    if (ctx.dbTesting.value) return
+    ctx.dbTesting.value = true
+    ctx.dbTestResult.value = null
+    try {
+      // 与保存共用同一份数据库载荷；DSN 留空时后端沿用现有连接串，因此也可实测。
+      const payload = { database: buildDatabasePayload(ctx.dbForm.value) }
+      ctx.dbTestResult.value = await ctx.request('/api/settings/v1/database/test', ctx.jsonOptions('POST', payload))
+    } catch (e) {
+      ctx.dbTestResult.value = { ok: false, error: e.message }
+    } finally {
+      ctx.dbTesting.value = false
+    }
+  }
+
+  return { loadSettings, saveSettings, testDatabase }
 }

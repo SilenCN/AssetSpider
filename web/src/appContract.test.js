@@ -25,7 +25,7 @@ const REQUIRED = [
   'TOKEN_KEY', 'token', 'me', 'authReady', 'initialized', 'isAdmin', 'currentUsername',
   'clearAuth', 'setAuth', 'tab', 'health', 'sources', 'videos', 'categories', 'categoryTree',
   'jobs', 'tasks', 'users', 'capacity',   'settings', 'settingsForm', 'dbForm', 'settingsDirty',
-  'settingsSaving', 'loadSettings', 'saveSettings', 'error', 'notice', 'notify',
+  'settingsSaving', 'dbTesting', 'dbTestResult', 'loadSettings', 'saveSettings', 'testDatabase', 'error', 'notice', 'notify',
   'videoQuery', 'videoSource', 'videoCategory', 'videoSort',
   'visibleCategories', 'hasActiveFilters',
   'videoPage', 'videoSize', 'videoLoading', 'videoLoadingMore', 'videoEnd',

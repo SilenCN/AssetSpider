@@ -61,6 +61,32 @@ func (d DatabaseConfig) Display() string {
 	return d.Path
 }
 
+// Validate 校验数据库后端配置（driver / path / dsn / 连接池）。
+// 与 Config.Validate 里的数据库段规则一致，但只校验数据库段，
+// 便于「测试连接」在保存前单独校验，而不必牵动采集配置。
+func (d DatabaseConfig) Validate() error {
+	driver := strings.ToLower(strings.TrimSpace(d.Driver))
+	if driver == "" {
+		driver = "sqlite"
+	}
+	switch driver {
+	case "sqlite":
+		if strings.TrimSpace(d.Path) == "" {
+			return fmt.Errorf("database.path 不能为空（driver=sqlite）")
+		}
+	case "mysql":
+		if strings.TrimSpace(d.DSN) == "" {
+			return fmt.Errorf("database.dsn 不能为空（driver=mysql）")
+		}
+		if d.MaxOpenConns < 0 || d.MaxIdleConns < 0 || d.ConnMaxLifetimeMin < 0 {
+			return fmt.Errorf("database 连接池参数不能为负")
+		}
+	default:
+		return fmt.Errorf("database.driver 只支持 sqlite / mysql，实际 %q", d.Driver)
+	}
+	return nil
+}
+
 // WebConfig 描述前端静态资源。
 type WebConfig struct {
 	Dir string `yaml:"dir"`

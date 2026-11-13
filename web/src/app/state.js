@@ -77,6 +77,9 @@ export function createState() {
   })
   const settingsDirty = ref(false)
   const settingsSaving = ref(false)
+  // 数据库「测试连接」：测试中标志 + 结果（{ok, message/error} 或 null）。
+  const dbTesting = ref(false)
+  const dbTestResult = ref(null)
   const error = ref('')
   const notice = ref(null)
   let noticeTimer = null
@@ -155,7 +158,7 @@ export function createState() {
     TOKEN_KEY, TAB_KEY, SIDEBAR_KEY, emptyForm, emptyUserForm, emptySubForm,
     token, me, authReady, initialized, isAdmin, currentUsername, clearAuth, setAuth,
     tab, health, sources, videos, categories, categoryTree, jobs, tasks, users, capacity,
-    settings, settingsForm, dbForm, settingsDirty, settingsSaving, error, notice, notify,
+    settings, settingsForm, dbForm, settingsDirty, settingsSaving, dbTesting, dbTestResult, error, notice, notify,
     videoQuery, videoSource, videoCategory, videoSort,
     videoPage, videoSize, videoHasMore, videoLoading, videoLoadingMore,
     videoEnd, videoSentinel,

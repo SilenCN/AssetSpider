@@ -5,7 +5,7 @@ import { computed, inject } from 'vue'
 import { validateField } from '../settings.js'
 const {
   capacity, settings, settingsForm, dbForm, settingsDirty, settingsSaving,
-  saveSettings
+  saveSettings, dbTesting, dbTestResult, testDatabase
 } = inject('app')
 
 const fields = computed(() => settings.value?.fields || [])
@@ -133,6 +133,15 @@ const canSave = computed(() => settingsDirty.value && !anyInvalid.value && !sett
                   <span class="setting-help">连接最长存活时间，0 用默认 30。</span>
                 </label>
               </template>
+
+              <div class="settings-actions db-test">
+                <button type="button" :disabled="dbTesting || settings.database.readOnly" @click="testDatabase">
+                  {{ dbTesting ? '测试中…' : '测试连接' }}
+                </button>
+                <span v-if="dbTestResult && dbTestResult.ok" class="badge on">连接成功 · {{ dbTestResult.message }}</span>
+                <span v-else-if="dbTestResult && !dbTestResult.ok" class="badge off">{{ dbTestResult.error }}</span>
+                <span v-else class="muted tiny">保存前可先探测当前配置是否可达（不写盘、不影响运行中的连接）</span>
+              </div>
 
               <p class="setting-help mono" v-if="settings.database.display">
                 当前连接目标：{{ settings.database.display }}

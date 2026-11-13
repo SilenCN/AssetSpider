@@ -31,6 +31,8 @@
 | `connMaxLifetimeMin` | MySQL 连接最长存活分钟数，`<=0` 用默认 30 | ≥0 |
 
 > **重启生效**：`driver` / `dsn` / `path` 切换数据库后端需**重启服务**才生效——连接池在启动时建立、运行期不热加载；`maxOpenConns` / `maxIdleConns` / `connMaxLifetimeMin` 同样在下次建立连接时应用，建议一并重启。被 `ASSETSPIDER_DB_*` 环境变量接管的字段在页面标为只读，需改启动环境后重启。保存后写回 `conf/config.yaml` 的 `database` 段、下次启动沿用；校验失败返回 `400`，环境变量锁定的字段被改动时返回明确原因。
+>
+> **保存前可先测试**：数据库卡片里的「测试连接」按钮会把当前表单配置发给 `POST /api/settings/v1/database/test`，后端只建立一条临时连接并 `Ping`、不迁移表结构、不写盘、也不替换运行中的连接，成功返回 `{ok:true}`、失败返回 `{ok:false,error}`；DSN 留空且为 MySQL 时会沿用当前已配置的连接串，因此「保持现有连接串」也能被实测。
 
 实现要点：
 

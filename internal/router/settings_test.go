@@ -147,6 +147,43 @@ func TestSettingsUpdateDatabase(t *testing.T) {
 	}
 }
 
+func TestSettingsTestDatabaseAPI(t *testing.T) {
+	r, dbPath := newTestRouter(t)
+
+	// 1) SQLite 成功：用独立的临时文件作为 path（不触碰运行中的库）。
+	w := doJSON(r, http.MethodPost, "/api/settings/v1/database/test", map[string]interface{}{
+		"database": map[string]interface{}{"driver": "sqlite", "path": dbPath + ".probe"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("测试连接应返回 200: %d %s", w.Code, w.Body.String())
+	}
+	var okRes service.DatabaseTestResult
+	if err := json.Unmarshal(w.Body.Bytes(), &okRes); err != nil {
+		t.Fatal(err)
+	}
+	if !okRes.OK {
+		t.Fatalf("SQLite 应连接成功: %+v", okRes)
+	}
+
+	// 2) MySQL 缺 DSN：校验失败，但仍返回 200 且 ok=false（连接成败是预期探测结果）。
+	w = doJSON(r, http.MethodPost, "/api/settings/v1/database/test", map[string]interface{}{
+		"database": map[string]interface{}{"driver": "mysql"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("测试连接失败也应返回 200: %d %s", w.Code, w.Body.String())
+	}
+	var failRes service.DatabaseTestResult
+	if err := json.Unmarshal(w.Body.Bytes(), &failRes); err != nil {
+		t.Fatal(err)
+	}
+	if failRes.OK {
+		t.Fatalf("MySQL 缺 DSN 应失败: %+v", failRes)
+	}
+	if failRes.Error == "" {
+		t.Fatal("失败应带原因")
+	}
+}
+
 func TestSettingsRequireAdmin(t *testing.T) {
 	r, _ := newTestRouter(t)
 	// 普通用户可读取配置（设置页对他可见但只读）。

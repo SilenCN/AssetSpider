@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/SilenCN/AssetSpider/internal/config"
+	"github.com/SilenCN/AssetSpider/internal/repository"
 )
 
 // SettingField 描述一个可在线编辑的配置项，供前端渲染表单与提示。
@@ -171,4 +172,75 @@ func (s *SettingsService) Update(in SettingsUpdateInput) (SettingsView, error) {
 	}
 	s.crawl.ApplyLive()
 	return s.Get(), nil
+}
+
+// DatabaseTestResult 是「测试连接」的返回：成功返回 ok=true 与说明，失败返回 ok=false 与原因。
+type DatabaseTestResult struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message,omitempty"` // 成功时的说明
+	Error   string `json:"error,omitempty"`   // 失败时的原因（校验失败或连接失败）
+}
+
+// DatabaseTestInput 是「测试连接」的请求载荷，与保存接口的数据库段结构一致。
+type DatabaseTestInput struct {
+	Driver             string `json:"driver"`
+	Path               string `json:"path"`
+	DSN                string `json:"dsn"`
+	MaxOpenConns       int    `json:"maxOpenConns"`
+	MaxIdleConns       int    `json:"maxIdleConns"`
+	ConnMaxLifetimeMin int    `json:"connMaxLifetimeMin"`
+}
+
+// TestDatabase 在保存前探测给定数据库配置是否可达：以当前已保存配置为基准叠加页面提交的值，
+// 校验通过后建立一个临时连接并 Ping，验证完即关闭。
+//
+// 不写盘、不替换运行中的连接（与「保存后重启生效」语义一致）。DSN 留空且为 MySQL 时沿用
+// 当前已配置的连接串，这样「保持现有连接串」也能被实测；连接池参数仅用于建连，不影响可达性判断。
+func (s *SettingsService) TestDatabase(in DatabaseTestInput) DatabaseTestResult {
+	submitted := config.DatabaseConfig{
+		Driver:             in.Driver,
+		Path:               in.Path,
+		DSN:                in.DSN,
+		MaxOpenConns:       in.MaxOpenConns,
+		MaxIdleConns:       in.MaxIdleConns,
+		ConnMaxLifetimeMin: in.ConnMaxLifetimeMin,
+	}
+	base := s.store.Current().Database
+	merged := base
+	if d := strings.ToLower(strings.TrimSpace(submitted.Driver)); d != "" {
+		merged.Driver = d
+	}
+	if p := strings.TrimSpace(submitted.Path); p != "" {
+		merged.Path = p
+	}
+	// DSN 留空表示「保留现有连接串」；只有显式填写时才覆盖（避免误清空已保存的密码）。
+	if merged.Driver == "mysql" && strings.TrimSpace(submitted.DSN) == "" {
+		merged.DSN = base.DSN
+	} else {
+		merged.DSN = strings.TrimSpace(submitted.DSN)
+	}
+	if submitted.MaxOpenConns != 0 {
+		merged.MaxOpenConns = submitted.MaxOpenConns
+	}
+	if submitted.MaxIdleConns != 0 {
+		merged.MaxIdleConns = submitted.MaxIdleConns
+	}
+	if submitted.ConnMaxLifetimeMin != 0 {
+		merged.ConnMaxLifetimeMin = submitted.ConnMaxLifetimeMin
+	}
+
+	if err := merged.Validate(); err != nil {
+		return DatabaseTestResult{OK: false, Error: err.Error()}
+	}
+	if err := repository.TestConnection(repository.Options{
+		Driver:             merged.Driver,
+		Path:               merged.Path,
+		DSN:                merged.DSN,
+		MaxOpenConns:       merged.MaxOpenConns,
+		MaxIdleConns:       merged.MaxIdleConns,
+		ConnMaxLifetimeMin: merged.ConnMaxLifetimeMin,
+	}); err != nil {
+		return DatabaseTestResult{OK: false, Error: err.Error()}
+	}
+	return DatabaseTestResult{OK: true, Message: "连接成功：" + merged.Display()}
 }

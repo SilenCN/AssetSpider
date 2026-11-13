@@ -116,6 +116,7 @@ func registerV1(api *gin.RouterGroup, set controller.Set) {
 	settings := secured.Group("/settings/" + APIVersion)
 	settings.GET("", set.Settings.Get)
 	admin.PUT("/settings/"+APIVersion, set.Settings.Update)
+	admin.POST("/settings/"+APIVersion+"/database/test", set.Settings.TestDatabase)
 
 	// 采集记录
 	jobs := secured.Group("/jobs/" + APIVersion)

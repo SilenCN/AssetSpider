@@ -37,3 +37,19 @@ func (s *SettingsController) Update(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, out)
 }
+
+// TestDatabase 在保存前探测数据库配置是否可达（管理员）。
+//
+// 请求体为 { database: { driver, path, dsn, maxOpenConns, maxIdleConns, connMaxLifetimeMin } }，
+// 与保存接口的数据库载荷共用同一份结构。连接成败是预期的探测结果而非接口异常，
+// 因此统一返回 200：成功 {ok:true,message}，失败 {ok:false,error}。
+func (s *SettingsController) TestDatabase(c *gin.Context) {
+	var req struct {
+		Database service.DatabaseTestInput `json:"database"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, s.svc.TestDatabase(req.Database))
+}
