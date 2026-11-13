@@ -15,7 +15,8 @@ import (
 type AreaRepository interface {
 	// EnsureForVideos 解析一批影片的地域（取自 vod_area），按源去重创建，
 	// 返回 vod_id → area 主键列表 的映射，供 service 在影片入库后回填 video_areas。
-	EnsureForVideos(sourceID uint, videos []model.Video) (map[string][]uint, error)
+	// 可选的 CrawlCache 是采集任务级类目缓存：传入后命中项不再查库、也不再写入。
+	EnsureForVideos(sourceID uint, videos []model.Video, cache ...*CrawlCache) (map[string][]uint, error)
 	// LinkVideos 按 (vod_id → 影片主键) 与 (vod_id → area 主键) 替换本批次影片的地域关联。
 	LinkVideos(idByVod map[string]uint, areasByVod map[string][]uint) error
 	// List 返回地域，按站点与名称排序；sourceID 为 0 时返回全部站点的地域。
@@ -48,7 +49,7 @@ func ParseAreas(raw string) []string {
 //
 // 与标签同理：本函数只创建地域实体，关联回填交由 LinkVideos 完成
 // （影片主键要等 UpsertVideos 之后才可知）。
-func (r *areaRepository) EnsureForVideos(sourceID uint, videos []model.Video) (map[string][]uint, error) {
+func (r *areaRepository) EnsureForVideos(sourceID uint, videos []model.Video, cache ...*CrawlCache) (map[string][]uint, error) {
 	need := make(map[string][]string, len(videos))
 	allNames := make([]string, 0)
 	seenName := make(map[string]struct{})
@@ -73,17 +74,27 @@ func (r *areaRepository) EnsureForVideos(sourceID uint, videos []model.Video) (m
 		return out, nil
 	}
 
+	// 有任务级缓存时纯内存解析（只把真正新增的批量写回并同步缓存），
+	// 无缓存时走原来的事务内批量 find-or-create。
 	var nameToID map[string]uint
-	err := r.db.Transaction(func(tx *gorm.DB) error {
-		ids, err := ensureAreaIDs(tx, sourceID, allNames)
+	if c := cacheMatch(cache, sourceID); c != nil {
+		ids, err := r.ensureAreaIDsCached(sourceID, allNames, c)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		nameToID = ids
-		return nil
-	})
-	if err != nil {
-		return nil, err
+	} else {
+		err := r.db.Transaction(func(tx *gorm.DB) error {
+			ids, err := ensureAreaIDs(tx, sourceID, allNames)
+			if err != nil {
+				return err
+			}
+			nameToID = ids
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	for vodID, names := range need {
@@ -156,44 +167,98 @@ func ensureAreaIDs(tx *gorm.DB, sourceID uint, names []string) (map[string]uint,
 	return out, nil
 }
 
+// ensureAreaIDsCached 用任务级缓存把地域名解析为主键：命中即返回，只有缺失项才
+// 批量插入并写回缓存。与标签同构，绝大多数页都是 0 条 SQL、0 个事务。
+func (r *areaRepository) ensureAreaIDsCached(sourceID uint, names []string, c *CrawlCache) (map[string]uint, error) {
+	first, keys := firstWriteNames(names)
+	out := make(map[string]uint, len(keys))
+	missing := make([]model.Area, 0, len(keys))
+	missingKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if id, ok := c.areas[key]; ok {
+			out[key] = id
+			continue
+		}
+		missing = append(missing, model.Area{SourceID: sourceID, Name: first[key]})
+		missingKeys = append(missingKeys, key)
+	}
+	if len(missing) == 0 {
+		return out, nil
+	}
+	if err := r.db.Transaction(func(tx *gorm.DB) error {
+		return tx.CreateInBatches(&missing, 200).Error
+	}); err != nil {
+		return nil, err
+	}
+	for i, row := range missing {
+		out[missingKeys[i]] = row.ID
+		c.areas[missingKeys[i]] = row.ID
+	}
+	return out, nil
+}
+
 // LinkVideos 用本批次的 (vod_id → 影片主键) 与 (vod_id → area 主键) 替换影片的地域关联。
 //
-// 与标签一致采用「先删后插」：本批次全部影片（含无地域的）的旧关联都清掉，
-// 再写入本次解析结果，因此地域变化或清空都能联动生效，且重复执行幂等。
+// 与标签同构，采用「读现状 → 算差异 → 只写差异」：先一次查询取回本批影片已有的
+// 关联，只有关联确实变化的影片才走「先删后插」。结果保持幂等与自愈（地域变化会
+// 更新、清空会清除历史关联），但地域不变的页不再产生任何 DELETE / INSERT。
 func (r *areaRepository) LinkVideos(idByVod map[string]uint, areasByVod map[string][]uint) error {
 	if len(idByVod) == 0 {
 		return nil
 	}
+	want := make(map[uint]map[uint]struct{}, len(idByVod))
 	vids := make([]uint, 0, len(idByVod))
-	for _, vid := range idByVod {
-		if vid != 0 {
-			vids = append(vids, vid)
+	for vodID, videoID := range idByVod {
+		if videoID == 0 {
+			continue
 		}
+		vids = append(vids, videoID)
+		set := make(map[uint]struct{}, len(areasByVod[vodID]))
+		for _, aid := range areasByVod[vodID] {
+			set[aid] = struct{}{}
+		}
+		want[videoID] = set
 	}
 	if len(vids) == 0 {
 		return nil
 	}
 
+	var rows []model.VideoArea
+	if err := r.db.Model(&model.VideoArea{}).
+		Select("video_id, area_id").
+		Where("video_id IN ?", vids).Scan(&rows).Error; err != nil {
+		return err
+	}
+	have := make(map[uint]map[uint]struct{}, len(rows))
+	for _, row := range rows {
+		if have[row.VideoID] == nil {
+			have[row.VideoID] = make(map[uint]struct{})
+		}
+		have[row.VideoID][row.AreaID] = struct{}{}
+	}
+
+	changed := make([]uint, 0)
+	for videoID, wantSet := range want {
+		if !sameIDSet(have[videoID], wantSet) {
+			changed = append(changed, videoID)
+		}
+	}
+	if len(changed) == 0 {
+		return nil // 关联未变：0 次写入
+	}
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("video_id IN ?", vids).Delete(&model.VideoArea{}).Error; err != nil {
+		if err := tx.Where("video_id IN ?", changed).Delete(&model.VideoArea{}).Error; err != nil {
 			return err
 		}
-		rows := make([]model.VideoArea, 0)
-		for vodID, videoID := range idByVod {
-			if videoID == 0 {
-				continue
-			}
-			seen := make(map[uint]struct{})
-			for _, aid := range areasByVod[vodID] {
-				if _, ok := seen[aid]; ok {
-					continue
-				}
-				seen[aid] = struct{}{}
-				rows = append(rows, model.VideoArea{VideoID: videoID, AreaID: aid})
+		insert := make([]model.VideoArea, 0)
+		for _, videoID := range changed {
+			for aid := range want[videoID] {
+				insert = append(insert, model.VideoArea{VideoID: videoID, AreaID: aid})
 			}
 		}
-		if len(rows) > 0 {
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error; err != nil {
+		if len(insert) > 0 {
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).
+				CreateInBatches(&insert, 200).Error; err != nil {
 				return err
 			}
 		}

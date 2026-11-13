@@ -350,6 +350,14 @@ func (s *CrawlService) crawl(
 	if err := s.applyTypeDefs(src.ID, typeDefs, typeNames); err != nil {
 		log.Printf("站点「%s」预写分类结构失败: %v", src.Name, err)
 	}
+	// 类目缓存必须建在预写分类结构之后，这样一开始就能读到 typelist 补建的一级分类。
+	// 一次采集（含断点续采的每一段）共用这一个缓存，任务结束即丢弃；预读失败只记
+	// 日志并降级为原来的逐页查库路径，不影响采集正确性。
+	cache, err := repository.NewCrawlCache(src.ID, s.categories, s.tags, s.areas)
+	if err != nil {
+		log.Printf("站点「%s」构建类目缓存失败，本次采集退回逐页查库: %v", src.Name, err)
+		cache = nil
+	}
 
 	pageCount := 0
 	maxCursor := src.LastCursor
@@ -438,7 +446,7 @@ func (s *CrawlService) crawl(
 		}
 		// 按视频自带的 type_id / type_name 幂等创建本站分类，并建立关联。
 		// 分类在入库前确定，保证 Video.CategoryID 与分类记录同批写回。
-		ids, err := s.categories.EnsureForVideos(src.ID, videos)
+		ids, err := s.categories.EnsureForVideos(src.ID, videos, cache)
 		if err != nil {
 			res.ResumePage = page
 			return fmt.Errorf("第 %d 页分类归档失败: %w", page, err)
@@ -451,20 +459,20 @@ func (s *CrawlService) crawl(
 		}
 
 		// 按视频自带的 vod_tag 幂等创建本站标签（仅建标签实体，关联回填在影片入库后）。
-		tagIDsByVod, err := s.tags.EnsureForVideos(src.ID, videos)
+		tagIDsByVod, err := s.tags.EnsureForVideos(src.ID, videos, cache)
 		if err != nil {
 			res.ResumePage = page
 			return fmt.Errorf("第 %d 页标签归档失败: %w", page, err)
 		}
 
 		// 地域与标签同理：按 vod_area 幂等创建本站地域，关联同样在入库后回填。
-		areaIDsByVod, err := s.areas.EnsureForVideos(src.ID, videos)
+		areaIDsByVod, err := s.areas.EnsureForVideos(src.ID, videos, cache)
 		if err != nil {
 			res.ResumePage = page
 			return fmt.Errorf("第 %d 页地域归档失败: %w", page, err)
 		}
 
-		stats, err := s.videos.UpsertVideos(videos)
+		stats, err := s.videos.UpsertVideos(videos, cache)
 		if err != nil {
 			res.ResumePage = page
 			return fmt.Errorf("第 %d 页入库失败: %w", page, err)
@@ -477,7 +485,7 @@ func (s *CrawlService) crawl(
 			for i := range videos {
 				allVodIDs = append(allVodIDs, videos[i].VodID)
 			}
-			idByVod, err := s.videos.MapVodIDs(src.ID, allVodIDs)
+			idByVod, err := s.videos.MapVodIDs(src.ID, allVodIDs, cache)
 			if err != nil {
 				res.ResumePage = page
 				return fmt.Errorf("第 %d 页解析影片主键失败: %w", page, err)

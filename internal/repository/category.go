@@ -14,7 +14,7 @@ import (
 type CategoryRepository interface {
 	// EnsureForVideos 按视频自带的分类信息幂等创建本站分类，
 	// 返回 utils.CategoryKey → 分类主键 的映射，供 service 回填 Video.CategoryID。
-	EnsureForVideos(sourceID uint, videos []model.Video) (map[string]uint, error)
+	EnsureForVideos(sourceID uint, videos []model.Video, cache ...*CrawlCache) (map[string]uint, error)
 	// ApplyTypeNames 用苹果CMS typelist 返回的权威分类名称补全本源分类的名称。
 	ApplyTypeNames(sourceID uint, names map[string]string) error
 	// ApplyTypeTree 用苹果CMS typelist 的权威父子关系校正本站分类层级，
@@ -44,8 +44,22 @@ var _ CategoryRepository = (*categoryRepository)(nil)
 // 只会出现在子分类的 type_id_1 中，永远不会作为某条影片的 type_id 出现。因此本函数
 // 除了影片自身的 type_id，还会从每条影片的 type_id_1 推断并预建父级分类，否则父级
 // 永远无从创建，二级分类会沦为永久孤儿。
-func (r *categoryRepository) EnsureForVideos(sourceID uint, videos []model.Video) (map[string]uint, error) {
-	// 第一遍：去重收集候选分类，并记录每个分类的父级 type_id（来自 type_id_1）。
+func (r *categoryRepository) EnsureForVideos(sourceID uint, videos []model.Video, cache ...*CrawlCache) (map[string]uint, error) {
+	candidates := collectCategoryCandidates(sourceID, videos)
+	if len(candidates) == 0 {
+		return map[string]uint{}, nil
+	}
+	// 采集主循环会传入任务级类目缓存：命中即纯内存解析，只有新增 / 变更才写库。
+	// 其它调用方（含既有测试）不传缓存，走下面原来的查库路径，行为不变。
+	if c := cacheMatch(cache, sourceID); c != nil {
+		return r.ensureCategoriesCached(sourceID, candidates, c)
+	}
+	return r.ensureCategoriesDB(sourceID, candidates)
+}
+
+// collectCategoryCandidates 第一遍：去重收集候选分类，并记录每个分类的父级
+// type_id（来自 type_id_1）。缓存路径与查库路径共用，保证两者输入完全一致。
+func collectCategoryCandidates(sourceID uint, videos []model.Video) map[string]model.Category {
 	candidates := make(map[string]model.Category)
 	for i := range videos {
 		v := &videos[i]
@@ -83,12 +97,13 @@ func (r *categoryRepository) EnsureForVideos(sourceID uint, videos []model.Video
 			})
 		}
 	}
-	out := make(map[string]uint, len(candidates))
-	if len(candidates) == 0 {
-		return out, nil
-	}
+	return candidates
+}
 
-	// 第二、三遍：事务内创建/复用分类，再按 type_pid 把二级分类挂到一级分类。
+// ensureCategoriesDB 是不带缓存的原始路径：事务内批量 find-or-create 并归树。
+// 保留它既是为了兼容普通调用方，也让缓存路径可以与之做等价性对照。
+func (r *categoryRepository) ensureCategoriesDB(sourceID uint, candidates map[string]model.Category) (map[string]uint, error) {
+	out := make(map[string]uint, len(candidates))
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		typeIDToID := make(map[string]uint)
 		created := make([]model.Category, 0, len(candidates))

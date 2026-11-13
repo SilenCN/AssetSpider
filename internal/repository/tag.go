@@ -12,7 +12,8 @@ import (
 type TagRepository interface {
 	// EnsureForVideos 解析一批影片的标签（取自 vod_tag，逗号等分隔），按源去重创建标签，
 	// 返回 vod_id → tag 主键列表 的映射，供 service 在影片入库后回填 video_tags 关联。
-	EnsureForVideos(sourceID uint, videos []model.Video) (map[string][]uint, error)
+	// 可选的 CrawlCache 是采集任务级类目缓存：传入后命中项不再查库、也不再写入。
+	EnsureForVideos(sourceID uint, videos []model.Video, cache ...*CrawlCache) (map[string][]uint, error)
 	// LinkVideos 按 (vod_id → 影片主键) 与 (vod_id → tag 主键) 替换本批次影片的标签关联。
 	LinkVideos(idByVod map[string]uint, tagsByVod map[string][]uint) error
 	// List 返回标签，按站点与名称排序；sourceID 为 0 时返回全部站点的标签。
@@ -83,7 +84,7 @@ func splitMultiValues(raw string) []string {
 //
 // 注意：本函数只负责「创建标签实体」，不触碰 video_tags 连接表——影片主键要等
 // UpsertVideos 之后才可知，关联回填交由 LinkVideos 完成。
-func (r *tagRepository) EnsureForVideos(sourceID uint, videos []model.Video) (map[string][]uint, error) {
+func (r *tagRepository) EnsureForVideos(sourceID uint, videos []model.Video, cache ...*CrawlCache) (map[string][]uint, error) {
 	// 第一遍：收集每个影片需要的标签名（vod_id → 标签名切片），并去重全部标签名。
 	need := make(map[string][]string, len(videos))
 	allNames := make([]string, 0)
@@ -109,19 +110,27 @@ func (r *tagRepository) EnsureForVideos(sourceID uint, videos []model.Video) (ma
 		return out, nil
 	}
 
-	// 第二遍：事务内批量 find-or-create。一次查询取回全部已存在标签，只把缺失的
-	// 批量插入，避免按名逐条 find-or-create 的 O(N) 往返。
-	nameToID := make(map[string]uint, len(allNames))
-	err := r.db.Transaction(func(tx *gorm.DB) error {
-		ids, err := ensureTagIDs(tx, sourceID, allNames)
+	// 第二遍：有任务级缓存时纯内存解析（只把真正新增的批量写回并同步缓存），
+	// 无缓存时走原来的事务内批量 find-or-create。
+	var nameToID map[string]uint
+	if c := cacheMatch(cache, sourceID); c != nil {
+		ids, err := r.ensureTagIDsCached(sourceID, allNames, c)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		nameToID = ids
-		return nil
-	})
-	if err != nil {
-		return nil, err
+	} else {
+		err := r.db.Transaction(func(tx *gorm.DB) error {
+			ids, err := ensureTagIDs(tx, sourceID, allNames)
+			if err != nil {
+				return err
+			}
+			nameToID = ids
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 第三遍：把标签名映射成主键，组装 vod_id → tagIDs 返回。
@@ -191,13 +200,57 @@ func ensureTagIDs(tx *gorm.DB, sourceID uint, names []string) (map[string]uint, 
 	return out, nil
 }
 
+// ensureTagIDsCached 用任务级缓存把标签名解析为主键：命中即返回，只有缺失项才
+// 批量插入并写回缓存。采集绝大多数页的标签都已存在，因此这一步通常是 0 条 SQL、
+// 0 个事务；只有站点出现新标签时才写库。
+func (r *tagRepository) ensureTagIDsCached(sourceID uint, names []string, c *CrawlCache) (map[string]uint, error) {
+	first, keys := firstWriteNames(names)
+	out := make(map[string]uint, len(keys))
+	missing := make([]model.Tag, 0, len(keys))
+	missingKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if id, ok := c.tags[key]; ok {
+			out[key] = id
+			continue
+		}
+		missing = append(missing, model.Tag{SourceID: sourceID, Name: first[key]})
+		missingKeys = append(missingKeys, key)
+	}
+	if len(missing) == 0 {
+		return out, nil
+	}
+	if err := r.db.Transaction(func(tx *gorm.DB) error {
+		return tx.CreateInBatches(&missing, 200).Error
+	}); err != nil {
+		return nil, err
+	}
+	for i, row := range missing {
+		out[missingKeys[i]] = row.ID
+		c.tags[missingKeys[i]] = row.ID
+	}
+	return out, nil
+}
+
+// sameIDSet 判断两个主键集合是否完全一致（nil 与空集合视为相同）。
+// 标签 / 地域的关联差异写共用，避免把未变化的影片重写一遍连接表。
+func sameIDSet(a, b map[uint]struct{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // LinkVideos 用本批次的 (vod_id → 影片主键) 与 (vod_id → tag 主键) 替换影片的标签关联。
 //
-// 采用「先删后插」：把本批次所有影片（idByVod 的全部条目，无论有无标签）既有的
-// video_tags 行清空，再写入本次解析出的标签。因此：
-//   - 影片标签变化（如后端修正了 vod_tag）时联动更新；
-//   - 影片标签被清空时，历史关联一并清除，不留残影；
-//   - 同一影片一个批次只出现一次，重复执行幂等。
+// 采用「读现状 → 算差异 → 只写差异」：先一次查询取回本批影片已有的关联，与本次
+// 解析结果比对；只有关联确实变化的影片才走「先删后插」。结果与过去无条件重写
+// 完全一致（标签变化会更新、清空会清除历史关联、重复执行幂等），但绝大多数页
+// 标签没变，因而不再产生任何 DELETE / INSERT，避免逐页无条件重写连接表。
 //
 // 调用方必须把「本批次全部影片」的 id 传入 idByVod（而不只是有标签的），否则无标签
 // 影片的旧关联无法被清理。
@@ -205,39 +258,60 @@ func (r *tagRepository) LinkVideos(idByVod map[string]uint, tagsByVod map[string
 	if len(idByVod) == 0 {
 		return nil
 	}
+	want := make(map[uint]map[uint]struct{}, len(idByVod))
 	vids := make([]uint, 0, len(idByVod))
-	for _, vid := range idByVod {
-		if vid != 0 {
-			vids = append(vids, vid)
+	for vodID, videoID := range idByVod {
+		if videoID == 0 {
+			continue
 		}
+		vids = append(vids, videoID)
+		set := make(map[uint]struct{}, len(tagsByVod[vodID]))
+		for _, tid := range tagsByVod[vodID] {
+			set[tid] = struct{}{}
+		}
+		want[videoID] = set
 	}
 	if len(vids) == 0 {
 		return nil
 	}
 
+	// 一次查询取回本批影片现有关联（video_id 上有主键索引，是小批量点查）。
+	var rows []model.VideoTag
+	if err := r.db.Model(&model.VideoTag{}).
+		Select("video_id, tag_id").
+		Where("video_id IN ?", vids).Scan(&rows).Error; err != nil {
+		return err
+	}
+	have := make(map[uint]map[uint]struct{}, len(rows))
+	for _, row := range rows {
+		if have[row.VideoID] == nil {
+			have[row.VideoID] = make(map[uint]struct{})
+		}
+		have[row.VideoID][row.TagID] = struct{}{}
+	}
+
+	changed := make([]uint, 0)
+	for videoID, wantSet := range want {
+		if !sameIDSet(have[videoID], wantSet) {
+			changed = append(changed, videoID)
+		}
+	}
+	if len(changed) == 0 {
+		return nil // 关联未变：0 次写入
+	}
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		// 清理本批全部影片的旧关联（含无标签影片，从而清除被移除的历史标签）。
-		if err := tx.Where("video_id IN ?", vids).Delete(&model.VideoTag{}).Error; err != nil {
+		if err := tx.Where("video_id IN ?", changed).Delete(&model.VideoTag{}).Error; err != nil {
 			return err
 		}
-		// 批量写入新关联（去重 tagID，避免同一标签重复插入导致主键冲突）。
-		rows := make([]model.VideoTag, 0)
-		for vodID, videoID := range idByVod {
-			if videoID == 0 {
-				continue
-			}
-			seen := make(map[uint]struct{})
-			for _, tid := range tagsByVod[vodID] {
-				if _, ok := seen[tid]; ok {
-					continue
-				}
-				seen[tid] = struct{}{}
-				rows = append(rows, model.VideoTag{VideoID: videoID, TagID: tid})
+		insert := make([]model.VideoTag, 0)
+		for _, videoID := range changed {
+			for tid := range want[videoID] {
+				insert = append(insert, model.VideoTag{VideoID: videoID, TagID: tid})
 			}
 		}
-		if len(rows) > 0 {
-			// 用 OnConflict 兜底：极端并发下若已有相同关联则忽略，不报错。
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error; err != nil {
+		if len(insert) > 0 {
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).
+				CreateInBatches(&insert, 200).Error; err != nil {
 				return err
 			}
 		}

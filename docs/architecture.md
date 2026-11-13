@@ -28,13 +28,20 @@ router  →  controller  →  service  →  repository
 | `CrawlJob` | `repository/job.go` | `JobRepository` | `CreateJob` / `FinishJob` / `ListJobs` |
 | `User` / `Session` / `UserSource` | `repository/user.go` | `UserRepository` | 账号 CRUD、会话签发/校验/吊销、站点授权读写 |
 
-`repository/store.go` 只是容器：`Repositories` 共享一条 `*gorm.DB`，负责连接、自动迁移、装配各实体对象与 `Path` / `Close`，**不承载任何实体读写方法**；`errors.go` 放各对象共用的 `ErrNotFound`，`visibility.go` 放各实体共用的「可见站点白名单」过滤规则，`video_search.go` / `video_bigram.go` 是检索层共用的索引定义、查询条件与历史数据回灌（包级函数，不挂在容器上）；评分排序与其表达式索引已移除（`video_sort_index.go` 已删除），启动路径不再有同步 `CREATE INDEX`；`video_maintenance.go` 把分钟级的 bigram 历史回灌收敛成启动后的后台任务，保证服务立即开始监听。列表走 `model.VideoCard` 卡片投影（只 SELECT 卡片字段），完整 `model.Video` 由 `GetVideo` 在用户点开影片时按 id 返回。测试同样按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go` / `user_test.go`，`store_test.go` 只测连接与装配。
+`repository/store.go` 只是容器：`Repositories` 共享一条 `*gorm.DB`，负责连接、自动迁移、装配各实体对象与 `Path` / `Close`，**不承载任何实体读写方法**；`errors.go` 放各对象共用的 `ErrNotFound`，`visibility.go` 放各实体共用的「可见站点白名单」过滤规则，`video_search.go` / `video_bigram.go` 是检索层共用的索引定义、查询条件与历史数据回灌，`crawl_cache.go` / `category_cache.go` 是采集会话类目缓存与分类缓存归档路径（同样是包级函数 / 实体方法，不挂在容器上）；评分排序与其表达式索引已移除（`video_sort_index.go` 已删除），启动路径不再有同步 `CREATE INDEX`；`video_maintenance.go` 把分钟级的 bigram 历史回灌收敛成启动后的后台任务，保证服务立即开始监听。列表走 `model.VideoCard` 卡片投影（只 SELECT 卡片字段），完整 `model.Video` 由 `GetVideo` 在用户点开影片时按 id 返回。测试同样按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go` / `user_test.go`，`store_test.go` 只测连接与装配。
 
 **采集写入采用批量策略**（避免逐条 SQL 往返拖慢大站采集）：
 
 - `UpsertVideos` 对整批按 `(source_id, vod_id)` **只发 1 次 SELECT** 取回已存在行，在内存里分成「新增 / 未变 / 已变」三组：新增走 `CreateInBatches`，已变走 `INSERT … ON CONFLICT DO UPDATE` 批量更新业务列（保留 `first_seen_at` / `created_at`，FTS5 / bigram 行级触发器逐行同步两套倒排索引），未变只按 `id IN` 批量刷 `last_seen_at` 并按需补历史数据缺失的 `category_id` / `vod_play_list`。全程仍在单事务内，atomic 不变；`New / Updated / Unchanged` 统计、批内重复 (后写覆盖前写)、跨站点同 `vod_id` 互不干扰等语义全部保留。
 - 分类 / 标签 / 地域的 `EnsureForVideos` 同样改为「一次批量查询取回已存在 → 只把缺失项 `CreateInBatches`」，替代原先按名逐条 find-or-create。
 - 实测（临时库、GORM SQL 计数）：50 条纯新增 **2 条 SQL**（旧 ~100）、50 条全未变 **2 条**（旧 ~50）、40 条影片首采归档（标签/地域/分类各 40 新值）**7 条**（旧 ~240）；5000 条批量写入约 **2341 条/秒**、全未变重复扫描约 **12141 条/秒**。SQL 语句数从 O(N) 降为 O(N/批量 + 常数)。
+
+**采集会话类目缓存**解决的是「页与页之间」的重复：批量化只压掉了一页内 N 条的往返，但大站采集动辄上千页，每页仍会重复查同一批分类 / 标签 / 地域、重复开事务、把没变化的分类再 UPDATE 一遍，SQLite 单写者的事务提交会成为主要开销。
+
+- `CrawlCache`（`crawl_cache.go`）在任务开始时一次性 `List` 本源的 `categories` / `tags` / `areas` 建内存索引，之后每页的 `EnsureForVideos` 只做内存比对：**命中且无变化就 0 条 SQL、0 个事务**，只有真正新增或改名 / 补父级才批量写回并同步缓存。分类的父子归树与孤儿回挂（`category_cache.go`）也在内存里算出差异，不再每页全表扫描 + 逐个查父级。
+- `UpsertVideos` 顺手把解析出的 `vod_id → 主键` 写进缓存，`MapVodIDs` 直接命中，省掉「刚入库又按 vod_id 查一次主键」的往返；`LinkVideos` 改为「读现状 → 算差异 → 只写差异」，关联没变的页不再无条件 `DELETE` + `INSERT`，语义仍是幂等、可自愈。
+- 缓存生命周期是一次 `crawl`（含断点续采的每一段），按 `sourceID` 独立、不跨任务共享、无需加锁，任务结束即丢弃、下次任务重新读库。所有仓储方法都以**可选变参**接收缓存，不传就走原查库路径；`crawl_cache_test.go` 用两个独立库逐页比对，保证两条路径结果逐字一致。
+- 实测（临时库、GORM SQL 计数）：类目全部命中的重复页，三次 `EnsureForVideos` **0 条 SQL**（逐页查库 4 条），整页链路 **4 条 / 9 条**。
 
 约束的具体落地：
 
@@ -96,6 +103,8 @@ router  →  controller  →  service  →  repository
 │   │   ├── video.go              # VideoRepository      → model.Video（全字段 upsert）
 │   │   ├── category.go           # CategoryRepository   → model.Category（自动归档）
 │   │   ├── tag.go                # TagRepository        → model.Tag / VideoTag（自动归档、多对多）
+│   │   ├── crawl_cache.go        # 采集会话类目缓存（分类/标签/地域一次性预读）
+│   │   ├── category_cache.go     # 分类缓存归档路径（父子归树纯内存算差异）
 │   │   ├── job.go                # JobRepository        → model.CrawlJob
 │   │   ├── subscription.go        # SubscriptionRepository → model.Subscription
 │   │   └── *_test.go             # 每个实体各一份测试 + store_test.go

@@ -41,7 +41,9 @@ func NewVideoQuery(sourceID uint, keyword string, page, size int) VideoQuery {
 
 // VideoRepository 是 Video 实体的数据访问契约。
 type VideoRepository interface {
-	UpsertVideos(items []model.Video) (UpsertStats, error)
+	// UpsertVideos 按 (source_id, vod_id) 批量去重写入。可选传入采集任务级
+	// CrawlCache：写入后把解析出的影片主键登记进缓存，供 MapVodIDs 直接命中。
+	UpsertVideos(items []model.Video, cache ...*CrawlCache) (UpsertStats, error)
 	// 读取类方法都接受可选的站点白名单，语义见 visibility.go。
 	GetVideo(id uint, visible ...[]uint) (*model.Video, error)
 	// ListVideos 返回本页影片的卡片投影，只 SELECT 卡片需要的列，
@@ -50,7 +52,8 @@ type VideoRepository interface {
 	// 完整记录由 GetVideo 在用户点开影片时按 id 单独返回。
 	ListVideos(query VideoQuery) ([]model.VideoCard, error)
 	// MapVodIDs 把一批 vod_id 解析为库内影片主键，供标签关联回填等场景使用。
-	MapVodIDs(sourceID uint, vodIDs []string) (map[string]uint, error)
+	// 传入采集任务级 CrawlCache 时先查缓存，全部命中则不发 SQL。
+	MapVodIDs(sourceID uint, vodIDs []string, cache ...*CrawlCache) (map[string]uint, error)
 	// CountVideos 返回某站点已入库的影片总数，供站点表的 video_count 快照回写。
 	CountVideos(sourceID uint) (int64, error)
 	CountVideosBySource(visible ...[]uint) (map[uint]int64, error)
@@ -94,7 +97,7 @@ type existingVideo struct {
 // CreateInBatches 一次写多行的 SQL；已变用 ON CONFLICT 一次 upsert 多行；
 // 未变按「是否需补列」分组批量 UPDATE。往返次数从 O(3N) 降到 O(N/batch+常数)。
 // 整个过程仍在单个事务内，保证原子性；FTS5 的行级触发器对批量语句同样逐行生效。
-func (r *videoRepository) UpsertVideos(items []model.Video) (UpsertStats, error) {
+func (r *videoRepository) UpsertVideos(items []model.Video, cache ...*CrawlCache) (UpsertStats, error) {
 	var stats UpsertStats
 	if len(items) == 0 {
 		return stats, nil
@@ -168,12 +171,14 @@ func (r *videoRepository) UpsertVideos(items []model.Video) (UpsertStats, error)
 				stats.Unchanged++
 				toTouch = append(toTouch, v)
 				touchIDs = append(touchIDs, ex.ID)
+				recordVideoID(cache, k.sourceID, k.vodID, ex.ID)
 			default:
 				// 回填既有主键与首见时间：ON CONFLICT 更新时不覆盖这两列。
 				v.ID = ex.ID
 				v.FirstSeenAt, v.LastSeenAt = ex.FirstSeenAt, now
 				toUpsert = append(toUpsert, v)
 				stats.Updated++
+				recordVideoID(cache, k.sourceID, k.vodID, ex.ID)
 			}
 		}
 
@@ -183,6 +188,9 @@ func (r *videoRepository) UpsertVideos(items []model.Video) (UpsertStats, error)
 		if len(toCreate) > 0 {
 			if err := tx.CreateInBatches(toCreate, batchSize).Error; err != nil {
 				return fmt.Errorf("批量新增影片: %w", err)
+			}
+			for _, v := range toCreate {
+				recordVideoID(cache, v.SourceID, v.VodID, v.ID)
 			}
 		}
 
@@ -271,10 +279,28 @@ func (r *videoRepository) GetVideo(id uint, visible ...[]uint) (*model.Video, er
 
 // MapVodIDs 把一批 vod_id 解析为库内影片主键。
 // 仅查指定站点，返回 vod_id → 主键 的映射（查不到的 vod_id 不出现在结果里）。
-func (r *videoRepository) MapVodIDs(sourceID uint, vodIDs []string) (map[string]uint, error) {
+//
+// 传入采集任务级 CrawlCache 时，优先命中缓存里由 UpsertVideos 登记的主键：
+// 采集主循环里这批影片刚入库，全部命中即可 0 次查询。少量未命中（例如缓存建立
+// 之前就已存在、且本页未走 Upsert 的影片）仍回库补齐，并把结果写回缓存。
+func (r *videoRepository) MapVodIDs(sourceID uint, vodIDs []string, cache ...*CrawlCache) (map[string]uint, error) {
 	out := make(map[string]uint, len(vodIDs))
 	if len(vodIDs) == 0 {
 		return out, nil
+	}
+	remaining := vodIDs
+	if c := cacheMatch(cache, sourceID); c != nil {
+		remaining = make([]string, 0)
+		for _, id := range vodIDs {
+			if v, ok := c.videoIDs[id]; ok && v != 0 {
+				out[id] = v
+			} else {
+				remaining = append(remaining, id)
+			}
+		}
+		if len(remaining) == 0 {
+			return out, nil
+		}
 	}
 	type kv struct {
 		VodID string
@@ -282,12 +308,17 @@ func (r *videoRepository) MapVodIDs(sourceID uint, vodIDs []string) (map[string]
 	}
 	var rows []kv
 	if err := r.db.Model(&model.Video{}).
-		Where("source_id = ? AND vod_id IN ?", sourceID, vodIDs).
+		Where("source_id = ? AND vod_id IN ?", sourceID, remaining).
 		Select("vod_id, id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	for _, row := range rows {
 		out[row.VodID] = row.ID
+	}
+	if c := cacheMatch(cache, sourceID); c != nil {
+		for k, v := range out {
+			c.videoIDs[k] = v
+		}
 	}
 	return out, nil
 }
