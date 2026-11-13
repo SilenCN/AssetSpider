@@ -390,8 +390,11 @@ type categoryParentRef struct {
 //
 // 排除 "0"、空值与「父级等于自身」这三种无效引用。sourceID 为 0 时查全部站点。
 func referencedParentIDs(tx *gorm.DB, sourceID uint) ([]categoryParentRef, error) {
+	// 用派生表而不是 WITH ... CTE：MySQL 5.7 还不支持 CTE，而这段 SQL 会在
+	// 采集归档分类树的热路径上执行，两种方言都必须能跑。UNION 已去重，
+	// 外层 GROUP BY 只是保留原有的分组语义。
 	const sql = `
-WITH refs AS (
+SELECT source_id, pid FROM (
   SELECT source_id, TRIM(type_id_1) AS pid FROM videos
    WHERE TRIM(COALESCE(type_id_1, '')) NOT IN ('', '0')
      AND TRIM(COALESCE(type_id_1, '')) <> TRIM(COALESCE(type_id, ''))
@@ -399,8 +402,7 @@ WITH refs AS (
   SELECT source_id, TRIM(type_pid) AS pid FROM categories
    WHERE TRIM(COALESCE(type_pid, '')) NOT IN ('', '0')
      AND TRIM(COALESCE(type_pid, '')) <> TRIM(COALESCE(type_id, ''))
-)
-SELECT source_id, pid FROM refs
+) AS refs
  WHERE (? = 0 OR source_id = ?)
  GROUP BY source_id, pid`
 	var rows []categoryParentRef

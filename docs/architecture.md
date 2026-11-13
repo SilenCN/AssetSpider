@@ -15,7 +15,7 @@ router  →  controller  →  service  →  repository
 | 1 路由 | `internal/router` | 注册 URL → handler、静态资源与 SPA 回退 | 仅 `controller` |
 | 2 控制器 | `internal/controller` | 绑定请求参数、调用服务、把结果/错误翻译成 HTTP 响应 | 仅 `service` |
 | 3 服务 | `internal/service` | 业务校验与默认值、采集编排、游标与去重、错误语义 | `repository`、`model`、`config`、本层子包 `service/collector` |
-| 4 仓储 | `internal/repository` | 每个实体一个文件、一个对象、一个接口；GORM/SQLite 读写、事务与级联清理 | 仅 `model` |
+| 4 仓储 | `internal/repository` | 每个实体一个文件、一个对象、一个接口；GORM 读写（SQLite / MySQL 双后端，方言分支集中在 `store.go` 与 `video_search_mysql.go`）、事务与级联清理 | 仅 `model` |
 
 仓储层按实体严格拆分，不允许把不同实体的方法揉进同一个对象：
 
@@ -28,7 +28,7 @@ router  →  controller  →  service  →  repository
 | `CrawlJob` | `repository/job.go` | `JobRepository` | `CreateJob` / `FinishJob` / `ListJobs` |
 | `User` / `Session` / `UserSource` | `repository/user.go` | `UserRepository` | 账号 CRUD、会话签发/校验/吊销、站点授权读写 |
 
-`repository/store.go` 只是容器：`Repositories` 共享一条 `*gorm.DB`，负责连接、自动迁移、装配各实体对象与 `Path` / `Close`，**不承载任何实体读写方法**；`errors.go` 放各对象共用的 `ErrNotFound`，`visibility.go` 放各实体共用的「可见站点白名单」过滤规则，`video_search.go` / `video_bigram.go` 是检索层共用的索引定义、查询条件与历史数据回灌，`crawl_cache.go` / `category_cache.go` 是采集会话类目缓存与分类缓存归档路径（同样是包级函数 / 实体方法，不挂在容器上）；评分排序与其表达式索引已移除（`video_sort_index.go` 已删除），启动路径不再有同步 `CREATE INDEX`；`video_maintenance.go` 把分钟级的 bigram 历史回灌收敛成启动后的后台任务，保证服务立即开始监听。列表走 `model.VideoCard` 卡片投影（只 SELECT 卡片字段），完整 `model.Video` 由 `GetVideo` 在用户点开影片时按 id 返回。测试同样按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go` / `user_test.go`，`store_test.go` 只测连接与装配。
+`repository/store.go` 只是容器：`Repositories` 共享一条 `*gorm.DB`，负责连接、自动迁移、装配各实体对象与 `Path` / `Close`，**不承载任何实体读写方法**；`errors.go` 放各对象共用的 `ErrNotFound`，`visibility.go` 放各实体共用的「可见站点白名单」过滤规则，`video_search.go` / `video_bigram.go` 是 SQLite 检索层共用的索引定义、查询条件与历史数据回灌，`video_search_mysql.go` 是 MySQL 后端的 ngram FULLTEXT 检索定义与后台建索引，`dialect.go` 是方言识别 / DSN 规范化 / 连接池配置（业务代码只认 GORM 标准 API，SQLite 专有的 PRAGMA / FTS5 / bigram 与 MySQL 专有的 FULLTEXT 都收敛在此处，互不串门），`crawl_cache.go` / `category_cache.go` 是采集会话类目缓存与分类缓存归档路径（同样是包级函数 / 实体方法，不挂在容器上）；评分排序与其表达式索引已移除（`video_sort_index.go` 已删除），启动路径不再有同步 `CREATE INDEX`；`video_maintenance.go` 把分钟级的 bigram 历史回灌收敛成启动后的后台任务，保证服务立即开始监听（MySQL 后端的 FULLTEXT 建索引同样在后台异步进行）。列表走 `model.VideoCard` 卡片投影（只 SELECT 卡片字段），完整 `model.Video` 由 `GetVideo` 在用户点开影片时按 id 返回。测试同样按实体拆为 `asset_test.go` / `source_test.go` / `video_test.go` / `job_test.go` / `user_test.go`，`store_test.go` 只测连接与装配，`mysql_search_test.go` 用 DryRun 校验 MySQL 检索 SQL。
 
 **采集写入采用批量策略**（避免逐条 SQL 往返拖慢大站采集）：
 

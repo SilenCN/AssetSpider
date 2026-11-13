@@ -3,6 +3,7 @@ package repository
 import (
 	"fmt"
 	"reflect"
+	"sync/atomic"
 	"time"
 
 	"github.com/SilenCN/AssetSpider/internal/model"
@@ -62,19 +63,40 @@ type VideoRepository interface {
 
 // videoRepository 是 Video 实体专属的仓储对象。
 type videoRepository struct {
-	db *gorm.DB
-	// search 表示 trigram 全文索引（videos_fts）是否可用，启动时探测一次即可。
-	// bigram 不缓存：历史回灌在后台跑，完成时写 video_bigram_state，查询时动态
-	// 读一次主键点查（开销可忽略）就能从 LIKE 切到倒排表，无需重启或重建仓储。
-	search bool
+	db      *gorm.DB
+	dialect Dialect
+	// searchReady 表示全文索引是否可用。SQLite 的 FTS5 表在 Open 里同步建好；
+	// MySQL 的 ADD FULLTEXT INDEX 在后台建，完成后由 maintainMySQLFulltext
+	// 置位，查询无需重启即可从 LIKE 切到 MATCH。
+	searchReady *atomic.Bool
 }
 
 func NewVideoRepository(db *gorm.DB) VideoRepository {
-	return &videoRepository{db: db, search: videoSearchTableExists(db)}
+	return newVideoRepository(db, dialectOf(db), nil)
 }
 
-// bigram 返回两字倒排表是否已回灌完毕。后台任务完成后状态立即生效。
-func (r *videoRepository) bigram() bool { return videoBigramReady(r.db) }
+// newVideoRepository 供 OpenOptions 注入共享的就绪标记；独立构造（含测试）时
+// 传 nil，自行按方言探测一次。
+func newVideoRepository(db *gorm.DB, d Dialect, ready *atomic.Bool) *videoRepository {
+	if ready == nil {
+		ready = &atomic.Bool{}
+		if d == DialectMySQL {
+			ready.Store(mysqlFulltextExists(db))
+		} else {
+			ready.Store(videoSearchTableExists(db))
+		}
+	}
+	return &videoRepository{db: db, dialect: d, searchReady: ready}
+}
+
+// bigram 返回 SQLite 两字倒排表是否已回灌完毕。MySQL 走 ngram 全文索引，
+// 不需要也不创建 video_bigrams 表，直接返回 false。
+func (r *videoRepository) bigram() bool {
+	if r.dialect == DialectMySQL {
+		return false
+	}
+	return videoBigramReady(r.db)
+}
 
 var _ VideoRepository = (*videoRepository)(nil)
 
@@ -377,7 +399,12 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.VideoCard, error
 		q = q.Where("category_id IN ?", ids)
 	}
 	if query.Keyword != "" {
-		q = applyVideoKeyword(q, query.Keyword, videoSearchCaps{fts: r.search, bigram: r.bigram()})
+		fts := r.searchReady.Load()
+		q = applyVideoKeyword(q, query.Keyword, videoSearchCaps{
+			fts:           r.dialect == DialectSQLite && fts,
+			bigram:        r.bigram(),
+			mysqlFulltext: r.dialect == DialectMySQL && fts,
+		})
 	}
 	// 一次查询拿本页卡片即可，不做 COUNT、不多取一条。
 	var items []model.VideoCard

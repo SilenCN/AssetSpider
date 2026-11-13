@@ -29,8 +29,17 @@ type App struct {
 
 // New 按四层顺序完成构造与注入。
 func New(cfg *config.Config) (*App, error) {
-	// 第 4 层：数据访问，每个实体一个独立仓储对象
-	repos, err := repository.Open(cfg.Database.Path)
+	// 第 4 层：数据访问，每个实体一个独立仓储对象。
+	// 数据库后端由 database.driver 决定（sqlite 默认 / mysql），检索索引按方言装配。
+	repos, err := repository.OpenOptions(repository.Options{
+		Driver:             cfg.Database.Driver,
+		Path:               cfg.Database.Path,
+		DSN:                cfg.Database.DSN,
+		MaxOpenConns:       cfg.Database.MaxOpenConns,
+		MaxIdleConns:       cfg.Database.MaxIdleConns,
+		ConnMaxLifetimeMin: cfg.Database.ConnMaxLifetimeMin,
+		Display:            cfg.Database.Display(),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("初始化数据库失败: %w", err)
 	}

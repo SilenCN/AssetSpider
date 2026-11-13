@@ -58,7 +58,7 @@ const canSave = computed(() => settingsDirty.value && !anyInvalid.value && !sett
             <summary>启动项（只读，需改配置文件并重启）</summary>
             <div class="settings-static">
               <div><span>监听地址</span><b class="mono">{{ settings.static?.serverAddr }}</b></div>
-              <div><span>数据库路径</span><b class="mono">{{ settings.static?.databasePath }}</b></div>
+              <div><span>数据库</span><b class="mono">{{ settings.static?.databaseDriver }} · {{ settings.static?.databasePath }}</b></div>
               <div><span>前端目录</span><b class="mono">{{ settings.static?.webDir }}</b></div>
               <div><span>会话有效期</span><b class="mono">{{ settings.static?.tokenTtlHours }} 小时</b></div>
               <div><span>密码哈希强度</span><b class="mono">{{ settings.static?.bcryptCost }}</b></div>

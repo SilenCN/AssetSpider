@@ -9,7 +9,7 @@
 | 层 | 选型 |
 | --- | --- |
 | Web 框架 | Gin |
-| ORM / 数据库 | GORM + SQLite（纯 Go 驱动 modernc.org/sqlite，无 CGO） |
+| ORM / 数据库 | GORM + SQLite（纯 Go 驱动 modernc.org/sqlite，无 CGO）**或** MySQL（InnoDB FULLTEXT + ngram，可选后端） |
 | 前端 | Vue 3 + Vite + hls.js（m3u8 播放，按需动态加载） |
 | 配置 | `conf/config.yaml`（YAML） |
 | 认证 | bcrypt 密码哈希 + 随机令牌（仅存 SHA-256 摘要）+ Gin 中间件 |
@@ -31,7 +31,7 @@ go test ./...
 go build -o bin/assetspider .
 ```
 
-浏览器打开 http://localhost:8080 ：**第一个登录的账号会自动注册为管理员**（用户名密码自行设定，无需预先建号），之后可在「用户管理」里创建普通用户并勾选其可见站点。管理员在「站点配置」里添加 JSON 接口，点「全量」即可采集入库。数据库默认创建在 `data/assetspider.db`（父目录自动创建）。
+浏览器打开 http://localhost:8080 ：**第一个登录的账号会自动注册为管理员**（用户名密码自行设定，无需预先建号），之后可在「用户管理」里创建普通用户并勾选其可见站点。管理员在「站点配置」里添加 JSON 接口，点「全量」即可采集入库。数据库默认创建在 `data/assetspider.db`（父目录自动创建）。也可在 `conf/config.yaml` 里把 `database.driver` 设为 `mysql` 并填 `database.dsn`，改走 MySQL（关键词检索走 InnoDB FULLTEXT + ngram 分词器，详见[配置](docs/configuration.md)）。
 
 > 生产环境：push 到 `main` 会自动部署到服务器并启动服务，详见 [部署](docs/deployment.md)。
 

@@ -32,7 +32,12 @@
 server:
   addr: ":8080"
 database:
-  path: "data/assetspider.db"   # 相对或绝对路径，可配置
+  driver: "sqlite"             # sqlite（默认）| mysql
+  path: "data/assetspider.db"  # driver=sqlite 时的文件路径，相对或绝对路径
+  dsn: ""                      # driver=mysql 时的连接串，含账号密码，切勿提交到公开仓库
+  max_open_conns: 16           # MySQL 连接池上限，<=0 用默认 16
+  max_idle_conns: 8            # MySQL 空闲连接上限，<=0 用默认（上限一半）
+  conn_max_lifetime_minutes: 30 # MySQL 连接最长存活分钟数，<=0 用默认 30
 web:
   dir: "web/dist"
 collector:
@@ -51,10 +56,16 @@ auth:
   bcrypt_cost: 10                # 密码哈希强度，4..31，越大越慢
 ```
 
-环境变量覆盖：`ASSETSPIDER_SERVER_ADDR`、`ASSETSPIDER_DB_PATH`、`ASSETSPIDER_WEB_DIR`，
+环境变量覆盖：`ASSETSPIDER_SERVER_ADDR`、`ASSETSPIDER_DB_PATH`、`ASSETSPIDER_WEB_DIR`、
+`ASSETSPIDER_DB_DRIVER` / `ASSETSPIDER_DB_DSN` / `ASSETSPIDER_DB_MAX_OPEN_CONNS` / `ASSETSPIDER_DB_MAX_IDLE_CONNS` / `ASSETSPIDER_DB_CONN_MAX_LIFETIME`、
 `ASSETSPIDER_AUTH_TOKEN_TTL_HOURS` / `ASSETSPIDER_AUTH_BCRYPT_COST`，以及
 `ASSETSPIDER_COLLECTOR_TIMEOUT` / `_MAX_PAGES` / `_PAGE_SIZE` / `_DEFAULT_HOURS` / `_MAX_CONCURRENT` / `_RETRY_TIMES` / `_RETRY_BACKOFF` / `_PROGRESS_SAVE` / `_PAGE_INTERVAL` / `_USER_AGENT`
 （旧变量名 `_PARALLEL` 仍兼容，等价于 `_MAX_CONCURRENT`）。
+
+数据库后端选择：
+
+- **driver=sqlite（默认）**：沿用 `path` 指向的本地 SQLite 文件，单连接、无需额外服务，适合单机与小数据量。
+- **driver=mysql**：忽略 `path`，改走 `dsn` 连接串；连接池参数（max_open_conns / max_idle_conns / conn_max_lifetime）仅对 MySQL 生效。首次启动自动建表（`utf8mb4`），关键词检索走 **InnoDB FULLTEXT + ngram 分词器**（见下文），索引在后台异步建立、建好前自动降级为 `LIKE`，结果与 SQLite 分支完全一致。
 `-config` 指定其他配置文件，未填写的字段沿用默认值。
 `collector` 段的全部字段都可在页面「系统设置」里在线修改：保存即写回本文件并让运行中的采集器立即用上新值；被上面的 `ASSETSPIDER_COLLECTOR_*` 环境变量接管的字段在页面标为只读，需改启动环境后重启。
 
@@ -154,6 +165,8 @@ trigram 把文本切成三字符片段，天然支持中文子串与英文子串
 > **边界与降级**：若底层 SQLite 未编译 FTS5，建表失败只打日志并整体退回 `LIKE`；bigram 表建立 / 回灌失败同样只降级，都不影响启动。1 字关键词仍走 `LIKE` 全表扫描。
 >
 > **存储代价**：15 万条影片的库从 73 MB 涨到 105 MB（+43%，主要是 6 列文本的 trigram 倒排表）；在大文本量的真实库上，bigram 倒排表额外约 +12%（578 MB → 650 MB，272 万条片段，含按 `video_id` 反查的二级索引）。若要压缩，可只把真正会被搜索的列放进索引，代价是这几列以外的字段不再参与关键词检索。
+
+**MySQL 后端的关键词检索**：`driver=mysql` 时不再有 FTS5 / bigram，统一用 InnoDB 的 **FULLTEXT 索引 + ngram 分词器**（`ALTER TABLE videos ADD FULLTEXT INDEX ft_videos_search (...) WITH PARSER ngram`）。ngram 把中文切成 2 字片段，因此 **2 字及以上**都走 `MATCH(...) AGAINST (? IN BOOLEAN MODE)`、1 字回退六列 `LIKE`，参与检索的六列与 SQLite 分支完全一致。查询用双引号短语（`"流浪地球"`）保持连续子串语义，避免 BOOLEAN MODE 默认多词 OR 放宽成「任一词命中」；`+ - @ > < ( ) ~ * "` 等操作符被替换成空格，既不会拼坏语句，也让含符号的片名仍能搜到。MariaDB 不支持 ngram parser，`ADD FULLTEXT` 会失败并降级 `LIKE`，不影响启动与结果正确性。索引在大表上会重建整表、持有 metadata lock，故放在后台异步建立（建好前 `ready=false`、检索走 `LIKE`），并由每分钟一次的 `information_schema` 轻量探测动态启用 / 失效（DBA 手工建好或删除索引都无需重启）。`mysql_search_test.go` 用 GORM 的 `ToSQL` 在 DryRun 下校验了「≥2 字生成 MATCH … AGAINST、1 字与含通配符降级 LIKE、短语转义、ON DUPLICATE KEY UPDATE 由 GORM 自动生成」等 SQL 形态。
 
 **查询侧的两处配合**：
 

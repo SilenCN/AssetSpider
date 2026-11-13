@@ -106,7 +106,7 @@ func TestUpsertVideosBatchesAndCounts(t *testing.T) {
 	counted := r.Videos.(*videoRepository).db.Session(&gorm.Session{
 		Logger: countingLogger{Interface: gormlogger.Default.LogMode(gormlogger.Silent), n: &n},
 	})
-	stats2, err := (&videoRepository{db: counted, search: true}).UpsertVideos(batch)
+	stats2, err := (newVideoRepository(counted, DialectSQLite, nil)).UpsertVideos(batch)
 	if err != nil || stats2.New != 50 {
 		t.Fatalf("批量新增异常: %+v %v", stats2, err)
 	}
@@ -122,7 +122,7 @@ func TestUpsertVideosBatchesAndCounts(t *testing.T) {
 	counted2 := r.Videos.(*videoRepository).db.Session(&gorm.Session{
 		Logger: countingLogger{Interface: gormlogger.Default.LogMode(gormlogger.Silent), n: &n},
 	})
-	stats3, err := (&videoRepository{db: counted2, search: true}).UpsertVideos(batch)
+	stats3, err := (newVideoRepository(counted2, DialectSQLite, nil)).UpsertVideos(batch)
 	if err != nil || stats3.Unchanged != 50 {
 		t.Fatalf("批量未变异常: %+v %v", stats3, err)
 	}

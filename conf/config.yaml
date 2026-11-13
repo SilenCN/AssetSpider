@@ -9,8 +9,19 @@ server:
   addr: ":8080"
 
 database:
+  # 数据库后端：sqlite（默认）或 mysql。
+  # 不写 / 写 sqlite 时走下面 path 指向的本地 SQLite 文件；
+  # 写 mysql 时忽略 path，改走 dsn 连接串。
+  driver: "sqlite"
   # SQLite 数据库文件路径，支持相对路径（相对工作目录）或绝对路径
   path: "data/assetspider.db"
+  # MySQL 连接串（driver=mysql 时必填，含账号密码）。例如：
+  #   "asset:pwd@tcp(127.0.0.1:3306)/assetspider?charset=utf8mb4&parseTime=true&loc=Local"
+  # 连接池参数仅对 MySQL 生效；密码会出现在 DSN 里，切勿提交到公开仓库。
+  dsn: ""
+  max_open_conns: 16            # MySQL 连接池上限，<=0 用默认 16
+  max_idle_conns: 8             # MySQL 空闲连接上限，<=0 用默认（上限的一半）
+  conn_max_lifetime_minutes: 30 # MySQL 连接最长存活分钟数，<=0 用默认 30
 
 web:
   # Vue 构建产物目录，由 Gin 托管

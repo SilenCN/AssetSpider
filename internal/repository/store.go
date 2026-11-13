@@ -21,12 +21,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SilenCN/AssetSpider/internal/model"
-	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 )
 
 // schemaVersion 是库结构的「检索层」版本号，记在 SQLite 的 PRAGMA user_version 里。
@@ -70,8 +70,10 @@ type Repositories struct {
 	Subscriptions SubscriptionRepository
 
 	db          *gorm.DB
-	path        string
-	maintenance *videoMaintenance // 启动后的一次性维护任务，Close 时请求停止
+	path        string            // 对外展示的数据库描述（MySQL 为脱敏串，不含密码）
+	maintenance *videoMaintenance // SQLite 启动后的一次性维护任务，Close 时请求停止
+	stop        chan struct{}     // 关闭时通知后台索引任务退出
+	closeOnce   sync.Once
 }
 
 // sqliteDSN 给连接串加上 busy_timeout。它必须写在 DSN 上，由驱动对**每个**
@@ -87,24 +89,38 @@ func sqliteDSN(path string) string {
 
 // Open 打开（必要时创建）path 指定的 SQLite 数据库，自动迁移表结构，
 // 并装配出每个实体各自的仓储对象。
+//
+// 保留这个签名是为了兼容既有调用与测试；需要切换后端时用 OpenOptions。
 func Open(path string) (*Repositories, error) {
-	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, fmt.Errorf("创建数据库目录 %q: %w", dir, err)
+	return OpenOptions(Options{Driver: string(DialectSQLite), Path: path})
+}
+
+// OpenOptions 按 Options 选择数据库后端，自动迁移表结构，并装配出每个实体
+// 各自的仓储对象。
+//
+// 方言分支只出现在这一处：SQLite 走 FTS5 trigram + bigram 倒排 + PRAGMA 维护；
+// MySQL 走 InnoDB FULLTEXT(ngram) 索引。两者的检索索引都是「建不出来也只降级
+// LIKE、绝不阻断启动」，因为首次建索引在大表上可能要几分钟，不能卡在 HTTP
+// 监听之前（部署健康检查会超时回滚）。
+func OpenOptions(o Options) (*Repositories, error) {
+	dialect := o.dialect()
+	if dialect == DialectSQLite {
+		if dir := filepath.Dir(o.Path); dir != "" && dir != "." {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return nil, fmt.Errorf("创建数据库目录 %q: %w", dir, err)
+			}
 		}
 	}
-	db, err := gorm.Open(sqlite.Open(sqliteDSN(path)), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Warn),
-	})
+	db, err := openDB(o)
 	if err != nil {
-		return nil, fmt.Errorf("打开 SQLite %q: %w", path, err)
+		return nil, err
 	}
-	// SQLite 是单写者数据库，限制连接数可避免批量采集并发写时出现 database is locked。
-	// 后台维护任务另开一条连接，写锁冲突由 DSN 上的 busy_timeout 等待化解。
-	if sqlDB, err := db.DB(); err == nil {
-		sqlDB.SetMaxOpenConns(1)
+	// MySQL 新表统一 utf8mb4；SQLite 忽略 table_options。
+	migrateDB := db
+	if dialect == DialectMySQL {
+		migrateDB = db.Set("gorm:table_options", mysqlTableOptions)
 	}
-	if err := db.AutoMigrate(
+	if err := migrateDB.AutoMigrate(
 		&model.Asset{},
 		&model.Source{},
 		&model.Video{},
@@ -121,32 +137,43 @@ func Open(path string) (*Repositories, error) {
 	); err != nil {
 		return nil, fmt.Errorf("迁移表结构: %w", err)
 	}
-	// 全文检索索引是虚拟表 + 触发器，AutoMigrate 管不到，单独幂等创建。
-	// 建不出来（例如底层 SQLite 未编译 FTS5）只降级为 LIKE 检索，不阻断启动。
-	if err := ensureVideoSearch(db); err != nil {
-		log.Printf("建立影片全文索引失败，关键词检索将退回 LIKE 全表扫描: %v", err)
-	}
-	// 历史库里已废弃的单列索引由 AutoMigrate 留着不动，显式清掉（不触发版本升级）。
-	dropRetiredVideoIndexes(db)
-	// 2 字关键词的 bigram 倒排表：这里只同步建表与触发器（毫秒级）。
-	bigramOK := true
-	if err := initVideoBigrams(db); err != nil {
-		log.Printf("建立两字关键词索引失败，2 字检索将退回 LIKE: %v", err)
-		bigramOK = false
-	}
-	prepareDatabase(db)
-	// 分钟级的历史数据回灌放后台，服务立即开始监听；同步做会让部署健康检查
-	// 超时回滚，回滚又 kill 掉回灌，形成「每次部署都失败、回灌永远做不完」的死循环。
-	// 评分排序移除后不再有同步 CREATE INDEX：大库首次启动不再需要为两条表达式
-	// 索引等待，健康检查回到秒级。
+
+	stop := make(chan struct{})
+	searchReady := &atomic.Bool{}
 	var mt *videoMaintenance
-	if bigramOK && videoBigramNeedsBackfill(db) {
-		mt = startVideoMaintenance(path)
+	if dialect == DialectMySQL {
+		// ALTER TABLE ... ADD FULLTEXT INDEX 在大表上会重建表，放后台执行；
+		// 索引就绪前关键词检索降级为 LIKE，结果始终正确。
+		searchReady.Store(mysqlFulltextExists(db))
+		go maintainMySQLFulltext(db, searchReady, stop)
+	} else {
+		// 全文检索索引是虚拟表 + 触发器，AutoMigrate 管不到，单独幂等创建。
+		// 建不出来（例如底层 SQLite 未编译 FTS5）只降级为 LIKE 检索。
+		if err := ensureVideoSearch(db); err != nil {
+			log.Printf("建立影片全文索引失败，关键词检索将退回 LIKE 全表扫描: %v", err)
+		}
+		// 历史库里已废弃的单列索引由 AutoMigrate 留着不动，显式清掉。
+		// DROP INDEX IF EXISTS 是 SQLite 语法，MySQL 分支不执行。
+		dropRetiredVideoIndexes(db)
+		// 2 字关键词的 bigram 倒排表：只同步建表与触发器（毫秒级）。
+		bigramOK := true
+		if err := initVideoBigrams(db); err != nil {
+			log.Printf("建立两字关键词索引失败，2 字检索将退回 LIKE: %v", err)
+			bigramOK = false
+		}
+		searchReady.Store(videoSearchTableExists(db))
+		// PRAGMA user_version 迁移 / ANALYZE / PRAGMA optimize 都是 SQLite 专有。
+		prepareDatabase(db)
+		// 分钟级的历史数据回灌放后台，服务立即开始监听。
+		if bigramOK && videoBigramNeedsBackfill(db) {
+			mt = startVideoMaintenance(o.Path)
+		}
 	}
+
 	return &Repositories{
 		Assets:        NewAssetRepository(db),
 		Sources:       NewSourceRepository(db),
-		Videos:        NewVideoRepository(db),
+		Videos:        newVideoRepository(db, dialect, searchReady),
 		Categories:    NewCategoryRepository(db),
 		Tags:          NewTagRepository(db),
 		Areas:         NewAreaRepository(db),
@@ -154,12 +181,14 @@ func Open(path string) (*Repositories, error) {
 		Subscriptions: NewSubscriptionRepository(db),
 		Users:         NewUserRepository(db),
 		db:            db,
-		path:          path,
+		path:          o.databaseDisplay(),
 		maintenance:   mt,
+		stop:          stop,
 	}, nil
 }
 
-// Path 返回数据库文件路径。
+// Path 返回数据库描述：SQLite 为文件路径，MySQL 为脱敏后的连接目标。
+// 健康检查与设置页都读它，因此绝不能包含密码。
 func (r *Repositories) Path() string { return r.path }
 
 // prepareDatabase 执行一次性数据迁移，并维护查询计划器依赖的统计信息。
@@ -205,13 +234,21 @@ func prepareDatabase(db *gorm.DB) {
 
 // Close 关闭底层连接。
 func (r *Repositories) Close() error {
-	// 先停后台维护任务，避免它继续往即将关闭的库里写；未跑完的批次下次启动续跑。
-	if r.maintenance != nil {
-		r.maintenance.Stop(2 * time.Second)
-	}
-	sqlDB, err := r.db.DB()
-	if err != nil {
-		return err
-	}
-	return sqlDB.Close()
+	var stopErr error
+	r.closeOnce.Do(func() {
+		// 先停后台索引 / 回灌任务，避免它们继续往即将关闭的库里写。
+		if r.stop != nil {
+			close(r.stop)
+		}
+		if r.maintenance != nil {
+			r.maintenance.Stop(2 * time.Second)
+		}
+		sqlDB, err := r.db.DB()
+		if err != nil {
+			stopErr = err
+			return
+		}
+		stopErr = sqlDB.Close()
+	})
+	return stopErr
 }

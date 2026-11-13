@@ -72,7 +72,8 @@ curl http://127.0.0.1:8080/api/system/v1/health
 ├── bin/assetspider              # 静态二进制
 ├── web/dist/                    # Vue 前端
 ├── conf/config.yaml             # 运行配置（仅首次生成，之后不会被覆盖）
-├── data/assetspider.db          # SQLite 数据库（永不覆盖）
+├── data/assetspider.db          # SQLite 数据库（driver=sqlite 时存在，永不覆盖）
+                                      # driver=mysql 时不创建本地文件，数据在外部 MySQL 实例
 ├── logs/assetspider.log         # 服务日志
 ├── releases/backup-*            # 最近 5 个可回滚版本
 ├── VERSION                      # 当前 commit sha

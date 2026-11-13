@@ -114,22 +114,31 @@ func videoSearchMatch(keyword string) (string, bool) {
 	return `"` + strings.ReplaceAll(kw, `"`, `""`) + `"`, true
 }
 
-// videoSearchCaps 是本次查询可用的检索索引。
+// videoSearchCaps 是本次查询可用的检索索引。同一时刻只会有一类为 true：
+// SQLite 用 fts / bigram，MySQL 用 mysqlFulltext（见 video_search_mysql.go）。
 type videoSearchCaps struct {
-	fts    bool // videos_fts（trigram，≥3 字）是否可用
-	bigram bool // video_bigrams（2 字）是否回灌完毕
+	fts           bool // SQLite：videos_fts（trigram，≥3 字）是否可用
+	bigram        bool // SQLite：video_bigrams（2 字）是否回灌完毕
+	mysqlFulltext bool // MySQL：ft_videos_search（ngram，≥2 字）是否可用
 }
 
-// applyVideoKeyword 给影片查询附加关键词条件，按关键词长度选索引：
+// applyVideoKeyword 给影片查询附加关键词条件，按后端与关键词长度选索引：
 //
-//	≥3 字  → videos_fts 的 trigram 短语查询
-//	==2 字 → video_bigrams 的主键等值查找（gram = LOWER(?)）
-//	1 字 / 索引未就绪 → 六列 LIKE 回退，结果语义与上面两条完全一致
+//	MySQL  ≥2 字 → MATCH(... ) AGAINST(? IN BOOLEAN MODE) 的 ngram 短语查询
+//	SQLite ≥3 字 → videos_fts 的 trigram 短语查询
+//	SQLite ==2 字 → video_bigrams 的主键等值查找（gram = LOWER(?)）
+//	1 字 / 含 LIKE 通配符 / 索引未就绪 → 六列 LIKE 回退，结果语义与上面完全一致
 //
 // LIKE 回退直接扫主表六列：FTS5 是外部内容表，正文不落索引，六列 LIKE 要按
 // rowid 逐行回主表取值，实测反而比主表顺序扫描慢约 30%（15 万行库 140 ms → 200 ms）。
 func applyVideoKeyword(q *gorm.DB, keyword string, caps videoSearchCaps) *gorm.DB {
 	kw := strings.TrimSpace(keyword)
+	if caps.mysqlFulltext {
+		if expr, ok := mysqlFulltextMatch(kw); ok {
+			return q.Where("MATCH("+mysqlFulltextColumns+") AGAINST (? IN BOOLEAN MODE)", expr)
+		}
+		return applyVideoKeywordLike(q, kw)
+	}
 	if caps.fts {
 		if expr, ok := videoSearchMatch(kw); ok {
 			return q.Where("videos.id IN (SELECT rowid FROM "+videoSearchTable+" WHERE "+videoSearchTable+" MATCH ?)", expr)
@@ -140,6 +149,11 @@ func applyVideoKeyword(q *gorm.DB, keyword string, caps videoSearchCaps) *gorm.D
 	if caps.bigram && utf8.RuneCountInString(kw) == 2 && !strings.ContainsAny(kw, "%_") {
 		return q.Where("videos.id IN (SELECT video_id FROM "+videoBigramTable+" WHERE gram = LOWER(?))", kw)
 	}
+	return applyVideoKeywordLike(q, kw)
+}
+
+// applyVideoKeywordLike 是三种索引路径共用的降级语句，六列与全文索引列一致。
+func applyVideoKeywordLike(q *gorm.DB, kw string) *gorm.DB {
 	like := "%" + kw + "%"
 	cond := "vod_name LIKE ? OR vod_en LIKE ? OR vod_actor LIKE ? OR vod_director LIKE ? OR vod_class LIKE ? OR vod_area LIKE ?"
 	args := []interface{}{like, like, like, like, like, like}

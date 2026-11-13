@@ -26,11 +26,12 @@ type SettingsView struct {
 
 // StaticSettings 是只能改配置文件 + 重启生效的启动项，展示给管理员参考。
 type StaticSettings struct {
-	ServerAddr    string `json:"serverAddr"`
-	DatabasePath  string `json:"databasePath"`
-	WebDir        string `json:"webDir"`
-	TokenTTLHours int    `json:"tokenTtlHours"`
-	BCryptCost    int    `json:"bcryptCost"`
+	ServerAddr     string `json:"serverAddr"`
+	DatabaseDriver string `json:"databaseDriver"` // sqlite | mysql
+	DatabasePath   string `json:"databasePath"`   // SQLite 路径或 MySQL 脱敏连接目标，绝不含密码
+	WebDir         string `json:"webDir"`
+	TokenTTLHours  int    `json:"tokenTtlHours"`
+	BCryptCost     int    `json:"bcryptCost"`
 }
 
 // settingsFields 是可编辑字段的元信息，顺序即前端展示顺序。
@@ -83,11 +84,12 @@ func (s *SettingsService) Get() SettingsView {
 		Fields:    fields,
 		EnvLocked: s.store.EnvOverridden(),
 		Static: StaticSettings{
-			ServerAddr:    cfg.Server.Addr,
-			DatabasePath:  cfg.Database.Path,
-			WebDir:        cfg.Web.Dir,
-			TokenTTLHours: cfg.Auth.TokenTTLHours,
-			BCryptCost:    cfg.Auth.BCryptCost,
+			ServerAddr:     cfg.Server.Addr,
+			DatabaseDriver: cfg.Database.Driver,
+			DatabasePath:   cfg.Database.Display(),
+			WebDir:         cfg.Web.Dir,
+			TokenTTLHours:  cfg.Auth.TokenTTLHours,
+			BCryptCost:     cfg.Auth.BCryptCost,
 		},
 		ConfigPath:         s.store.Path(),
 		MaxConcurrentLimit: 64,

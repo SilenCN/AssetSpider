@@ -32,8 +32,8 @@ func main() {
 	}
 	defer application.Close()
 
-	log.Printf("AssetSpider v%s 启动 | 监听 %s | 数据库 %s | 页面 %s | 采集超时 %ds / 最大 %d 页",
-		version, cfg.Server.Addr, cfg.Database.Path, cfg.Web.Dir,
+	log.Printf("AssetSpider v%s 启动 | 监听 %s | 数据库 %s(%s) | 页面 %s | 采集超时 %ds / 最大 %d 页",
+		version, cfg.Server.Addr, cfg.Database.Driver, cfg.Database.Display(), cfg.Web.Dir,
 		cfg.Collector.TimeoutSeconds, cfg.Collector.MaxPages)
 	// 不用 Fatalf：保证上面的 defer 能正常关闭数据库。
 	if err := application.Engine.Run(cfg.Server.Addr); err != nil {

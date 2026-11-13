@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/SilenCN/AssetSpider/internal/utils"
 	"gopkg.in/yaml.v3"
@@ -33,9 +34,31 @@ type ServerConfig struct {
 	Addr string `yaml:"addr"`
 }
 
-// DatabaseConfig 描述 SQLite 数据库。
+// DatabaseConfig 描述数据存储后端。默认 SQLite（沿用 path 文件路径）；
+// driver=mysql 时改走 DSN 连接，连接池参数仅对 MySQL 生效。
 type DatabaseConfig struct {
-	Path string `yaml:"path"`
+	Driver             string `yaml:"driver"`                    // sqlite（默认）| mysql
+	Path               string `yaml:"path"`                      // SQLite 数据库文件
+	DSN                string `yaml:"dsn"`                       // MySQL 连接串，含账号密码，不对外展示
+	MaxOpenConns       int    `yaml:"max_open_conns"`            // 连接池上限，0 用默认 16
+	MaxIdleConns       int    `yaml:"max_idle_conns"`            // 空闲连接上限，0 用默认（上限的一半）
+	ConnMaxLifetimeMin int    `yaml:"conn_max_lifetime_minutes"` // 连接最长存活分钟数，0 用默认 30
+}
+
+// Display 返回可安全写入页面与健康检查响应的数据库描述。
+// MySQL 连接串含密码，这里只保留网络地址与库名；SQLite 直接返回文件路径。
+func (d DatabaseConfig) Display() string {
+	if d.Driver == "mysql" {
+		s := strings.TrimSpace(d.DSN)
+		if i := strings.LastIndexByte(s, '@'); i >= 0 {
+			s = s[i+1:]
+		}
+		if i := strings.IndexByte(s, '?'); i >= 0 {
+			s = s[:i]
+		}
+		return "mysql://" + s
+	}
+	return d.Path
 }
 
 // WebConfig 描述前端静态资源。
@@ -60,9 +83,12 @@ type CollectorConfig struct {
 // Default 返回开箱即用的默认配置。
 func Default() *Config {
 	return &Config{
-		Server:   ServerConfig{Addr: ":8080"},
-		Database: DatabaseConfig{Path: "data/assetspider.db"},
-		Web:      WebConfig{Dir: "web/dist"},
+		Server: ServerConfig{Addr: ":8080"},
+		Database: DatabaseConfig{
+			Driver: "sqlite", Path: "data/assetspider.db",
+			MaxOpenConns: 16, MaxIdleConns: 8, ConnMaxLifetimeMin: 30,
+		},
+		Web: WebConfig{Dir: "web/dist"},
 		Collector: CollectorConfig{
 			TimeoutSeconds:      20,
 			MaxPages:            1000,
@@ -102,6 +128,24 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("ASSETSPIDER_DB_PATH"); v != "" {
 		cfg.Database.Path = v
+	}
+	if v := os.Getenv("ASSETSPIDER_DB_DRIVER"); v != "" {
+		cfg.Database.Driver = v
+	}
+	if v := os.Getenv("ASSETSPIDER_DB_DSN"); v != "" {
+		cfg.Database.DSN = v
+	}
+	for _, item := range []struct {
+		name string
+		dst  *int
+	}{
+		{"ASSETSPIDER_DB_MAX_OPEN_CONNS", &cfg.Database.MaxOpenConns},
+		{"ASSETSPIDER_DB_MAX_IDLE_CONNS", &cfg.Database.MaxIdleConns},
+		{"ASSETSPIDER_DB_CONN_MAX_LIFETIME", &cfg.Database.ConnMaxLifetimeMin},
+	} {
+		if err := utils.EnvInt(item.name, item.dst); err != nil {
+			return nil, err
+		}
 	}
 	if v := os.Getenv("ASSETSPIDER_WEB_DIR"); v != "" {
 		cfg.Web.Dir = v
@@ -163,8 +207,25 @@ func (c *Config) Validate() error {
 	if c.Server.Addr == "" {
 		return fmt.Errorf("server.addr 不能为空")
 	}
-	if c.Database.Path == "" {
-		return fmt.Errorf("database.path 不能为空")
+	// 先规范化驱动名：缺省 / 大小写差异都归一到 sqlite，后续判断只看一个值。
+	c.Database.Driver = strings.ToLower(strings.TrimSpace(c.Database.Driver))
+	if c.Database.Driver == "" {
+		c.Database.Driver = "sqlite"
+	}
+	switch c.Database.Driver {
+	case "sqlite":
+		if c.Database.Path == "" {
+			return fmt.Errorf("database.path 不能为空（driver=sqlite）")
+		}
+	case "mysql":
+		if strings.TrimSpace(c.Database.DSN) == "" {
+			return fmt.Errorf("database.dsn 不能为空（driver=mysql）")
+		}
+		if c.Database.MaxOpenConns < 0 || c.Database.MaxIdleConns < 0 || c.Database.ConnMaxLifetimeMin < 0 {
+			return fmt.Errorf("database 连接池参数不能为负")
+		}
+	default:
+		return fmt.Errorf("database.driver 只支持 sqlite / mysql，实际 %q", c.Database.Driver)
 	}
 	if c.Web.Dir == "" {
 		return fmt.Errorf("web.dir 不能为空")
