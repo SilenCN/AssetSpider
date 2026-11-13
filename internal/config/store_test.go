@@ -309,6 +309,30 @@ func TestStoreLocksEnvOverriddenDatabaseFields(t *testing.T) {
 	}
 }
 
+// TestStoreAllowsBlankDSNWhenEnvLocked 验证 MySQL 下 dsn 被环境变量接管时，页面提交
+// 留空 DSN（表示「保留现有连接串」）不算改动，不应被拒绝。
+func TestStoreAllowsBlankDSNWhenEnvLocked(t *testing.T) {
+	clearDBEnv(t)
+	t.Setenv("ASSETSPIDER_DB_DRIVER", "mysql")
+	t.Setenv("ASSETSPIDER_DB_DSN", "env-provided-dsn")
+	cfg, err := Load("") // 空路径：默认值 + 环境变量覆盖（mysql 的 dsn 由 env 提供）
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(cfg)
+	if store.Current().Database.Driver != "mysql" {
+		t.Fatalf("driver 应由 env 覆盖为 mysql")
+	}
+	in := store.Current().Database
+	in.DSN = "" // 留空 = 保留现有
+	if _, err := store.UpdateDatabase(in); err != nil {
+		t.Fatalf("留空 DSN 不应被拒绝: %v", err)
+	}
+	if got := store.Current().Database.DSN; got != "env-provided-dsn" {
+		t.Fatalf("DSN 应保持环境变量值，实际 %q", got)
+	}
+}
+
 func contains(ss []string, want string) bool {
 	for _, s := range ss {
 		if s == want {

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/SilenCN/AssetSpider/internal/config"
@@ -33,15 +34,15 @@ type SettingsView struct {
 // DatabaseSettingsView 是设置页里可编辑的数据库配置视图。
 // DSN 含密码，绝不回显明文：只暴露是否已配置（dsnConfigured）与脱敏连接目标（display）。
 type DatabaseSettingsView struct {
-	Driver             string `json:"driver"`             // sqlite | mysql
-	Path               string `json:"path"`               // SQLite 文件路径
-	DSNConfigured      bool   `json:"dsnConfigured"`      // MySQL 连接串是否已配置（不回显明文）
-	Display            string `json:"display"`            // 脱敏连接目标（host/db），不含密码
-	MaxOpenConns       int    `json:"maxOpenConns"`       // 连接池上限，0 用默认
-	MaxIdleConns       int    `json:"maxIdleConns"`       // 空闲连接上限，0 用默认
-	ConnMaxLifetimeMin int    `json:"connMaxLifetimeMin"` // 连接最长存活分钟，0 用默认
-	ReadOnly           bool   `json:"readOnly"`           // 任意字段被环境变量接管，整段只读
-	ApplyNote          string `json:"applyNote"`          // 应用时机提示
+	Driver             string   `json:"driver"`             // sqlite | mysql
+	Path               string   `json:"path"`               // SQLite 文件路径
+	DSNConfigured      bool     `json:"dsnConfigured"`      // MySQL 连接串是否已配置（不回显明文）
+	Display            string   `json:"display"`            // 脱敏连接目标（host/db），不含密码
+	MaxOpenConns       int      `json:"maxOpenConns"`       // 连接池上限，0 用默认
+	MaxIdleConns       int      `json:"maxIdleConns"`       // 空闲连接上限，0 用默认
+	ConnMaxLifetimeMin int      `json:"connMaxLifetimeMin"` // 连接最长存活分钟，0 用默认
+	Locked             []string `json:"locked"`             // 被环境变量接管的 YAML 键（如 path），这些字段页面只读
+	ApplyNote          string   `json:"applyNote"`          // 应用时机提示
 }
 
 // StaticSettings 是只能改配置文件 + 重启生效的启动项，展示给管理员参考。
@@ -99,18 +100,22 @@ func (s *SettingsService) Get() SettingsView {
 		}
 		fields = append(fields, f)
 	}
-	// 数据库段：任意字段被环境变量接管则整段只读。
-	dbKeys := map[string]bool{}
-	for _, yk := range config.DBEnvOverrides {
-		dbKeys[yk] = true
-	}
-	dbReadOnly := false
+	// 数据库段：按字段粒度标记只读——只锁被环境变量接管的那个字段，
+	// 其余字段仍可在线编辑（例如部署设置了 ASSETSPIDER_DB_PATH，仅 path 只读，
+	// driver / dsn / 连接池依然可改）。
+	envLocked := map[string]bool{}
 	for _, k := range s.store.EnvOverridden() {
-		if dbKeys[k] {
-			dbReadOnly = true
-			break
+		envLocked[k] = true
+	}
+	seen := map[string]bool{}
+	dbLocked := make([]string, 0, len(config.DBEnvOverrides))
+	for _, yk := range config.DBEnvOverrides {
+		if envLocked[yk] && !seen[yk] {
+			seen[yk] = true
+			dbLocked = append(dbLocked, yk)
 		}
 	}
+	sort.Strings(dbLocked)
 	db := cfg.Database
 	return SettingsView{
 		Collector: cfg.Collector,
@@ -132,7 +137,7 @@ func (s *SettingsService) Get() SettingsView {
 			MaxOpenConns:       db.MaxOpenConns,
 			MaxIdleConns:       db.MaxIdleConns,
 			ConnMaxLifetimeMin: db.ConnMaxLifetimeMin,
-			ReadOnly:           dbReadOnly,
+			Locked:             dbLocked,
 			ApplyNote:          "修改后需重启服务生效；切换数据库后端不会热重载连接，重启后新配置才生效。",
 		},
 		ConfigPath:         s.store.Path(),

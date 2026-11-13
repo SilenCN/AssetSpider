@@ -9,6 +9,9 @@ const {
 } = inject('app')
 
 const fields = computed(() => settings.value?.fields || [])
+// 数据库字段按 YAML 键判断是否被环境变量接管（只锁那一个字段，其余仍可编辑）。
+const dbLocked = (key) => (settings.value?.database?.locked || []).includes(key)
+const dbHasLocked = computed(() => (settings.value?.database?.locked || []).length > 0)
 // 表单值变化时标记未保存；范围校验交给纯函数（settings.js，有单测覆盖）。
 function markDirty() { settingsDirty.value = true }
 function fieldInvalid(f) { return validateField(f, settingsForm.value[f.key]) }
@@ -58,7 +61,6 @@ const canSave = computed(() => settingsDirty.value && !anyInvalid.value && !sett
             <summary>启动项（只读，需改配置文件并重启）</summary>
             <div class="settings-static">
               <div><span>监听地址</span><b class="mono">{{ settings.static?.serverAddr }}</b></div>
-              <div><span>当前数据库</span><b class="mono">{{ settings.static?.databaseDriver }} · {{ settings.static?.databasePath }}</b></div>
               <div><span>前端目录</span><b class="mono">{{ settings.static?.webDir }}</b></div>
               <div><span>会话有效期</span><b class="mono">{{ settings.static?.tokenTtlHours }} 小时</b></div>
               <div><span>密码哈希强度</span><b class="mono">{{ settings.static?.bcryptCost }}</b></div>
@@ -70,14 +72,17 @@ const canSave = computed(() => settingsDirty.value && !anyInvalid.value && !sett
               <h2>数据库</h2>
               <span class="muted">后台可编辑 · 保存后写入配置文件，需重启服务生效（不热重载连接）</span>
             </div>
-            <p v-if="settings.database.readOnly" class="setting-error">
-              数据库配置由环境变量接管，页面只读；请在启动环境中修改后重启。
+            <p v-if="dbHasLocked" class="setting-help">
+              部分字段由环境变量接管（{{ settings.database.locked.join('、') }}），这些字段只读；其余字段仍可编辑。
             </p>
             <div class="settings-grid">
-              <label class="setting-item" :class="{ locked: settings.database.readOnly }">
-                <span class="setting-label">数据库类型</span>
+              <label class="setting-item" :class="{ locked: dbLocked('driver') }">
+                <span class="setting-label">
+                  数据库类型
+                  <span v-if="dbLocked('driver')" class="badge off" title="由环境变量控制，页面只读">环境变量</span>
+                </span>
                 <span class="setting-control">
-                  <select v-model="dbForm.driver" :disabled="settings.database.readOnly" @change="markDirty">
+                  <select v-model="dbForm.driver" :disabled="dbLocked('driver')" @change="markDirty">
                     <option value="sqlite">SQLite（文件）</option>
                     <option value="mysql">MySQL</option>
                   </select>
@@ -86,48 +91,54 @@ const canSave = computed(() => settingsDirty.value && !anyInvalid.value && !sett
               </label>
 
               <template v-if="dbForm.driver === 'sqlite'">
-                <label class="setting-item" :class="{ locked: settings.database.readOnly }">
-                  <span class="setting-label">数据库文件</span>
+                <label class="setting-item" :class="{ locked: dbLocked('path') }">
+                  <span class="setting-label">
+                    数据库文件
+                    <span v-if="dbLocked('path')" class="badge off" title="由环境变量控制，页面只读">环境变量</span>
+                  </span>
                   <span class="setting-control">
-                    <input v-model="dbForm.path" type="text" :disabled="settings.database.readOnly" @input="markDirty" />
+                    <input v-model="dbForm.path" type="text" :disabled="dbLocked('path')" @input="markDirty" />
                   </span>
                   <span class="setting-help">SQLite 数据库文件路径，相对或绝对路径。</span>
                 </label>
               </template>
 
               <template v-else>
-                <label class="setting-item" :class="{ locked: settings.database.readOnly }">
-                  <span class="setting-label">连接串 DSN</span>
+                <label class="setting-item" :class="{ locked: dbLocked('dsn') }">
+                  <span class="setting-label">
+                    连接串 DSN
+                    <span v-if="dbLocked('dsn')" class="badge off" title="由环境变量控制，页面只读">环境变量</span>
+                  </span>
                   <span class="setting-control">
                     <input v-model="dbForm.dsn" type="text"
                            placeholder="user:pass@tcp(host:3306)/dbname?charset=utf8mb4&parseTime=True&loc=Local"
-                           :disabled="settings.database.readOnly" @input="markDirty" />
+                           :disabled="dbLocked('dsn')" @input="markDirty" />
                   </span>
                   <span class="setting-help">
                     含账号密码的连接串。留空表示保留当前已配置的连接串；从其它类型切换为 MySQL 时必须填写。
                     <span v-if="settings.database.dsnConfigured" class="badge info">已配置连接串（不展示明文）</span>
                   </span>
                 </label>
-                <label class="setting-item">
+                <label class="setting-item" :class="{ locked: dbLocked('max_open_conns') }">
                   <span class="setting-label">最大连接数</span>
                   <span class="setting-control">
-                    <input v-model.number="dbForm.maxOpenConns" type="number" min="0" @input="markDirty" />
+                    <input v-model.number="dbForm.maxOpenConns" type="number" min="0" :disabled="dbLocked('max_open_conns')" @input="markDirty" />
                     <span class="setting-unit">个</span>
                   </span>
                   <span class="setting-help">连接池上限，0 用默认 16。</span>
                 </label>
-                <label class="setting-item">
+                <label class="setting-item" :class="{ locked: dbLocked('max_idle_conns') }">
                   <span class="setting-label">空闲连接数</span>
                   <span class="setting-control">
-                    <input v-model.number="dbForm.maxIdleConns" type="number" min="0" @input="markDirty" />
+                    <input v-model.number="dbForm.maxIdleConns" type="number" min="0" :disabled="dbLocked('max_idle_conns')" @input="markDirty" />
                     <span class="setting-unit">个</span>
                   </span>
                   <span class="setting-help">空闲连接上限，0 用默认（上限的一半）。</span>
                 </label>
-                <label class="setting-item">
+                <label class="setting-item" :class="{ locked: dbLocked('conn_max_lifetime_minutes') }">
                   <span class="setting-label">连接最长存活</span>
                   <span class="setting-control">
-                    <input v-model.number="dbForm.connMaxLifetimeMin" type="number" min="0" @input="markDirty" />
+                    <input v-model.number="dbForm.connMaxLifetimeMin" type="number" min="0" :disabled="dbLocked('conn_max_lifetime_minutes')" @input="markDirty" />
                     <span class="setting-unit">分钟</span>
                   </span>
                   <span class="setting-help">连接最长存活时间，0 用默认 30。</span>
@@ -135,7 +146,7 @@ const canSave = computed(() => settingsDirty.value && !anyInvalid.value && !sett
               </template>
 
               <div class="settings-actions db-test">
-                <button type="button" :disabled="dbTesting || settings.database.readOnly" @click="testDatabase">
+                <button type="button" :disabled="dbTesting" @click="testDatabase">
                   {{ dbTesting ? '测试中…' : '测试连接' }}
                 </button>
                 <span v-if="dbTestResult && dbTestResult.ok" class="badge on">连接成功 · {{ dbTestResult.message }}</span>

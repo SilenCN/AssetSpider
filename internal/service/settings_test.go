@@ -14,6 +14,29 @@ func newTestSettings(t *testing.T, cfg *config.Config) *SettingsService {
 	return NewSettingsService(store, &CrawlService{})
 }
 
+// TestSettingsGetLocksOnlyEnvFields 验证数据库段按字段粒度只读：只设置了
+// ASSETSPIDER_DB_PATH 时，仅 path 被标记锁定，其余字段仍可编辑。
+func TestSettingsGetLocksOnlyEnvFields(t *testing.T) {
+	for _, k := range []string{
+		"ASSETSPIDER_DB_DRIVER", "ASSETSPIDER_DB_DSN",
+		"ASSETSPIDER_DB_MAX_OPEN_CONNS", "ASSETSPIDER_DB_MAX_IDLE_CONNS",
+		"ASSETSPIDER_DB_CONN_MAX_LIFETIME",
+	} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("ASSETSPIDER_DB_PATH", "data/locked.db")
+	cfg, err := config.Load("") // 空路径 = 默认值 + 环境变量覆盖
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := newTestSettings(t, cfg)
+
+	view := svc.Get()
+	if len(view.Database.Locked) != 1 || view.Database.Locked[0] != "path" {
+		t.Fatalf("只应锁 path，实际 %v", view.Database.Locked)
+	}
+}
+
 // TestSettingsTestDatabaseSQLite 提交空配置时以当前已保存配置为基准，SQLite 应连通。
 func TestSettingsTestDatabaseSQLite(t *testing.T) {
 	cfg := config.Default()

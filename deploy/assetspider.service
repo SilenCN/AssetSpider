@@ -12,8 +12,10 @@ WorkingDirectory=__DEPLOY_PATH__
 ExecStart=__DEPLOY_PATH__/bin/assetspider -config __DEPLOY_PATH__/conf/config.yaml
 
 # 默认值；如需改端口/采集参数，请编辑 /etc/assetspider.env（不会被部署覆盖）。
+# 注意：不在这里注入 ASSETSPIDER_DB_*——数据库后端（driver/path/dsn/连接池）支持后台在线
+# 配置；一旦由环境变量接管，对应字段会在设置页变为只读。数据库文件由 WorkingDirectory
+# 与 config.yaml 的相对路径 data/assetspider.db 共同定位，无需环境变量。
 Environment=ASSETSPIDER_SERVER_ADDR=:8080
-Environment=ASSETSPIDER_DB_PATH=__DEPLOY_PATH__/data/assetspider.db
 Environment=ASSETSPIDER_WEB_DIR=__DEPLOY_PATH__/web/dist
 # EnvironmentFile 放在 Environment 之后，后出现的同名变量优先，便于个性化覆盖。
 EnvironmentFile=-/etc/__SERVICE_NAME__.env

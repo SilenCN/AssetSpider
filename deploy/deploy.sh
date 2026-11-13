@@ -177,7 +177,8 @@ start_service() {
     fi
     (
       cd "$DEPLOY_PATH"
-      export ASSETSPIDER_DB_PATH="$DEPLOY_PATH/data/assetspider.db"
+      # 数据库路径由 working dir + config.yaml 的相对路径 data/assetspider.db 定位；
+      # 不注入 ASSETSPIDER_DB_*，以免后台设置页的数据库配置被环境变量锁成只读。
       export ASSETSPIDER_WEB_DIR="$DEPLOY_PATH/web/dist"
       export ASSETSPIDER_SERVER_ADDR="${ASSETSPIDER_SERVER_ADDR:-:$PORT}"
       nohup "$DEPLOY_PATH/bin/assetspider" -config "$DEPLOY_PATH/conf/config.yaml" \

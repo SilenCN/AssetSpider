@@ -187,6 +187,11 @@ func (s *Store) UpdateDatabase(in DatabaseConfig) (Config, error) {
 		if !s.envKeys[key] {
 			continue
 		}
+		// DSN 留空表示「保留现有连接串」，不算改动；避免环境变量接管 dsn 时
+		// 页面因不回显明文而被误判为越权修改。
+		if key == "dsn" && strings.TrimSpace(in.DSN) == "" {
+			continue
+		}
 		if !dbFieldEqual(key, in, next.Database) {
 			locked = append(locked, fmt.Sprintf("%s（由 %s 提供）", key, envName))
 		}
