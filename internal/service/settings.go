@@ -3,6 +3,7 @@ package service
 import (
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/SilenCN/AssetSpider/internal/config"
 	"github.com/SilenCN/AssetSpider/internal/repository"
@@ -74,10 +75,23 @@ var settingsFields = []SettingField{
 type SettingsService struct {
 	store *config.Store
 	crawl *CrawlService
+
+	// 重启能力由装配层注入：service 只投递请求，不自己关数据库或重建进程。
+	mu         sync.Mutex
+	restart    func() error
+	restarting bool
 }
 
 func NewSettingsService(store *config.Store, crawl *CrawlService) *SettingsService {
 	return &SettingsService{store: store, crawl: crawl}
+}
+
+// SetRestartHook 注入「请求重启进程」的回调，由应用装配层在构造完成后提供。
+// 未注入（例如单元测试直接构造服务）时重启接口会返回「不支持」。
+func (s *SettingsService) SetRestartHook(fn func() error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.restart = fn
 }
 
 // Current 返回当前采集配置快照，供 controller 作为局部更新的默认值。
@@ -248,4 +262,34 @@ func (s *SettingsService) TestDatabase(in DatabaseTestInput) DatabaseTestResult 
 		return DatabaseTestResult{OK: false, Error: err.Error()}
 	}
 	return DatabaseTestResult{OK: true, Message: "连接成功：" + merged.Display()}
+}
+
+// RestartResult 是「重启服务」的返回：请求被接受返回 ok=true，
+// 不支持重启或已在重启中返回 ok=false 与原因。
+type RestartResult struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message,omitempty"` // 接受后的说明
+	Error   string `json:"error,omitempty"`   // 拒绝的原因
+}
+
+// Restart 请求重启当前服务进程。
+//
+// 真正的收尾（停调度、等任务、关数据库）与进程重建由 main 完成——这里只投递请求，
+// 因此接口能先正常返回响应，页面才看得到「重启中」而不是连接被掐断。
+// 同一进程生命周期内只接受一次：进程即将被替换，重复请求没有意义。
+func (s *SettingsService) Restart() RestartResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.restart == nil {
+		return RestartResult{OK: false, Error: "当前运行方式不支持在线重启，请手动重启服务"}
+	}
+	if s.restarting {
+		return RestartResult{OK: false, Error: "服务正在重启，请稍候"}
+	}
+	s.restarting = true
+	if err := s.restart(); err != nil {
+		s.restarting = false
+		return RestartResult{OK: false, Error: err.Error()}
+	}
+	return RestartResult{OK: true, Message: "正在重启服务，稍后自动恢复"}
 }

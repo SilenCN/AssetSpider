@@ -80,6 +80,8 @@ export function createState() {
   // 数据库「测试连接」：测试中标志 + 结果（{ok, message/error} 或 null）。
   const dbTesting = ref(false)
   const dbTestResult = ref(null)
+  // 重启服务：重启中标志（服务会短暂不可用，按钮据此禁用并显示进度）。
+  const restarting = ref(false)
   const error = ref('')
   const notice = ref(null)
   let noticeTimer = null
@@ -159,6 +161,7 @@ export function createState() {
     token, me, authReady, initialized, isAdmin, currentUsername, clearAuth, setAuth,
     tab, health, sources, videos, categories, categoryTree, jobs, tasks, users, capacity,
     settings, settingsForm, dbForm, settingsDirty, settingsSaving, dbTesting, dbTestResult, error, notice, notify,
+    restarting,
     videoQuery, videoSource, videoCategory, videoSort,
     videoPage, videoSize, videoHasMore, videoLoading, videoLoadingMore,
     videoEnd, videoSentinel,

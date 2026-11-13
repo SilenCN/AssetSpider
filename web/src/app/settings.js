@@ -66,5 +66,42 @@ export function createSettings(ctx) {
     }
   }
 
-  return { loadSettings, saveSettings, testDatabase }
+  // 重启期间服务会断开：直接轮询健康检查（不走 request，避免用 401 逻辑清登录态）。
+  async function waitForHealthy(tries = 40, interval = 500) {
+    for (let i = 0; i < tries; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, interval))
+      try {
+        const res = await fetch('/api/system/v1/health', { cache: 'no-store' })
+        if (res.ok) return true
+      } catch (e) {
+        // 进程还没起来，连接被拒绝属正常，继续等下一轮。
+      }
+    }
+    return false
+  }
+
+  async function restartService() {
+    if (ctx.restarting.value) return
+    if (!confirm('确认重启服务？\n\n服务会先停止接收新请求、等待运行中的采集任务收尾，随后自动重启；期间页面会短暂无法访问。')) return
+    ctx.restarting.value = true
+    try {
+      const res = await ctx.request('/api/settings/v1/restart', ctx.jsonOptions('POST', {}))
+      if (!res || !res.ok) throw new Error(res?.error || '重启请求被拒绝')
+      ctx.notify(res.message || '服务正在重启…')
+      // 重启生效后重新拉一次配置：数据库连接目标、启动项等只读值都会更新。
+      if (await waitForHealthy()) {
+        await loadSettings()
+        ctx.notify('服务已重启完成')
+      } else {
+        ctx.notify('等待服务恢复超时，请稍后手动刷新页面', 'err')
+      }
+    } catch (e) {
+      ctx.error.value = e.message
+      ctx.notify(e.message, 'err')
+    } finally {
+      ctx.restarting.value = false
+    }
+  }
+
+  return { loadSettings, saveSettings, testDatabase, restartService }
 }

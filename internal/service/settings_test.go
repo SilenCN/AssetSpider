@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/SilenCN/AssetSpider/internal/config"
@@ -91,5 +92,61 @@ func TestSettingsTestDatabaseValidate(t *testing.T) {
 	}
 	if res.Error == "" {
 		t.Fatal("校验失败应带原因")
+	}
+}
+
+// TestSettingsRestartUnsupported 未注入重启钩子（如测试直接构造服务）时应明确拒绝，
+// 而不是给页面一个「已重启」的假象。
+func TestSettingsRestartUnsupported(t *testing.T) {
+	svc := newTestSettings(t, config.Default())
+
+	res := svc.Restart()
+	if res.OK || res.Error == "" {
+		t.Fatalf("未注入钩子应拒绝重启: %+v", res)
+	}
+}
+
+// TestSettingsRestartOnce 重启请求只接受一次：进程即将被替换，重复触发没有意义。
+func TestSettingsRestartOnce(t *testing.T) {
+	svc := newTestSettings(t, config.Default())
+	calls := 0
+	svc.SetRestartHook(func() error {
+		calls++
+		return nil
+	})
+
+	if res := svc.Restart(); !res.OK {
+		t.Fatalf("首次重启应被接受: %+v", res)
+	}
+	if calls != 1 {
+		t.Fatalf("钩子应被调用 1 次，实际 %d", calls)
+	}
+
+	if res := svc.Restart(); res.OK || res.Error == "" {
+		t.Fatalf("重复重启应被拒绝: %+v", res)
+	}
+	if calls != 1 {
+		t.Fatalf("重复请求不应再次触发钩子，实际 %d 次", calls)
+	}
+}
+
+// TestSettingsRestartHookError 钩子拒绝（例如已有重启在排队）时回滚状态，
+// 让管理员修正后还能重试。
+func TestSettingsRestartHookError(t *testing.T) {
+	svc := newTestSettings(t, config.Default())
+	fail := true
+	svc.SetRestartHook(func() error {
+		if fail {
+			return errors.New("重启请求已提交")
+		}
+		return nil
+	})
+
+	if res := svc.Restart(); res.OK || res.Error == "" {
+		t.Fatalf("钩子报错时应返回失败原因: %+v", res)
+	}
+	fail = false
+	if res := svc.Restart(); !res.OK {
+		t.Fatalf("上次失败后应允许重试: %+v", res)
 	}
 }

@@ -53,3 +53,11 @@ func (s *SettingsController) TestDatabase(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, s.svc.TestDatabase(req.Database))
 }
+
+// Restart 重启服务进程（管理员）。
+//
+// 请求被接受后返回 202：接口先正常响应，进程随后才优雅停止并原地重建，
+// 因此页面能拿到「重启中」而不是连接被掐断。不支持重启时返回 ok=false 与原因。
+func (s *SettingsController) Restart(c *gin.Context) {
+	c.JSON(http.StatusAccepted, s.svc.Restart())
+}

@@ -44,7 +44,7 @@ go build -o bin/assetspider .
 | 播放 | 播放组解析为线路 / 剧集，m3u8（hls.js）/ 直链 / 解析页 iframe 三种承载方式 | [采集能力](docs/collecting.md) |
 | 站点 | 手工添加、JSON 导入 / 导出，以及**网络订阅**：填一个远程 JSON 地址，按间隔自动刷新或手动刷新 | [配置](docs/configuration.md) |
 | 页面 | 资源库、站点配置、视频分类、采集记录、系统设置、用户管理（角色与站点白名单） | [前端](docs/frontend.md) |
-| 运维 | 系统设置在线热更并写回 YAML；推送 `main` 自动部署，健康检查失败自动回滚 | [配置](docs/configuration.md) · [部署](docs/deployment.md) |
+| 运维 | 系统设置在线热更并写回 YAML；设置页一键重启（优雅停止后原地重建进程）；推送 `main` 自动部署，健康检查失败自动回滚 | [配置](docs/configuration.md) · [部署](docs/deployment.md) |
 
 ## 文档
 

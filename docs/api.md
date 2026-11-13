@@ -41,6 +41,7 @@
 | settings | GET | `/api/settings/v1` | 系统设置：可编辑的 `collector` 配置 + `fields[]` 元信息 + `envLocked` 只读字段 + 只读启动项 `static`（登录可读） |
 | settings | PUT | `/api/settings/v1` | 在线更新采集配置（**仅管理员**）：校验后写回 `conf/config.yaml` 并即时生效；支持只提交部分字段，被环境变量接管的字段拒绝修改 |
 | settings | POST | `/api/settings/v1/database/test` | 保存前**测试数据库连接**（**仅管理员**）：body `{database:{driver,path,dsn,maxOpenConns,maxIdleConns,connMaxLifetimeMin}}`；校验 + 建立临时连接并 Ping，不写盘、不替换运行中的连接。连接成败是预期的探测结果，统一返回 `200`：`{ok:true,message}` 或 `{ok:false,error}`；DSN 留空且为 MySQL 时沿用当前已配置的连接串 |
+| settings | POST | `/api/settings/v1/restart` | **重启服务**（**仅管理员**）：先优雅停止 HTTP（等待在途请求）、停调度并等采集任务收尾、关闭数据库，再用同一可执行文件 / 参数 / 环境变量**原地重建进程**（`exec`，PID 不变，systemd 不感知退出）。接口先返回 `202` 再停服，故页面能拿到响应：接受 `{ok:true,message}`；重复触发、平台不支持或投递失败返回 `{ok:false,error}` |
 | tasks | GET | `/api/tasks/v1` | 采集任务列表：`capacity`（`maxConcurrent` / `running` / `queued`）+ `items[]`（排队中、运行中、暂停中，含实时进度） |
 | tasks | POST | `/api/tasks/v1` | **异步**发起采集任务，body `{sourceId, mode}`，返回 `202` 与任务视图（`jobId`）；同站点已有任务时新任务排队（`status=queued`），不返回冲突 |
 | tasks | PUT | `/api/tasks/v1/:id` | 更新任务状态：`{"status":"paused"}` 暂停 / `{"status":"running"}` 继续（`:id` 为 `jobId`） |

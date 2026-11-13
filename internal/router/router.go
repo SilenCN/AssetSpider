@@ -117,6 +117,8 @@ func registerV1(api *gin.RouterGroup, set controller.Set) {
 	settings.GET("", set.Settings.Get)
 	admin.PUT("/settings/"+APIVersion, set.Settings.Update)
 	admin.POST("/settings/"+APIVersion+"/database/test", set.Settings.TestDatabase)
+	// 重启服务：会短暂中断访问，仅管理员可触发。
+	admin.POST("/settings/"+APIVersion+"/restart", set.Settings.Restart)
 
 	// 采集记录
 	jobs := secured.Group("/jobs/" + APIVersion)

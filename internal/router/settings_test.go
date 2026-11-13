@@ -198,3 +198,38 @@ func TestSettingsRequireAdmin(t *testing.T) {
 		t.Fatalf("普通用户改设置应返回 403，实际 %d", got.Code)
 	}
 }
+
+// TestSettingsRestartAPI 重启接口只允许管理员调用：重启会短暂中断全体用户的访问。
+// 测试里没有 main 在监听重启通道，因此请求只会被接受并排队，进程不会真的重建。
+func TestSettingsRestartAPI(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	authCreateUser(t, r, testToken, "viewer2", "viewer123456", nil)
+	viewerToken, _ := login(t, r, "viewer2", "viewer123456")
+	if got := authCall(r, http.MethodPost, "/api/settings/v1/restart", viewerToken, nil); got.Code != http.StatusForbidden {
+		t.Fatalf("普通用户重启应返回 403，实际 %d %s", got.Code, got.Body.String())
+	}
+
+	// 管理员：请求被接受（202），响应先于停服返回，页面才能显示「重启中」。
+	w := doJSON(r, http.MethodPost, "/api/settings/v1/restart", nil)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("管理员重启应返回 202，实际 %d %s", w.Code, w.Body.String())
+	}
+	var res service.RestartResult
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK {
+		t.Fatalf("重启请求应被接受: %+v", res)
+	}
+
+	// 同一进程生命周期内重复触发应被拒绝：进程即将被替换，再排一次没有意义。
+	w = doJSON(r, http.MethodPost, "/api/settings/v1/restart", nil)
+	var again service.RestartResult
+	if err := json.Unmarshal(w.Body.Bytes(), &again); err != nil {
+		t.Fatal(err)
+	}
+	if again.OK || again.Error == "" {
+		t.Fatalf("重复重启应被拒绝: %+v", again)
+	}
+}

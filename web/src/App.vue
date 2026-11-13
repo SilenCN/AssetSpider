@@ -22,7 +22,7 @@ const {
   isAdmin, currentUsername, token, clearAuth, setAuth, pwdModal, pwdForm, doChangePassword,
   tab, switchTab, navItems, currentPageTitle, sidebarCollapsed, sidebarMobileOpen, toggleSidebar,
   health, sources, capacity, settings, settingsForm, dbForm, settingsDirty, settingsSaving, saveSettings,
-  dbTesting, dbTestResult, testDatabase,
+  dbTesting, dbTestResult, testDatabase, restarting, restartService,
   error, notice, detail, detailLoading, loadVideos,
   form, editing, sourceOpen, openSourceForm, closeSourceForm, editSource, saveSource,
   removeSource, clearSourceData, toggleSource, sourcePayload, emptyForm, resetForm,

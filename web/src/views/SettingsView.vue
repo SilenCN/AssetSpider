@@ -5,7 +5,7 @@ import { computed, inject } from 'vue'
 import { validateField } from '../settings.js'
 const {
   capacity, settings, settingsForm, dbForm, settingsDirty, settingsSaving,
-  saveSettings, dbTesting, dbTestResult, testDatabase
+  saveSettings, dbTesting, dbTestResult, testDatabase, restarting, restartService
 } = inject('app')
 
 const fields = computed(() => settings.value?.fields || [])
@@ -158,6 +158,24 @@ const canSave = computed(() => settingsDirty.value && !anyInvalid.value && !sett
                 当前连接目标：{{ settings.database.display }}
               </p>
               <p class="setting-help">{{ settings.database.applyNote }}</p>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="list-head">
+              <h2>服务维护</h2>
+              <span class="muted">重启以加载「重启生效」的配置（数据库后端、启动项）</span>
+            </div>
+            <p class="setting-help">
+              重启会先停止接收新请求，等待在途请求与运行中的采集任务收尾（最长约 10 秒），再用同一份配置原地重建进程；
+              期间页面会短暂无法访问，恢复后自动刷新。未完成的采集任务会在下次启动时自动恢复。
+            </p>
+            <div class="settings-actions">
+              <button type="button" class="danger" :disabled="restarting || settingsSaving" @click="restartService">
+                {{ restarting ? '重启中…' : '重启服务' }}
+              </button>
+              <span v-if="restarting" class="muted tiny">正在等待服务恢复，页面会自动刷新</span>
+              <span v-else class="muted tiny">仅修改了采集配置时无需重启，保存即生效</span>
             </div>
           </section>
         </template>

@@ -102,6 +102,8 @@ sudo cp /opt/assetspider/releases/backup-XXXX/assetspider /opt/assetspider/bin/a
 sudo systemctl restart assetspider
 ```
 
+> 改完设置页里「重启生效」的配置（数据库后端等）也可以直接点「服务维护 → 重启服务」：进程会用 `exec` 原地重建（PID 不变，systemd 不会触发 Restart 策略），无需登录服务器。若要更换二进制（升级 / 回滚），仍应使用上面的 `systemctl restart`。
+
 **不走 GitHub 的手动部署**：按 `deploy.yml` 里「构建自包含发布包」步骤本地打一个 tar.gz（或直接使用 CI 产物），上传到服务器执行：
 
 ```bash

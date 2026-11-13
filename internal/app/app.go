@@ -7,8 +7,10 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/SilenCN/AssetSpider/internal/config"
@@ -25,6 +27,13 @@ type App struct {
 	repos     *repository.Repositories
 	crawl     *service.CrawlService
 	scheduler *service.ScheduleService
+
+	// restart 承接「设置页点重启」的请求：service 只负责投递，真正的收尾与重建
+	// 由 main 完成（它才是进程生命周期的持有者）。缓冲 1，重复触发直接拒绝。
+	restart chan struct{}
+	// Close 会被「正常退出」与「重启」两条路径调用，保证只真正执行一次收尾。
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // New 按四层顺序完成构造与注入。
@@ -100,18 +109,47 @@ func New(cfg *config.Config) (*App, error) {
 	}
 
 	// 第 1 层：路由
-	return &App{Engine: router.New(set), repos: repos, crawl: crawlSvc, scheduler: schedSvc}, nil
+	a := &App{
+		Engine:    router.New(set),
+		repos:     repos,
+		crawl:     crawlSvc,
+		scheduler: schedSvc,
+		restart:   make(chan struct{}, 1),
+	}
+	// 设置页的「重启服务」只是投递一个请求：真正的停服与原地重建由 main 执行，
+	// 否则会出现在 HTTP 处理器里关闭自己数据库连接的竞态。
+	settingsSvc.SetRestartHook(a.requestRestart)
+	return a, nil
+}
+
+// RestartRequested 返回重启请求通道，由 main 与信号一起 select 监听。
+func (a *App) RestartRequested() <-chan struct{} {
+	return a.restart
+}
+
+// requestRestart 投递一次重启请求；重复触发（通道已满）返回错误，让页面提示「已在进行中」。
+func (a *App) requestRestart() error {
+	select {
+	case a.restart <- struct{}{}:
+		return nil
+	default:
+		return errors.New("重启请求已提交，正在等待进程重建")
+	}
 }
 
 // Close 先等异步采集任务收尾再释放数据库连接：
 // 已完成的任务把统计/状态写完整，未跑完的留给下次启动自动恢复。
+// 重启路径与退出路径都会调用它，用 sync.Once 保证收尾只做一次。
 func (a *App) Close() error {
-	// 先停调度器：否则它可能在数据库已关闭后还去读站点配置 / 写触发时间。
-	if a.scheduler != nil {
-		a.scheduler.Stop()
-	}
-	if a.crawl != nil {
-		a.crawl.WaitForTasks(3 * time.Second)
-	}
-	return a.repos.Close()
+	a.closeOnce.Do(func() {
+		// 先停调度器：否则它可能在数据库已关闭后还去读站点配置 / 写触发时间。
+		if a.scheduler != nil {
+			a.scheduler.Stop()
+		}
+		if a.crawl != nil {
+			a.crawl.WaitForTasks(3 * time.Second)
+		}
+		a.closeErr = a.repos.Close()
+	})
+	return a.closeErr
 }
