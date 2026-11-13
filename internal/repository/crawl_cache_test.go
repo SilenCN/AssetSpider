@@ -287,6 +287,37 @@ func TestCrawlCacheEliminatesPerPageQueries(t *testing.T) {
 	}
 }
 
+// TestCrawlCachePreloadedFromExistingDB 覆盖最贴近生产的核心场景：对一个已经
+// 采集过、库里已有全部分类 / 标签 / 地域与关联的老库再跑一次全量采集。此时缓存
+// 由「预读数据库」而非「缓存路径自己插入」填充，两者字段映射必须一致。
+func TestCrawlCachePreloadedFromExistingDB(t *testing.T) {
+	pages := cacheTestPages()
+	r := newTestRepos(t)
+	// 先用无缓存路径把库采满（模拟历史数据），记下归档结果。
+	for _, page := range pages {
+		runCacheTestPage(t, r, nil, cloneVideos(page))
+	}
+	before := crawlSnapshot(t, r)
+
+	cache, err := NewCrawlCache(1, r.Categories, r.Tags, r.Areas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cache.cats) == 0 || len(cache.tags) == 0 || len(cache.areas) == 0 {
+		t.Fatalf("预读老库后缓存应已有类目: cats=%d tags=%d areas=%d",
+			len(cache.cats), len(cache.tags), len(cache.areas))
+	}
+	// 重采与当前库状态一致的那一页：类目 / 层级 / 关联都应全部命中，0 条归档 SQL。
+	last := pages[len(pages)-1]
+	if n := countCatalogSQL(t, r, cache, cloneVideos(last)); n != 0 {
+		t.Errorf("预读老库后类目应全部命中，实际发了 %d 条归档 SQL", n)
+	}
+	runCacheTestPage(t, r, cache, cloneVideos(last))
+	if after := crawlSnapshot(t, r); before != after {
+		t.Fatalf("老库重采后归档结果发生漂移\n--- 之前 ---\n%s\n--- 之后 ---\n%s", before, after)
+	}
+}
+
 // TestLinkVideosOnlyWritesChangedRows 验证关联差异写：未变不写、变化更新、清空清除。
 func TestLinkVideosOnlyWritesChangedRows(t *testing.T) {
 	r := newTestRepos(t)
