@@ -111,8 +111,17 @@ func Load(path string) (*Config, error) {
 	cfg := Default()
 	cfg.path = path
 	cfg.envKeys = map[string]bool{}
-	// 记录哪些 collector 键被环境变量接管：这些字段在线不可改（改了也会被下次启动覆盖）。
-	markEnv := func(name string) { cfg.envKeys[EnvOverrides[name]] = true }
+	// 记录哪些 collector / database 键被环境变量接管：这些字段在线不可改
+	//（改了也会被下次启动覆盖）。env 变量名同时映射到两个覆盖表里。
+	markEnv := func(name string) {
+		if key, ok := EnvOverrides[name]; ok {
+			cfg.envKeys[key] = true
+			return
+		}
+		if key, ok := DBEnvOverrides[name]; ok {
+			cfg.envKeys[key] = true
+		}
+	}
 	if path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -128,12 +137,15 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("ASSETSPIDER_DB_PATH"); v != "" {
 		cfg.Database.Path = v
+		markEnv("ASSETSPIDER_DB_PATH")
 	}
 	if v := os.Getenv("ASSETSPIDER_DB_DRIVER"); v != "" {
 		cfg.Database.Driver = v
+		markEnv("ASSETSPIDER_DB_DRIVER")
 	}
 	if v := os.Getenv("ASSETSPIDER_DB_DSN"); v != "" {
 		cfg.Database.DSN = v
+		markEnv("ASSETSPIDER_DB_DSN")
 	}
 	for _, item := range []struct {
 		name string
@@ -143,8 +155,12 @@ func Load(path string) (*Config, error) {
 		{"ASSETSPIDER_DB_MAX_IDLE_CONNS", &cfg.Database.MaxIdleConns},
 		{"ASSETSPIDER_DB_CONN_MAX_LIFETIME", &cfg.Database.ConnMaxLifetimeMin},
 	} {
+		before := *item.dst
 		if err := utils.EnvInt(item.name, item.dst); err != nil {
 			return nil, err
+		}
+		if *item.dst != before {
+			markEnv(item.name)
 		}
 	}
 	if v := os.Getenv("ASSETSPIDER_WEB_DIR"); v != "" {

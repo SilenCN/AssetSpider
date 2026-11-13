@@ -1,6 +1,10 @@
 package service
 
-import "github.com/SilenCN/AssetSpider/internal/config"
+import (
+	"strings"
+
+	"github.com/SilenCN/AssetSpider/internal/config"
+)
 
 // SettingField 描述一个可在线编辑的配置项，供前端渲染表单与提示。
 type SettingField struct {
@@ -14,14 +18,29 @@ type SettingField struct {
 	ReadOnly bool   `json:"readOnly"` // 被环境变量接管，页面只读
 }
 
-// SettingsView 是设置页的响应：可编辑的采集配置 + 只读的启动配置。
+// SettingsView 是设置页的响应：可编辑的采集配置 + 可编辑的数据库配置 + 只读启动配置。
 type SettingsView struct {
 	Collector          config.CollectorConfig `json:"collector"`
 	Fields             []SettingField         `json:"fields"`
 	EnvLocked          []string               `json:"envLocked"`          // 被 env 接管的 YAML 键
 	Static             StaticSettings         `json:"static"`             // 启动期配置，只读
+	Database           DatabaseSettingsView   `json:"database"`           // 可后台编辑的数据库配置（重启生效）
 	ConfigPath         string                 `json:"configPath"`         // 配置文件路径，便于排错
 	MaxConcurrentLimit int                    `json:"maxConcurrentLimit"` // 在线并发上限（1..64）
+}
+
+// DatabaseSettingsView 是设置页里可编辑的数据库配置视图。
+// DSN 含密码，绝不回显明文：只暴露是否已配置（dsnConfigured）与脱敏连接目标（display）。
+type DatabaseSettingsView struct {
+	Driver             string `json:"driver"`             // sqlite | mysql
+	Path               string `json:"path"`               // SQLite 文件路径
+	DSNConfigured      bool   `json:"dsnConfigured"`      // MySQL 连接串是否已配置（不回显明文）
+	Display            string `json:"display"`            // 脱敏连接目标（host/db），不含密码
+	MaxOpenConns       int    `json:"maxOpenConns"`       // 连接池上限，0 用默认
+	MaxIdleConns       int    `json:"maxIdleConns"`       // 空闲连接上限，0 用默认
+	ConnMaxLifetimeMin int    `json:"connMaxLifetimeMin"` // 连接最长存活分钟，0 用默认
+	ReadOnly           bool   `json:"readOnly"`           // 任意字段被环境变量接管，整段只读
+	ApplyNote          string `json:"applyNote"`          // 应用时机提示
 }
 
 // StaticSettings 是只能改配置文件 + 重启生效的启动项，展示给管理员参考。
@@ -79,6 +98,19 @@ func (s *SettingsService) Get() SettingsView {
 		}
 		fields = append(fields, f)
 	}
+	// 数据库段：任意字段被环境变量接管则整段只读。
+	dbKeys := map[string]bool{}
+	for _, yk := range config.DBEnvOverrides {
+		dbKeys[yk] = true
+	}
+	dbReadOnly := false
+	for _, k := range s.store.EnvOverridden() {
+		if dbKeys[k] {
+			dbReadOnly = true
+			break
+		}
+	}
+	db := cfg.Database
 	return SettingsView{
 		Collector: cfg.Collector,
 		Fields:    fields,
@@ -91,21 +123,51 @@ func (s *SettingsService) Get() SettingsView {
 			TokenTTLHours:  cfg.Auth.TokenTTLHours,
 			BCryptCost:     cfg.Auth.BCryptCost,
 		},
+		Database: DatabaseSettingsView{
+			Driver:             db.Driver,
+			Path:               db.Path,
+			DSNConfigured:      strings.TrimSpace(db.DSN) != "",
+			Display:            db.Display(),
+			MaxOpenConns:       db.MaxOpenConns,
+			MaxIdleConns:       db.MaxIdleConns,
+			ConnMaxLifetimeMin: db.ConnMaxLifetimeMin,
+			ReadOnly:           dbReadOnly,
+			ApplyNote:          "修改后需重启服务生效；切换数据库后端不会热重载连接，重启后新配置才生效。",
+		},
 		ConfigPath:         s.store.Path(),
 		MaxConcurrentLimit: 64,
 	}
 }
 
-// Update 在线更新采集配置：存储层校验 + 持久化 + 替换内存快照后，
-// 同步并发限流器，让 maxConcurrent 的改动也立即生效。
-func (s *SettingsService) Update(in config.CollectorConfig) (SettingsView, error) {
+// SettingsUpdateInput 是 PUT /api/settings/v1 的请求体：采集配置与数据库配置一起提交。
+type SettingsUpdateInput struct {
+	Collector config.CollectorConfig `json:"collector"`
+	Database  config.DatabaseConfig  `json:"database"`
+}
+
+// databaseUnchanged 判断数据库子对象是否为「全零」——前端只改采集配置时数据库段
+// 会原样回传默认值，此时跳过数据库写盘，避免把零值覆盖进配置文件。
+func databaseUnchanged(db config.DatabaseConfig) bool {
+	return db.Driver == "" && db.Path == "" && db.DSN == "" &&
+		db.MaxOpenConns == 0 && db.MaxIdleConns == 0 && db.ConnMaxLifetimeMin == 0
+}
+
+// Update 在线更新采集配置与数据库配置：存储层校验 + 持久化 + 替换内存快照后，
+// 同步并发限流器，让 maxConcurrent 的改动也立即生效。数据库后端切换在下次启动时生效。
+func (s *SettingsService) Update(in SettingsUpdateInput) (SettingsView, error) {
 	// 页面可能不给 maxConcurrent 上限保护之外的额外校验，存储层 Validate 会兜底；
 	// 这里再补一条与并发接口一致的上限，避免配置页绕过 1..64。
-	if in.MaxConcurrent < 1 || in.MaxConcurrent > 64 {
+	if in.Collector.MaxConcurrent < 1 || in.Collector.MaxConcurrent > 64 {
 		return SettingsView{}, invalid("max_concurrent 需在 1..64 之间")
 	}
-	if _, err := s.store.UpdateCollector(in); err != nil {
+	if _, err := s.store.UpdateCollector(in.Collector); err != nil {
 		return SettingsView{}, invalid("%s", err.Error())
+	}
+	// 数据库配置为空结构体说明前端未携带（只改了采集配置），跳过以免用零值覆盖。
+	if !databaseUnchanged(in.Database) {
+		if _, err := s.store.UpdateDatabase(in.Database); err != nil {
+			return SettingsView{}, invalid("%s", err.Error())
+		}
 	}
 	s.crawl.ApplyLive()
 	return s.Get(), nil

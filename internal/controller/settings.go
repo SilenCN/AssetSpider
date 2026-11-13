@@ -21,12 +21,11 @@ func (s *SettingsController) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, s.svc.Get())
 }
 
-// Update 在线更新采集配置：校验通过后写回配置文件并立即生效。
+// Update 在线更新采集配置与数据库配置：校验通过后写回配置文件并（视配置项）立即生效。
 //
-// 先把当前配置作为默认值再绑定请求体：这样前端只提交部分字段时，
-// 未提交的字段保持原值，避免被零值覆盖导致校验失败或误改。
+// 请求体为 { collector, database }；数据库后端切换在下次启动生效，采集配置即时生效。
 func (s *SettingsController) Update(c *gin.Context) {
-	in := s.svc.Current()
+	var in service.SettingsUpdateInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		badRequest(c, err.Error())
 		return

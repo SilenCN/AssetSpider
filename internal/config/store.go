@@ -29,6 +29,17 @@ var EnvOverrides = map[string]string{
 	"ASSETSPIDER_COLLECTOR_USER_AGENT":     "user_agent",
 }
 
+// DBEnvOverrides 记录哪些 database 字段被环境变量覆盖（值为对应的 YAML 键名）。
+// 与 EnvOverrides 同样的逻辑：被环境变量接管的字段在设置页只读。
+var DBEnvOverrides = map[string]string{
+	"ASSETSPIDER_DB_DRIVER":            "driver",
+	"ASSETSPIDER_DB_PATH":              "path",
+	"ASSETSPIDER_DB_DSN":               "dsn",
+	"ASSETSPIDER_DB_MAX_OPEN_CONNS":    "max_open_conns",
+	"ASSETSPIDER_DB_MAX_IDLE_CONNS":    "max_idle_conns",
+	"ASSETSPIDER_DB_CONN_MAX_LIFETIME": "conn_max_lifetime_minutes",
+}
+
 // Store 是运行时配置的线程安全容器。
 //
 // 读路径完全无锁竞争：读方法拿 RLock 复制一份 CollectorConfig 值返回；写方法在
@@ -143,32 +154,121 @@ func collectorFieldEqual(key string, a, b CollectorConfig) bool {
 	return true
 }
 
-// collectorScalar 描述一个 collector 字段如何映射到 YAML 节点值。
-type collectorScalar struct {
+// dbFieldEqual 比较某个 YAML 键在两份数据库配置里的值是否一致。
+func dbFieldEqual(key string, a, b DatabaseConfig) bool {
+	switch key {
+	case "driver":
+		return a.Driver == b.Driver
+	case "path":
+		return a.Path == b.Path
+	case "dsn":
+		return a.DSN == b.DSN
+	case "max_open_conns":
+		return a.MaxOpenConns == b.MaxOpenConns
+	case "max_idle_conns":
+		return a.MaxIdleConns == b.MaxIdleConns
+	case "conn_max_lifetime_minutes":
+		return a.ConnMaxLifetimeMin == b.ConnMaxLifetimeMin
+	}
+	return true
+}
+
+// UpdateDatabase 校验并在线更新数据库配置：写回 YAML → 替换内存快照。
+//
+// 数据库后端在下次启动时由 repository.Open 按新配置重建连接，因此此处只持久化与内存
+// 快照，不热重载连接（与「静态启动项」语义一致）。被环境变量覆盖的字段若与当前值不同
+// 则拒绝修改。DSN 含密码，页面不回显明文：留空且为 MySQL 时沿用现有连接串，避免误清空。
+func (s *Store) UpdateDatabase(in DatabaseConfig) (Config, error) {
+	next := s.Current()
+
+	// 1) 不让页面改动被环境变量接管的字段（改动会被下次启动覆盖）。
+	var locked []string
+	for envName, key := range DBEnvOverrides {
+		if !s.envKeys[key] {
+			continue
+		}
+		if !dbFieldEqual(key, in, next.Database) {
+			locked = append(locked, fmt.Sprintf("%s（由 %s 提供）", key, envName))
+		}
+	}
+	if len(locked) > 0 {
+		sort.Strings(locked)
+		return Config{}, fmt.Errorf("以下数据库配置由环境变量控制，请在启动环境里修改，页面不可改：%s", strings.Join(locked, "、"))
+	}
+
+	// 2) DSN 处理：SQLite 不需要 DSN，统一清空；MySQL 留空则沿用现有连接串。
+	if in.Driver == "sqlite" {
+		in.DSN = ""
+	} else if in.DSN == "" {
+		in.DSN = next.Database.DSN
+	}
+
+	// 3) 校验整份配置（只替换 database，其余段原样保留）。
+	next.Database = in
+	if err := next.Validate(); err != nil {
+		return Config{}, err
+	}
+
+	// 4) 先落盘，再换内存快照：落盘失败就整体失败，避免不一致。
+	if s.path != "" {
+		if err := writeDatabaseYAML(s.path, in); err != nil {
+			return Config{}, fmt.Errorf("写回配置文件失败: %w", err)
+		}
+	}
+	s.mu.Lock()
+	s.cfg = next
+	s.mu.Unlock()
+	return next, nil
+}
+
+// scalarItem 描述一个配置字段如何映射到 YAML 标量节点（键 / 值 / 类型标签）。
+type scalarItem struct {
 	key   string
 	value string
 	tag   string // !!int / !!str
-	apply func(*CollectorConfig, string) error
 }
 
-func collectorScalars(cc CollectorConfig) []collectorScalar {
-	return []collectorScalar{
-		{"timeout_seconds", strconv.Itoa(cc.TimeoutSeconds), "!!int", func(c *CollectorConfig, v string) error { n, e := strconv.Atoi(v); c.TimeoutSeconds = n; return e }},
-		{"max_pages", strconv.Itoa(cc.MaxPages), "!!int", func(c *CollectorConfig, v string) error { n, e := strconv.Atoi(v); c.MaxPages = n; return e }},
-		{"page_size", strconv.Itoa(cc.PageSize), "!!int", func(c *CollectorConfig, v string) error { n, e := strconv.Atoi(v); c.PageSize = n; return e }},
-		{"default_incremental_hours", strconv.Itoa(cc.DefaultHours), "!!int", func(c *CollectorConfig, v string) error { n, e := strconv.Atoi(v); c.DefaultHours = n; return e }},
-		{"max_concurrent", strconv.Itoa(cc.MaxConcurrent), "!!int", func(c *CollectorConfig, v string) error { n, e := strconv.Atoi(v); c.MaxConcurrent = n; return e }},
-		{"retry_times", strconv.Itoa(cc.RetryTimes), "!!int", func(c *CollectorConfig, v string) error { n, e := strconv.Atoi(v); c.RetryTimes = n; return e }},
-		{"retry_backoff_seconds", strconv.Itoa(cc.RetryBackoffSeconds), "!!int", func(c *CollectorConfig, v string) error { n, e := strconv.Atoi(v); c.RetryBackoffSeconds = n; return e }},
-		{"progress_save_seconds", strconv.Itoa(cc.ProgressSaveSeconds), "!!int", func(c *CollectorConfig, v string) error { n, e := strconv.Atoi(v); c.ProgressSaveSeconds = n; return e }},
-		{"page_interval_ms", strconv.Itoa(cc.PageIntervalMs), "!!int", func(c *CollectorConfig, v string) error { n, e := strconv.Atoi(v); c.PageIntervalMs = n; return e }},
-		{"user_agent", cc.UserAgent, "!!str", func(c *CollectorConfig, v string) error { c.UserAgent = v; return nil }},
+// collectorScalars 把采集配置转成可写回 YAML 的标量列表。
+func collectorScalars(cc CollectorConfig) []scalarItem {
+	return []scalarItem{
+		{"timeout_seconds", strconv.Itoa(cc.TimeoutSeconds), "!!int"},
+		{"max_pages", strconv.Itoa(cc.MaxPages), "!!int"},
+		{"page_size", strconv.Itoa(cc.PageSize), "!!int"},
+		{"default_incremental_hours", strconv.Itoa(cc.DefaultHours), "!!int"},
+		{"max_concurrent", strconv.Itoa(cc.MaxConcurrent), "!!int"},
+		{"retry_times", strconv.Itoa(cc.RetryTimes), "!!int"},
+		{"retry_backoff_seconds", strconv.Itoa(cc.RetryBackoffSeconds), "!!int"},
+		{"progress_save_seconds", strconv.Itoa(cc.ProgressSaveSeconds), "!!int"},
+		{"page_interval_ms", strconv.Itoa(cc.PageIntervalMs), "!!int"},
+		{"user_agent", cc.UserAgent, "!!str"},
+	}
+}
+
+// databaseScalars 把数据库配置转成可写回 YAML 的标量列表。
+func databaseScalars(db DatabaseConfig) []scalarItem {
+	return []scalarItem{
+		{"driver", db.Driver, "!!str"},
+		{"path", db.Path, "!!str"},
+		{"dsn", db.DSN, "!!str"},
+		{"max_open_conns", strconv.Itoa(db.MaxOpenConns), "!!int"},
+		{"max_idle_conns", strconv.Itoa(db.MaxIdleConns), "!!int"},
+		{"conn_max_lifetime_minutes", strconv.Itoa(db.ConnMaxLifetimeMin), "!!int"},
 	}
 }
 
 // writeCollectorYAML 只改写 collector 段里我们认识的那几个键，保留其余内容、注释与顺序。
-// 用 yaml.Node 逐节点更新，而不是把整份配置重新 Marshal——后者会丢掉所有注释。
 func writeCollectorYAML(path string, cc CollectorConfig) error {
+	return writeSectionYAML(path, "collector", collectorScalars(cc))
+}
+
+// writeDatabaseYAML 只改写 database 段，保留其余内容与注释（与 collector 同一套写回逻辑）。
+func writeDatabaseYAML(path string, db DatabaseConfig) error {
+	return writeSectionYAML(path, "database", databaseScalars(db))
+}
+
+// writeSectionYAML 把给定段里我们认识的键更新为新值，保留其余内容、注释与顺序。
+// 用 yaml.Node 逐节点更新，而不是把整份配置重新 Marshal——后者会丢掉所有注释。
+func writeSectionYAML(path, section string, scalars []scalarItem) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -184,16 +284,15 @@ func writeCollectorYAML(path string, cc CollectorConfig) error {
 	if root.Kind != yaml.MappingNode {
 		return fmt.Errorf("配置文件根节点不是映射")
 	}
-	collector := mappingValue(root, "collector")
-	if collector == nil || collector.Kind != yaml.MappingNode {
-		return fmt.Errorf("配置文件缺少 collector 段")
+	target := mappingValue(root, section)
+	if target == nil || target.Kind != yaml.MappingNode {
+		return fmt.Errorf("配置文件缺少 %s 段", section)
 	}
 
-	scalars := collectorScalars(cc)
 	present := map[string]bool{}
-	for i := 0; i+1 < len(collector.Content); i += 2 {
-		key := collector.Content[i].Value
-		val := collector.Content[i+1]
+	for i := 0; i+1 < len(target.Content); i += 2 {
+		key := target.Content[i].Value
+		val := target.Content[i+1]
 		for _, sc := range scalars {
 			if key == sc.key {
 				val.Tag = sc.tag
@@ -203,12 +302,12 @@ func writeCollectorYAML(path string, cc CollectorConfig) error {
 			}
 		}
 	}
-	// 补齐配置文件里尚不存在的键（例如老版本配置没有 retry_times）。
+	// 补齐配置文件里尚不存在的键（例如老版本配置没有 retry_times / dsn）。
 	for _, sc := range scalars {
 		if present[sc.key] {
 			continue
 		}
-		collector.Content = append(collector.Content,
+		target.Content = append(target.Content,
 			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: sc.key},
 			&yaml.Node{Kind: yaml.ScalarNode, Tag: sc.tag, Value: sc.value})
 	}

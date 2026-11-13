@@ -42,14 +42,21 @@ func TestSettingsAPI(t *testing.T) {
 		t.Fatal("设置字段里应含 maxConcurrent（并发上限已从任务页迁入设置页）")
 	}
 
-	// 2) 在线更新：只提交部分字段（maxConcurrent / timeoutSeconds），其余保持原值。
+	// 2) 在线更新：在 GET 返回的全部采集字段基础上覆盖 maxConcurrent / timeoutSeconds。
 	newMax := config.Default().Collector.MaxConcurrent + 4
 	if newMax > 64 {
 		newMax = 64
 	}
+	collector := view.Collector
+	collector.MaxConcurrent = newMax
+	collector.TimeoutSeconds = 37
 	w = doJSON(r, http.MethodPut, "/api/settings/v1", map[string]interface{}{
-		"maxConcurrent":  newMax,
-		"timeoutSeconds": 37,
+		"collector": collector,
+		"database": map[string]interface{}{
+			"driver":       "sqlite",
+			"path":         config.Default().Database.Path,
+			"maxOpenConns": 16,
+		},
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("更新设置失败: %d %s", w.Code, w.Body.String())
@@ -71,14 +78,72 @@ func TestSettingsAPI(t *testing.T) {
 		t.Fatalf("并发上限未即时生效: %d %s", w.Code, w.Body.String())
 	}
 
-	// 4) 非法值拒绝：并发上限越界与超时为负。
+	// 4) 非法值拒绝：并发上限越界、超时为负、MySQL 缺 DSN。
 	for _, payload := range []map[string]interface{}{
-		{"maxConcurrent": 0}, {"maxConcurrent": 100}, {"timeoutSeconds": -5},
+		{"collector": map[string]interface{}{"maxConcurrent": 0}},
+		{"collector": map[string]interface{}{"maxConcurrent": 100}},
+		{"collector": map[string]interface{}{"timeoutSeconds": -5}},
+		{"collector": map[string]interface{}{"maxConcurrent": 3}, "database": map[string]interface{}{"driver": "mysql", "dsn": ""}},
 	} {
 		w = doJSON(r, http.MethodPut, "/api/settings/v1", payload)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("非法值 %v 应返回 400，实际 %d %s", payload, w.Code, w.Body.String())
 		}
+	}
+}
+
+func TestSettingsUpdateDatabase(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	// 1) 默认 SQLite。
+	w := doJSON(r, http.MethodGet, "/api/settings/v1", nil)
+	var before service.SettingsView
+	if err := json.Unmarshal(w.Body.Bytes(), &before); err != nil {
+		t.Fatal(err)
+	}
+	if before.Database.Driver != "sqlite" {
+		t.Fatalf("默认应为 sqlite: %+v", before.Database)
+	}
+	if before.Database.DSNConfigured {
+		t.Fatalf("SQLite 默认不应声称已配置 DSN: %+v", before.Database)
+	}
+
+	// 2) 切换到 MySQL 并填连接串。
+	dsn := "u:p@tcp(127.0.0.1:3306)/assetspider?charset=utf8mb4&parseTime=True&loc=Local"
+	col := config.Default().Collector
+	w = doJSON(r, http.MethodPut, "/api/settings/v1", map[string]interface{}{
+		"collector": col,
+		"database": map[string]interface{}{
+			"driver":       "mysql",
+			"dsn":          dsn,
+			"maxOpenConns": 32,
+		},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("更新数据库配置失败: %d %s", w.Code, w.Body.String())
+	}
+	var after service.SettingsView
+	if err := json.Unmarshal(w.Body.Bytes(), &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Database.Driver != "mysql" || !after.Database.DSNConfigured || after.Database.MaxOpenConns != 32 {
+		t.Fatalf("数据库配置未生效: %+v", after.Database)
+	}
+
+	// 3) 留空 DSN 应沿用现有连接串（不回显明文，也不误清空）。
+	w = doJSON(r, http.MethodPut, "/api/settings/v1", map[string]interface{}{
+		"collector": col,
+		"database":  map[string]interface{}{"driver": "mysql", "dsn": ""},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("留空 DSN 应沿用现有连接串: %d %s", w.Code, w.Body.String())
+	}
+	var kept service.SettingsView
+	if err := json.Unmarshal(w.Body.Bytes(), &kept); err != nil {
+		t.Fatal(err)
+	}
+	if !kept.Database.DSNConfigured {
+		t.Fatalf("留空 DSN 后连接串应仍被视为已配置: %+v", kept.Database)
 	}
 }
 

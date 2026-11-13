@@ -24,7 +24,7 @@ const { createApp } = await import('./app/index.js')
 const REQUIRED = [
   'TOKEN_KEY', 'token', 'me', 'authReady', 'initialized', 'isAdmin', 'currentUsername',
   'clearAuth', 'setAuth', 'tab', 'health', 'sources', 'videos', 'categories', 'categoryTree',
-  'jobs', 'tasks', 'users', 'capacity', 'settings', 'settingsForm', 'settingsDirty',
+  'jobs', 'tasks', 'users', 'capacity',   'settings', 'settingsForm', 'dbForm', 'settingsDirty',
   'settingsSaving', 'loadSettings', 'saveSettings', 'error', 'notice', 'notify',
   'videoQuery', 'videoSource', 'videoCategory', 'videoSort',
   'visibleCategories', 'hasActiveFilters',

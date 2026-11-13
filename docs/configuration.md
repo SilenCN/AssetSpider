@@ -19,11 +19,24 @@
 | `pageIntervalMs` | **每页间隔**（相邻两页之间的等待），降低对站点请求频率、避免被限流封禁；0 表示不限速（全速采集）。运行中的任务从下一页起立即生效，暂停 / 停机时立即中断等待 | 0..60000 毫秒 |
 | `userAgent` | 采集接口 UA | 字符串 |
 
+数据库后端（新增，可在「系统设置」页面在线编辑并写回 `conf/config.yaml`）：
+
+| 配置项 | 说明 | 范围 |
+| --- | --- | --- |
+| `driver` | 数据库驱动，`sqlite`（默认）或 `mysql` | sqlite\|mysql |
+| `path` | `driver=sqlite` 时的文件路径，相对或绝对路径 | 字符串 |
+| `dsn` | `driver=mysql` 时的连接串（含账号密码）；编辑页**不回显明文**，留空表示保持已保存值，避免误清空 | 字符串 |
+| `maxOpenConns` | MySQL 连接池上限，`<=0` 用默认 16 | ≥0 |
+| `maxIdleConns` | MySQL 空闲连接上限，`<=0` 用默认（上限一半） | ≥0 |
+| `connMaxLifetimeMin` | MySQL 连接最长存活分钟数，`<=0` 用默认 30 | ≥0 |
+
+> **重启生效**：`driver` / `dsn` / `path` 切换数据库后端需**重启服务**才生效——连接池在启动时建立、运行期不热加载；`maxOpenConns` / `maxIdleConns` / `connMaxLifetimeMin` 同样在下次建立连接时应用，建议一并重启。被 `ASSETSPIDER_DB_*` 环境变量接管的字段在页面标为只读，需改启动环境后重启。保存后写回 `conf/config.yaml` 的 `database` 段、下次启动沿用；校验失败返回 `400`，环境变量锁定的字段被改动时返回明确原因。
+
 实现要点：
 
 - **运行时热更新**：`config.Store` 持锁保存配置快照。采集循环与 Fetcher 每页 / 每请求读最新值（超时用 `context.WithTimeout` 逐请求应用，无共享 client 字段的竞争）；`maxConcurrent` 由 `CrawlService.ApplyLive` 同步到限流器；`pageIntervalMs` 每页翻页前重新读取，改完从下一页起生效，等待期间若任务被暂停 / 服务停机则通过 `ctx.Done()` 立即醒来，不会空等整个间隔。
 - **持久化且不丢注释**：写回只改 `collector` 段里认识的键，用 `yaml.Node` 逐节点更新并**保留其余配置、注释与顺序**，先写临时文件再 rename；老配置缺失的键会自动补齐。
-- **环境变量优先**：由 `ASSETSPIDER_COLLECTOR_*` 接管的字段在页面标为「环境变量」只读——在线改动会被下次启动的环境变量覆盖，因此直接禁止修改，请在启动环境里调整。设置页同时展示 `server` / `database` / `web` / `auth` 等**启动项只读值**（改这些需编辑配置文件并重启）。
+- **环境变量优先**：由 `ASSETSPIDER_COLLECTOR_*` / `ASSETSPIDER_DB_*` 接管的字段在页面标为「环境变量」只读——在线改动会被下次启动的环境变量覆盖，因此直接禁止修改，请在启动环境里调整。`server` / `web` / `auth` 等仍为**启动项只读值**（改这些需编辑配置文件并重启）；`database` 段现已可在「系统设置」页面在线编辑并写回 `conf/config.yaml`，但**数据库后端（driver / dsn / path）切换需重启服务才生效**（连接池在启动时建立、运行期不热加载），详见下文「数据库后端」小节。
 - **接口**：`GET /api/settings/v1` 登录可读，`PUT /api/settings/v1` **仅管理员**；支持只提交部分字段（未提交字段保持原值）。校验失败返回 `400`，环境变量锁定的字段被改动时返回明确原因。
 
 ## 配置文件 `conf/config.yaml`
@@ -62,7 +75,7 @@ auth:
 `ASSETSPIDER_COLLECTOR_TIMEOUT` / `_MAX_PAGES` / `_PAGE_SIZE` / `_DEFAULT_HOURS` / `_MAX_CONCURRENT` / `_RETRY_TIMES` / `_RETRY_BACKOFF` / `_PROGRESS_SAVE` / `_PAGE_INTERVAL` / `_USER_AGENT`
 （旧变量名 `_PARALLEL` 仍兼容，等价于 `_MAX_CONCURRENT`）。
 
-数据库后端选择：
+数据库后端选择（该项现已可在「系统设置」页面在线修改，但**切换后端需重启服务才生效**，详见上文「数据库后端」小节）：
 
 - **driver=sqlite（默认）**：沿用 `path` 指向的本地 SQLite 文件，单连接、无需额外服务，适合单机与小数据量。
 - **driver=mysql**：忽略 `path`，改走 `dsn` 连接串；连接池参数（max_open_conns / max_idle_conns / conn_max_lifetime）仅对 MySQL 生效。首次启动自动建表（`utf8mb4`），关键词检索走 **InnoDB FULLTEXT + ngram 分词器**（见下文），索引在后台异步建立、建好前自动降级为 `LIKE`，结果与 SQLite 分支完全一致。

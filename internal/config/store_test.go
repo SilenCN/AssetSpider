@@ -39,6 +39,18 @@ func writeSample(t *testing.T) string {
 	return path
 }
 
+// clearDBEnv 清除数据库相关的环境变量，避免部署/测试沙箱里预设的
+// ASSETSPIDER_DB_* 变量干扰「是否被环境变量覆盖」的断言（与 collector 的 t.Setenv 同理）。
+func clearDBEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{
+		"ASSETSPIDER_DB_DRIVER", "ASSETSPIDER_DB_PATH", "ASSETSPIDER_DB_DSN",
+		"ASSETSPIDER_DB_MAX_OPEN_CONNS", "ASSETSPIDER_DB_MAX_IDLE_CONNS", "ASSETSPIDER_DB_CONN_MAX_LIFETIME",
+	} {
+		t.Setenv(name, "")
+	}
+}
+
 func TestStoreUpdateCollectorPersistsAndKeepsComments(t *testing.T) {
 	path := writeSample(t)
 	cfg, err := Load(path)
@@ -135,6 +147,7 @@ func TestStoreRejectsInvalidCollector(t *testing.T) {
 
 func TestStoreLocksEnvOverriddenFields(t *testing.T) {
 	path := writeSample(t)
+	clearDBEnv(t)
 	t.Setenv("ASSETSPIDER_COLLECTOR_MAX_CONCURRENT", "9")
 	cfg, err := Load(path)
 	if err != nil {
@@ -174,4 +187,133 @@ func TestStoreNoPersistenceWithoutPath(t *testing.T) {
 	if got.Collector.MaxPages != 42 {
 		t.Fatalf("无路径时也应更新内存: %+v", got.Collector)
 	}
+}
+
+func TestStoreUpdateDatabasePersistsAndKeepsComments(t *testing.T) {
+	path := writeSample(t)
+	clearDBEnv(t)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(cfg)
+
+	in := cfg.Database
+	in.Driver = "mysql"
+	in.DSN = "u:p@tcp(127.0.0.1:3306)/assetspider?charset=utf8mb4&parseTime=True&loc=Local"
+	in.MaxOpenConns = 20
+	got, err := store.UpdateDatabase(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Database.Driver != "mysql" || got.Database.DSN != in.DSN || got.Database.MaxOpenConns != 20 {
+		t.Fatalf("内存快照未更新: %+v", got.Database)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, want := range []string{
+		"顶部注释要保留",
+		"driver: mysql",
+		"max_open_conns: 20",
+		"dsn: u:p@tcp(127.0.0.1:3306)/assetspider?charset=utf8mb4&parseTime=True&loc=Local",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("写回后缺少 %q，实际内容:\n%s", want, text)
+		}
+	}
+	// 老配置缺 driver/dsn/pool 键，应补齐。
+	for _, key := range []string{"driver:", "dsn:", "max_open_conns:", "max_idle_conns:", "conn_max_lifetime_minutes:"} {
+		if !strings.Contains(text, key) {
+			t.Errorf("应补齐缺失的数据库键 %s，实际:\n%s", key, text)
+		}
+	}
+	// 非 database 段保持原值。
+	if !strings.Contains(text, `addr: ":8080"`) || !strings.Contains(text, "bcrypt_cost: 10") {
+		t.Errorf("非 database 段被破坏:\n%s", text)
+	}
+
+	// 重新加载后新值应恢复。
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Database.Driver != "mysql" || reloaded.Database.MaxOpenConns != 20 {
+		t.Fatalf("重启后未恢复在线修改: %+v", reloaded.Database)
+	}
+}
+
+func TestStoreUpdateDatabaseKeepsDSNWhenBlank(t *testing.T) {
+	path := writeSample(t)
+	clearDBEnv(t)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(cfg)
+	// 先写入一个 MySQL DSN。
+	in := cfg.Database
+	in.Driver = "mysql"
+	in.DSN = "u:p@tcp(h:3306)/db"
+	if _, err := store.UpdateDatabase(in); err != nil {
+		t.Fatal(err)
+	}
+	// 再次提交时 DSN 留空：应沿用现有连接串，不误清空。
+	next := store.Current().Database
+	next.DSN = ""
+	got, err := store.UpdateDatabase(next)
+	if err != nil {
+		t.Fatalf("留空 DSN 应沿用现有连接串: %v", err)
+	}
+	if got.Database.DSN != "u:p@tcp(h:3306)/db" {
+		t.Fatalf("DSN 被误清空: %q", got.Database.DSN)
+	}
+}
+
+func TestStoreUpdateDatabaseRejectsInvalid(t *testing.T) {
+	clearDBEnv(t)
+	store := NewStore(Default())
+	// MySQL 缺 DSN 应被拒绝。
+	in := Default().Database
+	in.Driver = "mysql"
+	in.DSN = ""
+	if _, err := store.UpdateDatabase(in); err == nil {
+		t.Fatal("MySQL 缺 DSN 应被拒绝")
+	}
+}
+
+func TestStoreLocksEnvOverriddenDatabaseFields(t *testing.T) {
+	path := writeSample(t)
+	clearDBEnv(t)
+	t.Setenv("ASSETSPIDER_DB_DSN", "env-provided-dsn")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(cfg)
+	if got := store.EnvOverridden(); !contains(got, "dsn") {
+		t.Fatalf("应标记 dsn 被 env 覆盖，实际 %v", got)
+	}
+	// 试图改被 env 接管的字段：拒绝，且不落盘。
+	in := store.Current().Database
+	in.DSN = "different"
+	if _, err := store.UpdateDatabase(in); err == nil {
+		t.Fatal("改动 env 覆盖的数据库字段应被拒绝")
+	}
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), "different") {
+		t.Fatalf("被拒绝的修改不应落盘:\n%s", raw)
+	}
+}
+
+func contains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }

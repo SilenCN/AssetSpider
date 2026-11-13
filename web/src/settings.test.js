@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { validateField, buildPayload } from './settings.js'
+import { validateField, buildPayload, buildDatabasePayload } from './settings.js'
 
 const fields = [
   { key: 'maxConcurrent', unit: '个', min: 1, max: 64 },
@@ -35,4 +35,17 @@ test('buildPayload 跳过只读字段并转换类型', () => {
   const payload = buildPayload(fields, form)
   assert.deepEqual(payload, { maxConcurrent: 7, pageSize: 50, pageIntervalMs: 800, userAgent: 'MyBot/1.0' })
   assert.equal('timeoutSeconds' in payload, false, '只读字段不应提交')
+})
+
+test('buildDatabasePayload 生成数据库提交载荷', () => {
+  assert.deepEqual(buildDatabasePayload({
+    driver: 'mysql', path: '', dsn: ' u:p@tcp(h:3306)/db ', maxOpenConns: '32', maxIdleConns: 8, connMaxLifetimeMin: 30,
+  }), {
+    driver: 'mysql', path: '', dsn: 'u:p@tcp(h:3306)/db', maxOpenConns: 32, maxIdleConns: 8, connMaxLifetimeMin: 30,
+  }, 'dsn 应去空白、数字字段转 Number')
+
+  // 缺省值兜底：空表单也能产出合法载荷。
+  assert.deepEqual(buildDatabasePayload({}), {
+    driver: 'sqlite', path: '', dsn: '', maxOpenConns: 0, maxIdleConns: 0, connMaxLifetimeMin: 0,
+  })
 })

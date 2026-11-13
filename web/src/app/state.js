@@ -69,6 +69,12 @@ export function createState() {
   // 系统设置：采集运行时配置（并发上限已并入此处，任务页只做只读展示）
   const settings = ref(null)
   const settingsForm = ref({})
+  // 数据库配置表单：后台可编辑，提交后写回配置文件、重启服务生效。
+  // DSN 不回显明文，表单里留空表示「保留现有连接串」。
+  const dbForm = ref({
+    driver: 'sqlite', path: '', dsn: '',
+    maxOpenConns: 16, maxIdleConns: 8, connMaxLifetimeMin: 30,
+  })
   const settingsDirty = ref(false)
   const settingsSaving = ref(false)
   const error = ref('')
@@ -149,7 +155,7 @@ export function createState() {
     TOKEN_KEY, TAB_KEY, SIDEBAR_KEY, emptyForm, emptyUserForm, emptySubForm,
     token, me, authReady, initialized, isAdmin, currentUsername, clearAuth, setAuth,
     tab, health, sources, videos, categories, categoryTree, jobs, tasks, users, capacity,
-    settings, settingsForm, settingsDirty, settingsSaving, error, notice, notify,
+    settings, settingsForm, dbForm, settingsDirty, settingsSaving, error, notice, notify,
     videoQuery, videoSource, videoCategory, videoSort,
     videoPage, videoSize, videoHasMore, videoLoading, videoLoadingMore,
     videoEnd, videoSentinel,

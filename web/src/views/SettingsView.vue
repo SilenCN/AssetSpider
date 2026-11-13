@@ -4,7 +4,7 @@
 import { computed, inject } from 'vue'
 import { validateField } from '../settings.js'
 const {
-  capacity, settings, settingsForm, settingsDirty, settingsSaving,
+  capacity, settings, settingsForm, dbForm, settingsDirty, settingsSaving,
   saveSettings
 } = inject('app')
 
@@ -58,12 +58,88 @@ const canSave = computed(() => settingsDirty.value && !anyInvalid.value && !sett
             <summary>启动项（只读，需改配置文件并重启）</summary>
             <div class="settings-static">
               <div><span>监听地址</span><b class="mono">{{ settings.static?.serverAddr }}</b></div>
-              <div><span>数据库</span><b class="mono">{{ settings.static?.databaseDriver }} · {{ settings.static?.databasePath }}</b></div>
+              <div><span>当前数据库</span><b class="mono">{{ settings.static?.databaseDriver }} · {{ settings.static?.databasePath }}</b></div>
               <div><span>前端目录</span><b class="mono">{{ settings.static?.webDir }}</b></div>
               <div><span>会话有效期</span><b class="mono">{{ settings.static?.tokenTtlHours }} 小时</b></div>
               <div><span>密码哈希强度</span><b class="mono">{{ settings.static?.bcryptCost }}</b></div>
             </div>
           </details>
+
+          <section class="card" v-if="settings.database">
+            <div class="list-head">
+              <h2>数据库</h2>
+              <span class="muted">后台可编辑 · 保存后写入配置文件，需重启服务生效（不热重载连接）</span>
+            </div>
+            <p v-if="settings.database.readOnly" class="setting-error">
+              数据库配置由环境变量接管，页面只读；请在启动环境中修改后重启。
+            </p>
+            <div class="settings-grid">
+              <label class="setting-item" :class="{ locked: settings.database.readOnly }">
+                <span class="setting-label">数据库类型</span>
+                <span class="setting-control">
+                  <select v-model="dbForm.driver" :disabled="settings.database.readOnly" @change="markDirty">
+                    <option value="sqlite">SQLite（文件）</option>
+                    <option value="mysql">MySQL</option>
+                  </select>
+                </span>
+                <span class="setting-help">SQLite 适合单机部署；MySQL 适合多实例或更高并发，需提前建库并开启 ngram 全文索引。</span>
+              </label>
+
+              <template v-if="dbForm.driver === 'sqlite'">
+                <label class="setting-item" :class="{ locked: settings.database.readOnly }">
+                  <span class="setting-label">数据库文件</span>
+                  <span class="setting-control">
+                    <input v-model="dbForm.path" type="text" :disabled="settings.database.readOnly" @input="markDirty" />
+                  </span>
+                  <span class="setting-help">SQLite 数据库文件路径，相对或绝对路径。</span>
+                </label>
+              </template>
+
+              <template v-else>
+                <label class="setting-item" :class="{ locked: settings.database.readOnly }">
+                  <span class="setting-label">连接串 DSN</span>
+                  <span class="setting-control">
+                    <input v-model="dbForm.dsn" type="text"
+                           placeholder="user:pass@tcp(host:3306)/dbname?charset=utf8mb4&parseTime=True&loc=Local"
+                           :disabled="settings.database.readOnly" @input="markDirty" />
+                  </span>
+                  <span class="setting-help">
+                    含账号密码的连接串。留空表示保留当前已配置的连接串；从其它类型切换为 MySQL 时必须填写。
+                    <span v-if="settings.database.dsnConfigured" class="badge info">已配置连接串（不展示明文）</span>
+                  </span>
+                </label>
+                <label class="setting-item">
+                  <span class="setting-label">最大连接数</span>
+                  <span class="setting-control">
+                    <input v-model.number="dbForm.maxOpenConns" type="number" min="0" @input="markDirty" />
+                    <span class="setting-unit">个</span>
+                  </span>
+                  <span class="setting-help">连接池上限，0 用默认 16。</span>
+                </label>
+                <label class="setting-item">
+                  <span class="setting-label">空闲连接数</span>
+                  <span class="setting-control">
+                    <input v-model.number="dbForm.maxIdleConns" type="number" min="0" @input="markDirty" />
+                    <span class="setting-unit">个</span>
+                  </span>
+                  <span class="setting-help">空闲连接上限，0 用默认（上限的一半）。</span>
+                </label>
+                <label class="setting-item">
+                  <span class="setting-label">连接最长存活</span>
+                  <span class="setting-control">
+                    <input v-model.number="dbForm.connMaxLifetimeMin" type="number" min="0" @input="markDirty" />
+                    <span class="setting-unit">分钟</span>
+                  </span>
+                  <span class="setting-help">连接最长存活时间，0 用默认 30。</span>
+                </label>
+              </template>
+
+              <p class="setting-help mono" v-if="settings.database.display">
+                当前连接目标：{{ settings.database.display }}
+              </p>
+              <p class="setting-help">{{ settings.database.applyNote }}</p>
+            </div>
+          </section>
         </template>
       </section>
 </template>

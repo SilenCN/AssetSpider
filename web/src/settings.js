@@ -29,3 +29,16 @@ export function buildPayload(fields, form) {
   return payload
 }
 
+// buildDatabasePayload 生成数据库配置的提交载荷。
+// dsn 留空表示「保留现有连接串」（页面不回显明文，避免误清空）；driver=sqlite 时后端忽略 dsn。
+export function buildDatabasePayload(form) {
+  return {
+    driver: String(form.driver || 'sqlite'),
+    path: String(form.path ?? '').trim(),
+    dsn: String(form.dsn ?? '').trim(),
+    maxOpenConns: Number(form.maxOpenConns) || 0,
+    maxIdleConns: Number(form.maxIdleConns) || 0,
+    connMaxLifetimeMin: Number(form.connMaxLifetimeMin) || 0,
+  }
+}
+
