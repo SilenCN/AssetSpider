@@ -117,6 +117,7 @@ func (r *sourceRepository) UpdateSource(id uint, in *model.Source) (*model.Sourc
 	src.Enabled = in.Enabled
 	src.IncrementalHours = in.IncrementalHours
 	src.MaxPages = in.MaxPages
+	src.PageIntervalMs = in.PageIntervalMs
 	src.ScheduleEnabled = in.ScheduleEnabled
 	src.ScheduleCron = in.ScheduleCron
 	// ScheduleLastAt 属于运行状态，前端编辑配置时不带该字段，这里保留原值。

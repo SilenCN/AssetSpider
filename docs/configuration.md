@@ -16,7 +16,7 @@
 | `retryTimes` | 失败自动重试次数 | ≥0 |
 | `retryBackoffSeconds` | 重试首次退避秒数，之后翻倍、上限 30 秒 | >0 |
 | `progressSaveSeconds` | 运行中进度落库间隔 | >0 |
-| `pageIntervalMs` | **每页间隔**（相邻两页之间的等待），降低对站点请求频率、避免被限流封禁；0 表示不限速（全速采集）。运行中的任务从下一页起立即生效，暂停 / 停机时立即中断等待 | 0..60000 毫秒 |
+| `pageIntervalMs` | **全局每页间隔**（相邻两页之间的等待），降低对站点请求频率、避免被限流封禁；0 表示不限速（全速采集）。站点可配 `pageIntervalMs` 覆盖它（-1 表示跟随本全局值）。运行中的任务从下一页起立即生效，暂停 / 停机时立即中断等待 | 0..60000 毫秒 |
 | `userAgent` | 采集接口 UA | 字符串 |
 
 数据库后端（新增，可在「系统设置」页面在线编辑并写回 `conf/config.yaml`）：
@@ -38,7 +38,7 @@
 
 实现要点：
 
-- **运行时热更新**：`config.Store` 持锁保存配置快照。采集循环与 Fetcher 每页 / 每请求读最新值（超时用 `context.WithTimeout` 逐请求应用，无共享 client 字段的竞争）；`maxConcurrent` 由 `CrawlService.ApplyLive` 同步到限流器；`pageIntervalMs` 每页翻页前重新读取，改完从下一页起生效，等待期间若任务被暂停 / 服务停机则通过 `ctx.Done()` 立即醒来，不会空等整个间隔。
+- **运行时热更新**：`config.Store` 持锁保存配置快照。采集循环与 Fetcher 每页 / 每请求读最新值（超时用 `context.WithTimeout` 逐请求应用，无共享 client 字段的竞争）；`maxConcurrent` 由 `CrawlService.ApplyLive` 同步到限流器；`pageIntervalMs` 每页翻页前重新读取，改完从下一页起生效；站点级间隔优先于全局（站点值为 -1 时跟随全局），站点在「站点配置」里改完同样下一页生效；等待期间若任务被暂停 / 服务停机则通过 `ctx.Done()` 立即醒来，不会空等整个间隔。
 - **持久化且不丢注释**：写回只改 `collector` 段里认识的键，用 `yaml.Node` 逐节点更新并**保留其余配置、注释与顺序**，先写临时文件再 rename；老配置缺失的键会自动补齐。
 - **环境变量优先**：由 `ASSETSPIDER_COLLECTOR_*` / `ASSETSPIDER_DB_*` 接管的字段在页面标为「环境变量」只读——在线改动会被下次启动的环境变量覆盖，因此直接禁止修改，请在启动环境里调整。`server` / `web` / `auth` 等仍为**启动项只读值**（改这些需编辑配置文件并重启）；`database` 段现已可在「系统设置」页面在线编辑并写回 `conf/config.yaml`，但**数据库后端（driver / dsn / path）切换需重启服务才生效**（连接池在启动时建立、运行期不热加载），详见下文「数据库后端」小节。
 - **接口**：`GET /api/settings/v1` 登录可读，`PUT /api/settings/v1` **仅管理员**；支持只提交部分字段（未提交字段保持原值）。校验失败返回 `400`，环境变量锁定的字段被改动时返回明确原因。
@@ -102,6 +102,7 @@ auth:
 | `enabled` | 是否参与「批量采集」 |
 | `incrementalHours` | 增量时间窗（对应 `h`），0 表示使用全局默认值 |
 | `maxPages` | 单次采集最大页数，0 表示使用全局值 |
+| `pageIntervalMs` | 站点级每页间隔（毫秒），**优先于全局** `collector.page_interval_ms`；-1 表示跟随全局，0 表示不限速，其余 0..60000 为该站点自己的间隔 |
 | `scheduleEnabled` | 是否启用该站点的定时增量采集 |
 | `scheduleCron` | 5 段 cron 表达式（分 时 日 月 周），如 `0 3 * * *`；启用时必填 |
 | `scheduleLastAt` | 只读：上次定时触发时刻，用于同一分钟去重 |
@@ -127,7 +128,7 @@ auth:
     {
       "name": "某某资源站", "apiBase": "https://site.com/api.php/provide/vod/",
       "format": "maccms_json", "extraParams": "", "enabled": true,
-      "incrementalHours": 24, "maxPages": 0,
+      "incrementalHours": 24, "maxPages": 0, "pageIntervalMs": -1,
       "scheduleEnabled": false, "scheduleCron": "",
       "parseApi": "", "playDomain": "", "picApi": "", "picDomain": ""
     }
@@ -209,7 +210,7 @@ trigram 把文本切成三字符片段，天然支持中文子串与英文子串
 
 ## 清空站点数据（保留站点配置）
 
-站点列表每行（管理员）都有**清空数据**按钮，对应 `DELETE /api/sources/v1/:id/data`。它只清空该站点名下的数据，**站点配置本身（名称、接口地址、格式、附加参数、解析/播放/图片地址、启用状态、增量小时数、最大页数、定时配置）原样保留**。
+站点列表每行（管理员）都有**清空数据**按钮，对应 `DELETE /api/sources/v1/:id/data`。它只清空该站点名下的数据，**站点配置本身（名称、接口地址、格式、附加参数、解析/播放/图片地址、启用状态、增量小时数、最大页数、每页间隔、定时配置）原样保留**。
 
 - 删除内容：该站点的**影片**、**分类**与**采集记录**，其它站点的数据不受影响。
 - 同时**复位采集状态**：`last_cursor`、`last_mode`、`last_status`、`last_error` 清空，`last_sync_at` / `last_full_sync_at` 置空，`video_count` 归零。这一步很关键——影片都删了，若增量游标还停在上次采到的最大 `vod_time`，下次增量采集会认为「没有更新」而永远补不回数据；复位后下一次增量从零开始重新拉取。

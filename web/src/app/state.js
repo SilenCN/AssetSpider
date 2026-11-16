@@ -24,7 +24,7 @@ export function initialTab() {
 // 站点配置表单的空白值（新增 / 编辑共用）。
 export const emptyForm = () => ({
   id: null, name: '', apiBase: '', format: 'seacms_json', extraParams: '',
-  incrementalHours: 24, maxPages: 0, enabled: true,
+  incrementalHours: 24, maxPages: 0, pageIntervalMs: -1, enabled: true,
   scheduleEnabled: false, scheduleCron: '',
   parseApi: '', playDomain: '', picApi: '', picDomain: '',
 })

@@ -255,6 +255,11 @@ const {
             <span>最大页数（0 = 全局配置）</span>
             <input v-model.number="form.maxPages" type="number" min="0" />
           </label>
+          <label class="sf-item">
+            <span>每页间隔毫秒（-1 = 全局，0 = 不限速）</span>
+            <input v-model.number="form.pageIntervalMs" type="number" min="-1" max="60000" />
+            <span class="hint">站点级间隔，优先于系统设置里的全局值</span>
+          </label>
           <p class="sf-group full">定时增量采集<span class="muted">到点自动发起一次增量任务，站点停用或已有任务在跑时不触发</span></p>
           <label class="check full"><input v-model="form.scheduleEnabled" type="checkbox" /> 启用定时增量采集</label>
           <label class="sf-item full">

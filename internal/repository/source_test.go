@@ -14,6 +14,7 @@ func TestSourceRepositoryCRUDAndCascade(t *testing.T) {
 	src := &model.Source{
 		Name: "测试资源站", APIBase: "https://example.com/api.php/provide/vod/",
 		Format: "seacms_json", Enabled: true, IncrementalHours: 12,
+		PageIntervalMs: 350, // 站点级间隔应随 CRUD 一起持久化
 	}
 	if err := r.Sources.CreateSource(src); err != nil {
 		t.Fatal(err)
@@ -35,10 +36,17 @@ func TestSourceRepositoryCRUDAndCascade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got.PageIntervalMs != 350 {
+		t.Fatalf("站点级间隔应持久化，实际 %d", got.PageIntervalMs)
+	}
 	got.Name = "改名后"
+	got.PageIntervalMs = 0 // 编辑改为「不限速」应落库，覆盖之前的 350
 	updated, err := r.Sources.UpdateSource(src.ID, got)
 	if err != nil || updated.Name != "改名后" {
 		t.Fatalf("UpdateSource 异常: %v %+v", err, updated)
+	}
+	if updated.PageIntervalMs != 0 {
+		t.Fatalf("编辑后的站点级间隔应落库为 0，实际 %d", updated.PageIntervalMs)
 	}
 
 	// 采集状态回写

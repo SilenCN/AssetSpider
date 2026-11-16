@@ -21,6 +21,9 @@ type SourceInput struct {
 	Enabled          *bool  `json:"enabled"`
 	IncrementalHours int    `json:"incrementalHours"`
 	MaxPages         int    `json:"maxPages"`
+	// PageIntervalMs：-1（或未提供）表示跟随全局；>=0 表示站点自己的页间间隔（0=不限速）。
+	// 用指针是为了让未带该字段的旧客户端 / 局部 PUT 不误清空站点的覆盖值。
+	PageIntervalMs *int `json:"pageIntervalMs"`
 	// 定时增量采集：用指针是为了让未带该字段的旧客户端 / 局部 PUT 不误关定时。
 	ScheduleEnabled *bool  `json:"scheduleEnabled"`
 	ScheduleCron    string `json:"scheduleCron"` // 5 段 cron（分 时 日 月 周）
@@ -44,6 +47,12 @@ func (in SourceInput) validate() error {
 	}
 	if in.IncrementalHours < 0 || in.MaxPages < 0 {
 		return invalid("增量小时数与最大页数不能为负")
+	}
+	if in.PageIntervalMs != nil {
+		v := *in.PageIntervalMs
+		if v < -1 || v > 60000 {
+			return invalid("每页间隔需在 -1..60000 之间（-1 表示跟随全局，0 表示不限速）")
+		}
 	}
 	cron := strings.TrimSpace(in.ScheduleCron)
 	if cron != "" {
@@ -98,6 +107,12 @@ func (in SourceInput) apply(dst *model.Source) *model.Source {
 	}
 	dst.IncrementalHours = in.IncrementalHours
 	dst.MaxPages = in.MaxPages
+	// 未提供时：新建站点取 -1（跟随全局），编辑站点保留已保存的覆盖值。
+	if in.PageIntervalMs != nil {
+		dst.PageIntervalMs = *in.PageIntervalMs
+	} else if dst.ID == 0 {
+		dst.PageIntervalMs = -1
+	}
 	// 老版本导出的 JSON / 只提交部分字段的客户端不带 scheduleEnabled，
 	// 这时不要动定时配置，否则会把已有 cron 清空成「已启用但无表达式」。
 	if in.ScheduleEnabled != nil {
@@ -319,6 +334,7 @@ func sourceInputOf(src model.Source) SourceInput {
 		Enabled:          &enabled,
 		IncrementalHours: src.IncrementalHours,
 		MaxPages:         src.MaxPages,
+		PageIntervalMs:   &src.PageIntervalMs,
 		ScheduleEnabled:  &scheduled,
 		ScheduleCron:     src.ScheduleCron,
 		ParseAPI:         src.ParseAPI,

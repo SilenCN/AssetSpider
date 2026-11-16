@@ -200,11 +200,16 @@ func (s *CrawlService) collectorCfg() config.CollectorConfig {
 }
 
 // waitPageInterval 在相邻两页之间等待配置的时间间隔。
-// 每次调用都读最新的 page_interval_ms，因此设置页改间隔后运行中的任务从下一页即生效。
-// 0（含未配置）表示不限速、立即返回。ctx 被取消（暂停 / 停机）时立即返回 ctx.Err()，
+// 间隔优先取站点级 PageIntervalMs（>=0），站点值为 -1（默认）时回退全局
+// collector.page_interval_ms——站点配置优先级高于全局。每次调用都重新读取，
+// 设置页改全局间隔、或改站点间隔后，运行中的任务从下一页即生效。
+// 0 表示不限速、立即返回。ctx 被取消（暂停 / 停机）时立即返回 ctx.Err()，
 // 不会让任务在定时器上空等——由调用方按暂停语义接手续采页。
-func (s *CrawlService) waitPageInterval(ctx context.Context) error {
+func (s *CrawlService) waitPageInterval(ctx context.Context, src *model.Source) error {
 	ms := s.collectorCfg().PageIntervalMs
+	if src != nil && src.PageIntervalMs >= 0 {
+		ms = src.PageIntervalMs
+	}
 	if ms <= 0 {
 		return nil
 	}
@@ -470,7 +475,7 @@ func (s *CrawlService) crawl(
 		// 还有下一页：按当前配置等待页间间隔，降低对站点的请求频率。
 		// 每轮都重新读配置，设置页改动从下一页起立即生效；暂停 / 取消会取消 ctx，
 		// 下面的 select 立即醒来返回（不傻等整个间隔），与循环顶部的暂停语义保持一致。
-		if err := s.waitPageInterval(ctx); err != nil {
+		if err := s.waitPageInterval(ctx, src); err != nil {
 			res.ResumePage = page + 1 // 间隔被打断（暂停 / 取消）时，下一页就是续采页
 			if task.paused() {
 				return ErrPaused

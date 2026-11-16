@@ -45,6 +45,11 @@ type Source struct {
 	IncrementalHours int  `gorm:"not null;default:24" json:"incrementalHours"`
 	MaxPages         int  `gorm:"not null;default:0" json:"maxPages"` // 0 表示使用全局配置
 
+	// PageIntervalMs 是相邻两页之间的等待时间（毫秒），优先级高于全局 collector.page_interval_ms。
+	// -1（默认）表示跟随全局；>=0 表示站点自己的值（0 = 不限速）。用 -1 而非 0 作哨兵，
+	// 是为了让站点能显式设成 0（不限速）去覆盖一个非零的全局值。
+	PageIntervalMs int `gorm:"not null;default:-1" json:"pageIntervalMs"`
+
 	// 定时增量采集：ScheduleEnabled 打开且 ScheduleCron 命中当前分钟时，
 	// 后台调度器自动发起一次 incremental 任务。cron 为 5 段标准表达式
 	// （分 时 日 月 周），见 utils.ParseCron。ScheduleLastAt 记录上次自动触发

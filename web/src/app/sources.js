@@ -22,6 +22,8 @@ export function createSources(ctx) {
       extraParams: s.extraParams || '', enabled: s.enabled,
       incrementalHours: Number(s.incrementalHours) || 0,
       maxPages: Number(s.maxPages) || 0,
+      pageIntervalMs: s.pageIntervalMs === undefined || s.pageIntervalMs === null || s.pageIntervalMs === ''
+        ? -1 : Number(s.pageIntervalMs),
       scheduleEnabled: !!s.scheduleEnabled,
       scheduleCron: (s.scheduleCron || '').trim(),
       parseApi: s.parseApi || '', playDomain: s.playDomain || '',
@@ -35,7 +37,10 @@ export function createSources(ctx) {
       Object.assign(ctx.form, {
         id: s.id, name: s.name, apiBase: s.apiBase, format: s.format,
         extraParams: s.extraParams, incrementalHours: s.incrementalHours,
-        maxPages: s.maxPages, enabled: s.enabled,
+        maxPages: s.maxPages,
+        pageIntervalMs: s.pageIntervalMs === undefined || s.pageIntervalMs === null
+          ? -1 : s.pageIntervalMs,
+        enabled: s.enabled,
         scheduleEnabled: !!s.scheduleEnabled, scheduleCron: s.scheduleCron || '',
         parseApi: s.parseApi || '', playDomain: s.playDomain || '',
         picApi: s.picApi || '', picDomain: s.picDomain || '',
