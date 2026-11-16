@@ -12,8 +12,9 @@ import "time"
 // 不再保存整条记录的原始 JSON 全文（原 raw 列）：标准列 + Extra 已覆盖全部字段，
 // 再存一份全文只会重复占用存储。
 //
-// 列类型按 MacCMS V10 安装表结构的实际长度设定（见 model.VodFields 的 Size）：
-// 短字段是 VARCHAR(N)，长文本 / 解析后数组是 MEDIUMTEXT；所有值在 Go 侧仍是 string
+// 列类型按 MacCMS V10 安装表结构的实际长度设定（见 model.VodFields 的 Size 与列型覆盖表）：
+// 短字段是 VARCHAR(N)，长文本 / 解析后数组是 MEDIUMTEXT，长度不可预估但无需 MEDIUMTEXT
+// 那么宽的（演职人员里的 vod_actor）用 TEXT；所有值在 Go 侧仍是 string
 // （保留站点原始值），因此不会把数字 / 时间戳字段改成数值列而丢原始格式。
 //
 // (SourceID, VodID) 为复合唯一索引：全量/增量重复采集同一影片时执行 upsert，
@@ -61,7 +62,7 @@ type Video struct {
 	VodPicScreenshot string `gorm:"column:vod_pic_screenshot;type:mediumtext" json:"vodPicScreenshot"`
 
 	// ---- 演职人员 ----
-	VodActor    string `gorm:"column:vod_actor;type:varchar(1024)" json:"vodActor"`
+	VodActor    string `gorm:"column:vod_actor;type:text" json:"vodActor"` // 主演串长度随站点差异极大，用 TEXT 而非 VARCHAR
 	VodDirector string `gorm:"column:vod_director;type:varchar(255)" json:"vodDirector"`
 	VodWriter   string `gorm:"column:vod_writer;type:varchar(255)" json:"vodWriter"`
 	VodBehind   string `gorm:"column:vod_behind;type:varchar(255)" json:"vodBehind"`

@@ -16,7 +16,10 @@ import (
 // Size 是按官方字段长度确定的新库列宽（VARCHAR 的字符数）：
 //   - 官方 short varchar 会按资源站实际情况留安全余量（例如 vod_area 官方 20、
 //     这里 128），避免第三方站点返回稍长的多地区文本时被 MySQL 严格模式拒绝；
-//   - Size=0 表示长文本（官方 text/mediumtext，或解析后的数组 JSON），落 MEDIUMTEXT。
+//   - Size=0 表示长文本（官方 text/mediumtext，或解析后的数组 JSON），默认落 MEDIUMTEXT。
+//
+// 个别字段的列型由 vodColumnOverrides 显式覆盖（如 vod_actor → TEXT），覆盖项仍要求
+// Size=0、Long=true，只是把 MEDIUMTEXT 换成更贴合的 TEXT。
 //
 // 具体映射见 VodColumnType；Video 的 gorm tag 必须与之一致（有单测锁死）。
 type VodField struct {
@@ -26,13 +29,23 @@ type VodField struct {
 	Desc   string // 中文含义
 	Group  string // 分组 key
 	Long   bool   // 是否长文本（简介、播放地址、解析后的列表等）
-	Size   int    // VARCHAR 长度；0 表示长文本（MEDIUMTEXT）
+	Size   int    // VARCHAR 长度；0 表示长文本（默认 MEDIUMTEXT）
+}
+
+// vodColumnOverrides 给「长度不可预估、又不需要 MEDIUMTEXT 那么宽」的字段指定精确列型。
+// 目前只有主演：vod_actor 的长度随站点差异极大，VARCHAR 会截断或超长，TEXT（64KB）足够。
+// 键是接口字段键，必须是 VodFields 里的字段（有单测锁死，防止改名后覆盖静默失效）。
+var vodColumnOverrides = map[string]string{
+	"vod_actor": "text",
 }
 
 // VodColumnType 返回字段在新库中的 SQL 列类型。
 // 所有影片字段在 Go 侧都是 string（保留站点原始值，包括数字/时间戳/对象 JSON），
-// 因此只按字符长度选择 VARCHAR(N) 或 MEDIUMTEXT，不把数字字段改成数值列。
+// 因此只按字符长度选择 VARCHAR(N) / TEXT / MEDIUMTEXT，不把数字字段改成数值列。
 func VodColumnType(f VodField) string {
+	if typ, ok := vodColumnOverrides[f.Key]; ok {
+		return typ
+	}
 	if f.Size == 0 {
 		return "mediumtext"
 	}
@@ -84,7 +97,7 @@ var VodFields = []VodField{
 	{"vod_pic_screenshot", "VodPicScreenshot", "vod_pic_screenshot", "截图（多个用 # 连接）", "image", true, 0},
 
 	// 演职人员
-	{"vod_actor", "VodActor", "vod_actor", "主演", "cast", false, 1024},
+	{"vod_actor", "VodActor", "vod_actor", "主演", "cast", true, 0}, // 列型覆盖为 TEXT，见 vodColumnOverrides
 	{"vod_director", "VodDirector", "vod_director", "导演", "cast", false, 255},
 	{"vod_writer", "VodWriter", "vod_writer", "编剧", "cast", false, 255},
 	{"vod_behind", "VodBehind", "vod_behind", "幕后", "cast", false, 255},

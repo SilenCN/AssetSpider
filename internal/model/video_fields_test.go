@@ -72,7 +72,7 @@ func TestVodFieldsMatchVideoEntity(t *testing.T) {
 }
 
 // TestVodFieldColumnTypesMatchEntity 把「实际字段长度」锁到实体标签上：
-// 字段清单的 Size 决定 VARCHAR(N) / MEDIUMTEXT，Video 的 gorm tag 必须逐字段一致。
+// 字段清单的 Size（及 vodColumnOverrides 覆盖）决定 VARCHAR(N) / TEXT / MEDIUMTEXT，Video 的 gorm tag 必须逐字段一致。
 // 清单是解析 / 入库 / API 的唯一数据源，若只改 tag 或只改清单，新库列型就会与设计脱节。
 func TestVodFieldColumnTypesMatchEntity(t *testing.T) {
 	typ := reflect.TypeOf(Video{})
@@ -110,6 +110,7 @@ func TestVodFieldColumnTypesMatchEntity(t *testing.T) {
 		"vod_name":     "varchar(255)",  // 官方 varchar(255)
 		"vod_pic":      "varchar(1024)", // 官方 varchar(1024)
 		"vod_area":     "varchar(128)",  // 官方 varchar(20) + 第三方站点余量
+		"vod_actor":    "text",          // 主演串长度不可预估，用 TEXT
 		"vod_content":  "mediumtext",    // 官方 mediumtext
 		"vod_play_url": "mediumtext",    // 官方 mediumtext
 	}
@@ -121,6 +122,31 @@ func TestVodFieldColumnTypesMatchEntity(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestVodColumnOverrides 校验显式列型覆盖表：键必须是清单内的长文本字段，否则字段改名 /
+// 删除后覆盖会静默失效，列型悄悄退回 MEDIUMTEXT，而 gorm tag 与清单的一致性测试仍会通过。
+func TestVodColumnOverrides(t *testing.T) {
+	byKey := make(map[string]VodField, len(VodFields))
+	for _, f := range VodFields {
+		byKey[f.Key] = f
+	}
+	for key, typ := range vodColumnOverrides {
+		f, ok := byKey[key]
+		if !ok {
+			t.Errorf("覆盖表里的字段 %s 不在 VodFields 清单内", key)
+			continue
+		}
+		if !f.Long || f.Size != 0 {
+			t.Errorf("字段 %s 被覆盖为 %s，但仍须是长文本（Long=true、Size=0），实际 Long=%v Size=%d", key, typ, f.Long, f.Size)
+		}
+		if typ != "text" {
+			t.Errorf("字段 %s 的覆盖列型 %q 非法，目前只允许 text", key, typ)
+		}
+	}
+	if got := VodColumnType(byKey["vod_actor"]); got != "text" {
+		t.Errorf("vod_actor 列型应为 text，实际 %s", got)
 	}
 }
 

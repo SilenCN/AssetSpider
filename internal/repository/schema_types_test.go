@@ -58,6 +58,11 @@ func TestVideoColumnTypesInNewDB(t *testing.T) {
 	check("hash", "varchar(64)")
 	check("extra", "mediumtext")
 
+	// 显式列型覆盖要精确落到 DDL：vod_actor 是 TEXT，不能退化成 MEDIUMTEXT 或变回 VARCHAR。
+	if got := declared["vod_actor"]; got != "TEXT" {
+		t.Errorf("vod_actor 应为 TEXT，实际 %s", got)
+	}
+
 	// 反向断言：短字段不应出现 LONGTEXT / 无长度 TEXT（这正是本次优化要消除的情况）。
 	for _, f := range model.VodFields {
 		if f.Size == 0 {
