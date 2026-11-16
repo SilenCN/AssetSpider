@@ -88,13 +88,13 @@ export function createSources(ctx) {
     } catch (e) { ctx.notify(e.message, 'err') }
   }
 
-  // 清空站点数据但保留站点配置：影片、分类、标签、采集记录一并删除，
+  // 清空站点数据但保留站点配置：影片、分类、采集记录一并删除，
   // 采集状态与影片数复位，站点接口地址等配置不动。
   async function clearSourceData(s) {
-    if (!confirm(`确认清空站点「${s.name}」的数据？\n\n将删除该站点的全部影片、分类、标签与采集记录，并复位采集状态；站点配置（接口地址、解析、启用状态等）保留。\n\n此操作不可撤销。`)) return
+    if (!confirm(`确认清空站点「${s.name}」的数据？\n\n将删除该站点的全部影片、分类与采集记录，并复位采集状态；站点配置（接口地址、解析、启用状态等）保留。\n\n此操作不可撤销。`)) return
     try {
       const r = await ctx.request(`/api/sources/v1/${s.id}/data`, { method: 'DELETE' })
-      ctx.notify(`已清空「${s.name}」：影片 ${r.videos}、分类 ${r.categories}、标签 ${r.tags}、采集记录 ${r.jobs}`)
+      ctx.notify(`已清空「${s.name}」：影片 ${r.videos}、分类 ${r.categories}、采集记录 ${r.jobs}`)
       await ctx.refresh()
     } catch (e) { ctx.notify(e.message, 'err') }
   }

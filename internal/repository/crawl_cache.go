@@ -1,8 +1,6 @@
 package repository
 
 import (
-	"strings"
-
 	"github.com/SilenCN/AssetSpider/internal/model"
 )
 
@@ -21,10 +19,10 @@ type cachedCategory struct {
 
 // CrawlCache 是一次采集任务的「字典类目」内存缓存。
 //
-// 采集逐页进行，每页都要为影片解析分类 / 标签 / 地域并回填关联，而这些字典在
-// 整次任务里高度重复：一个站点通常只有几十个分类、几百个标签 / 地域，采集却可能
-// 有上千页。若每页都查一次库、开几个事务、把没变化的分类再 UPDATE 一遍，数据库
-// 往返与事务提交（SQLite 单写者）就会成为采集的主要开销。
+// 采集逐页进行，每页都要为影片解析分类并回填关联，而这些字典在整次任务里
+// 高度重复：一个站点通常只有几十个分类，采集却可能有上千页。若每页都查一次库、
+// 开几个事务、把没变化的分类再 UPDATE 一遍，数据库往返与事务提交（SQLite 单写者）
+// 就会成为采集的主要开销。
 //
 // 因此在任务开始时一次性把本源已有的类目读进内存，之后每页：
 //   - 命中缓存的条目直接返回主键，不查库、不写库；
@@ -39,26 +37,20 @@ type CrawlCache struct {
 	sourceID  uint
 	cats      map[string]*cachedCategory // cat_key → 分类快照
 	catTypeID map[string]uint            // type_id → 分类主键（父级挂接用，取最小 id）
-	tags      map[string]uint            // lower(name) → 标签主键
-	areas     map[string]uint            // lower(name) → 地域主键
 	videoIDs  map[string]uint            // vod_id → 影片主键（本任务已入库的）
 }
 
-// NewCrawlCache 为一次采集任务构建字典缓存：一次性读取本源的分类 / 标签 / 地域。
-// 三个 List 都是按站点过滤的轻量查询，只在任务开始时各执行一次；之后上千页的
-// 归档解析都落在内存里。任一读取失败都返回错误，由调用方决定降级（不传缓存即可）。
+// NewCrawlCache 为一次采集任务构建字典缓存：一次性读取本源的分类。
+// 这个 List 是按站点过滤的轻量查询，只在任务开始时执行一次；之后上千页的
+// 归档解析都落在内存里。读取失败返回错误，由调用方决定降级（不传缓存即可）。
 func NewCrawlCache(
 	sourceID uint,
 	categories CategoryRepository,
-	tags TagRepository,
-	areas AreaRepository,
 ) (*CrawlCache, error) {
 	c := &CrawlCache{
 		sourceID:  sourceID,
 		cats:      make(map[string]*cachedCategory),
 		catTypeID: make(map[string]uint),
-		tags:      make(map[string]uint),
-		areas:     make(map[string]uint),
 		videoIDs:  make(map[string]uint),
 	}
 	if categories != nil {
@@ -81,24 +73,6 @@ func NewCrawlCache(
 			}
 		}
 	}
-	if tags != nil {
-		rows, err := tags.List(sourceID)
-		if err != nil {
-			return nil, err
-		}
-		for i := range rows {
-			c.tags[strings.ToLower(rows[i].Name)] = rows[i].ID
-		}
-	}
-	if areas != nil {
-		rows, err := areas.List(sourceID)
-		if err != nil {
-			return nil, err
-		}
-		for i := range rows {
-			c.areas[strings.ToLower(rows[i].Name)] = rows[i].ID
-		}
-	}
 	return c, nil
 }
 
@@ -111,22 +85,6 @@ func cacheMatch(cache []*CrawlCache, sourceID uint) *CrawlCache {
 		}
 	}
 	return nil
-}
-
-// firstWriteNames 把一批名称去重成「小写键 → 首个写法」，返回稳定的键顺序。
-// 标签 / 地域的缓存路径与查库路径共用这一规则，保证两者结果一致。
-func firstWriteNames(names []string) (map[string]string, []string) {
-	first := make(map[string]string, len(names))
-	keys := make([]string, 0, len(names))
-	for _, name := range names {
-		key := strings.ToLower(name)
-		if _, ok := first[key]; ok {
-			continue
-		}
-		first[key] = name
-		keys = append(keys, key)
-	}
-	return first, keys
 }
 
 // recordVideoID 把 UpsertVideos 刚解析出的影片主键登记进会话缓存。

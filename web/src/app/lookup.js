@@ -79,7 +79,8 @@ export function createLookup(ctx) {
       : ''
     return [v?.vodArea, v?.vodYear, cn].filter(Boolean).join(' · ')
   }
-  // 把 vod_tag 拆成标签数组用于展示（与后端 ParseTags 保持同样的分隔符语义）。
+  // 把 vod_tag 拆成标签数组用于纯展示：逗号 / 斜杠 / 竖线 / 顿号 / 分号与空白都算分隔符，
+  // 去重且大小写不敏感。标签不再单独归档成表，这里只做展示层拆分，不落库。
   function tagListOf(v) {
     const raw = (v?.vodTag || '').trim()
     if (!raw) return []

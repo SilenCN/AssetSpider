@@ -4,11 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/SilenCN/AssetSpider/internal/model"
 	routerpkg "github.com/SilenCN/AssetSpider/internal/router"
 )
 
@@ -44,50 +42,6 @@ func TestHealthAndIndex(t *testing.T) {
 	r.ServeHTTP(w, authReq(http.MethodGet, "/api/not-exist", nil))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("未知 API 应返回 404，实际 %d", w.Code)
-	}
-}
-
-func TestAssetAPI(t *testing.T) {
-	r, _ := newTestRouter(t)
-
-	w := doJSON(r, http.MethodPost, "/api/assets/v1",
-		map[string]string{"host": "example.com", "ip": "1.2.3.4", "category": "domain"})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("创建失败: %d %s", w.Code, w.Body.String())
-	}
-	var created model.Asset
-	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
-		t.Fatal(err)
-	}
-	if created.ID == 0 {
-		t.Fatal("响应缺少 ID")
-	}
-
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, authReq(http.MethodGet, "/api/assets/v1", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("列表失败: %d %s", w.Code, w.Body.String())
-	}
-	var items []model.Asset
-	if err := json.Unmarshal(w.Body.Bytes(), &items); err != nil {
-		t.Fatal(err)
-	}
-	if len(items) != 1 || items[0].Host != "example.com" {
-		t.Fatalf("列表内容异常: %+v", items)
-	}
-
-	// 参数校验
-	w = doJSON(r, http.MethodPost, "/api/assets/v1", map[string]string{"ip": "1.2.3.4"})
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("空 host 应返回 400，实际 %d", w.Code)
-	}
-
-	// 删除
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, authReq(http.MethodDelete,
-		"/api/assets/v1/"+strconv.Itoa(int(created.ID)), nil))
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("删除失败: %d %s", w.Code, w.Body.String())
 	}
 }
 

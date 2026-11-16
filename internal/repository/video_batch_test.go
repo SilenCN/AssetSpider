@@ -206,16 +206,14 @@ func TestUpsertVideosBatchUpdateFieldAlignment(t *testing.T) {
 	}
 }
 
-// TestEnsureForVideosBatched 验证标签 / 地域 / 分类的 EnsureForVideos 已批量化：
-// 一次给 40 个全新名称，SQL 语句数应远低于逐条 find-or-create 的 O(N)。
+// TestEnsureForVideosBatched 验证分类的 EnsureForVideos 已批量化：
+// 一次给 40 个全新分类，SQL 语句数应远低于逐条 find-or-create 的 O(N)。
 func TestEnsureForVideosBatched(t *testing.T) {
 	r := newTestRepos(t)
 	videos := make([]model.Video, 40)
 	for i := range videos {
 		videos[i] = model.Video{
 			SourceID: 1, VodID: fmt.Sprintf("v%d", i),
-			VodTag:   fmt.Sprintf("标签%d", i),
-			VodArea:  fmt.Sprintf("地域%d", i),
 			TypeID:   fmt.Sprintf("%d", 100+i),
 			TypeName: fmt.Sprintf("分类%d", i),
 		}
@@ -226,43 +224,31 @@ func TestEnsureForVideosBatched(t *testing.T) {
 		db := r.db.Session(&gorm.Session{
 			Logger: countingLogger{Interface: gormlogger.Default.LogMode(gormlogger.Silent), n: &n},
 		})
-		repos := &Repositories{
-			Tags:       NewTagRepository(db),
-			Areas:      NewAreaRepository(db),
-			Categories: NewCategoryRepository(db),
-		}
-		if _, err := repos.Tags.EnsureForVideos(1, videos); err != nil {
-			t.Error(err)
-		}
-		if _, err := repos.Areas.EnsureForVideos(1, videos); err != nil {
-			t.Error(err)
-		}
+		repos := &Repositories{Categories: NewCategoryRepository(db)}
 		if _, err := repos.Categories.EnsureForVideos(1, videos); err != nil {
 			t.Error(err)
 		}
 		return atomic.LoadInt64(&n)
 	}
 
-	// 40 个新标签 + 40 个新地域 + 40 个新分类。旧实现每种约 40×2=80 句，合计 ~240 句。
+	// 40 个新分类：旧实现每种约 40×2=80 句。
 	n := countSQL()
-	t.Logf("40 条影片首次归档（标签/地域/分类各 40 个新值）SQL 语句数: %d", n)
-	if n >= 60 {
-		t.Errorf("首次归档发了 %d 条 SQL，疑似仍在逐条 find-or-create（应远小于 240）", n)
+	t.Logf("40 条影片首次归档（分类 40 个新值）SQL 语句数: %d", n)
+	if n >= 40 {
+		t.Errorf("首次归档发了 %d 条 SQL，疑似仍在逐条 find-or-create（应远小于 80）", n)
 	}
 
-	// 再次归档同一批：全部命中已存在，应只有 3 次批量查询 + 少量归类 Update。
+	// 再次归档同一批：全部命中已存在，应只有批量查询与少量 Update。
 	n = countSQL()
 	t.Logf("40 条影片重复归档（全部已存在）SQL 语句数: %d", n)
-	if n >= 60 {
+	if n >= 10 {
 		t.Errorf("重复归档发了 %d 条 SQL，疑似仍在逐条查询", n)
 	}
 
-	// 校验数据确实建全了（40 个标签 / 40 个地域 / 40 个分类）。
-	var tags, areas, cats int64
-	r.db.Model(&model.Tag{}).Where("source_id=1").Count(&tags)
-	r.db.Model(&model.Area{}).Where("source_id=1").Count(&areas)
+	// 校验数据确实建全了（40 个分类）。
+	var cats int64
 	r.db.Model(&model.Category{}).Where("source_id=1").Count(&cats)
-	if tags != 40 || areas != 40 || cats != 40 {
-		t.Errorf("归档实体数异常: tags=%d areas=%d cats=%d（期望各 40）", tags, areas, cats)
+	if cats != 40 {
+		t.Errorf("归档实体数异常: cats=%d（期望 40）", cats)
 	}
 }

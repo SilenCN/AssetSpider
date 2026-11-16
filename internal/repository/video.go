@@ -21,8 +21,8 @@ type UpsertStats struct {
 // VideoQuery 是影片列表的查询条件。
 //
 // 检索维度只保留关键词 + 站点 + 分类：标签 / 地域 / 年份 / 评分排序已从资源库移除，
-// 但影片上的 vod_tag / vod_area / vod_year / vod_score 原始字段与采集时的归档数据
-// 仍原样保留，详情接口照常返回，卡片也照常展示这些信息。
+// 但影片上的 vod_tag / vod_area / vod_year / vod_score 原始字段仍原样保留，
+// 详情接口照常返回，卡片也照常展示这些信息。
 type VideoQuery struct {
 	SourceID   uint
 	CategoryID uint
@@ -52,7 +52,7 @@ type VideoRepository interface {
 	// 「本页条数 == size」判断是否继续翻页。
 	// 完整记录由 GetVideo 在用户点开影片时按 id 单独返回。
 	ListVideos(query VideoQuery) ([]model.VideoCard, error)
-	// MapVodIDs 把一批 vod_id 解析为库内影片主键，供标签关联回填等场景使用。
+	// MapVodIDs 把一批 vod_id 解析为库内影片主键。
 	// 传入采集任务级 CrawlCache 时先查缓存，全部命中则不发 SQL。
 	MapVodIDs(sourceID uint, vodIDs []string, cache ...*CrawlCache) (map[string]uint, error)
 	// CountVideos 返回某站点已入库的影片总数，供站点表的 video_count 快照回写。

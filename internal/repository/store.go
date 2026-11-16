@@ -2,12 +2,9 @@
 //
 // 每个实体拥有独立的文件、独立的对象与独立的对外接口：
 //
-//	asset.go    → AssetRepository     （model.Asset）
 //	source.go   → SourceRepository    （model.Source）
 //	video.go    → VideoRepository     （model.Video）
 //	category.go → CategoryRepository  （model.Category）
-//	tag.go      → TagRepository       （model.Tag / model.VideoTag）
-//	area.go     → AreaRepository      （model.Area / model.VideoArea）
 //	job.go      → JobRepository       （model.CrawlJob）
 //	user.go     → UserRepository      （model.User / model.Session / model.UserSource）
 //
@@ -31,40 +28,24 @@ import (
 
 // schemaVersion 是库结构的「检索层」版本号，记在 SQLite 的 PRAGMA user_version 里。
 //
-// 版本号只用于判断「是否需要重算统计信息」以及是否要跑一次性数据迁移：
+// 版本号只用于判断「是否需要重算统计信息」：
 // 索引与全文索引都由 AutoMigrate / ensureVideoSearch 幂等创建，但 SQLite 的
 // 查询计划器要靠 ANALYZE 得到的 sqlite_stat1 才能选对索引（例如「多站点 +
 // 时间倒序」在没有统计信息时会退化成「先按站点过滤再全量排序」）。
 // 升级后统计信息必然过期，故版本号提升时重跑一次。
 //
-// 版本历史：
+// 本库按「全新库」对待：不承载任何历史数据回灌，旧版本的一次性数据迁移
+// （地域拆表、分类层级补建等）已全部移除。索引集变化时把版本号 +1 即可。
 //
-//	2 → 新增检索复合索引与全文索引
-//	3 → 地域拆成 areas + video_areas（升级时按 videos.vod_area 回灌一次）
-//	4 → 年份筛选新增 idx_videos_vod_year
-//	5 → 补建缺失的一级分类（按 videos.type_id_1 / categories.type_pid 重建父子关系）
-//	6 → 站点增加定时增量配置列（schedule_enabled / schedule_cron / schedule_last_at）
-//
-// 关于曾短暂出现过的 v7：它用 ALTER TABLE DROP COLUMN + VACUUM 物理删除实体已
-// 裁剪的 23 个后台管理字段列，在真实大库上会让启动重写整库（3.9GB 库数分钟、
-// 峰值需约 2 倍临时空间），运维风险高于收益，已整体回滚：不再删列，历史库里
-// 这些列及其数据原样保留。该版本**从未在任何库上成功提交**（迁移总在 ANALYZE
-// 阶段被部署健康检查的 kill 打断，user_version 因此停在 6），故号段直接回收，
-// 不保留占位——否则 version=6 的库每次启动都会重跑整库回灌 + ANALYZE，永远
-// 升不上去，形成「每次启动都慢、每次部署都失败」的死循环。
-//
-// 新增索引 / 改变索引列 / 增加需要回灌的数据迁移时把它 +1。
-const schemaVersion = 6
+//	7 → 移除 idx_videos_vod_year，并下线 areas / tags / assets 及其连接表
+const schemaVersion = 7
 
 // Repositories 是各实体仓储的容器。
 // 它只是装配结果，不是「大杂烩仓储」：任何实体读写都必须走对应的那个对象。
 type Repositories struct {
-	Assets        AssetRepository
 	Sources       SourceRepository
 	Videos        VideoRepository
 	Categories    CategoryRepository
-	Tags          TagRepository
-	Areas         AreaRepository
 	Jobs          JobRepository
 	Users         UserRepository
 	Subscriptions SubscriptionRepository
@@ -121,14 +102,9 @@ func OpenOptions(o Options) (*Repositories, error) {
 		migrateDB = db.Set("gorm:table_options", mysqlTableOptions)
 	}
 	if err := migrateDB.AutoMigrate(
-		&model.Asset{},
 		&model.Source{},
 		&model.Video{},
 		&model.Category{},
-		&model.Tag{},
-		&model.VideoTag{},
-		&model.Area{},
-		&model.VideoArea{},
 		&model.CrawlJob{},
 		&model.User{},
 		&model.Session{},
@@ -171,12 +147,9 @@ func OpenOptions(o Options) (*Repositories, error) {
 	}
 
 	return &Repositories{
-		Assets:        NewAssetRepository(db),
 		Sources:       NewSourceRepository(db),
 		Videos:        newVideoRepository(db, dialect, searchReady),
 		Categories:    NewCategoryRepository(db),
-		Tags:          NewTagRepository(db),
-		Areas:         NewAreaRepository(db),
 		Jobs:          NewJobRepository(db),
 		Subscriptions: NewSubscriptionRepository(db),
 		Users:         NewUserRepository(db),
@@ -191,37 +164,25 @@ func OpenOptions(o Options) (*Repositories, error) {
 // 健康检查与设置页都读它，因此绝不能包含密码。
 func (r *Repositories) Path() string { return r.path }
 
-// prepareDatabase 执行一次性数据迁移，并维护查询计划器依赖的统计信息。
+// prepareDatabase 维护查询计划器依赖的统计信息。
 //
-//   - 首次升级到当前 schemaVersion：先跑该版本引入的数据回灌（如地域拆表），
-//     再整库 ANALYZE 一次（大表约几百毫秒，仅发生一次）；
+//   - 首次（user_version 落后于 schemaVersion）：整库 ANALYZE 一次（大表约几百毫秒，
+//     仅发生一次）；
 //   - 之后每次启动：PRAGMA optimize，由 SQLite 自行判断哪些索引需要补统计信息，代价极低。
 //
 // 不做 ANALYZE 的话，新建的复合索引在 sqlite_stat1 里没有记录，计划器仍会按旧索引
 // 估算行数，出现「有索引却仍全量排序」的情况。
+//
+// 这里只维护统计信息，不执行任何历史数据回灌：本库按全新库处理。
 func prepareDatabase(db *gorm.DB) {
 	var version int
 	if err := db.Raw("PRAGMA user_version").Scan(&version).Error; err != nil {
 		return
 	}
 	if version < schemaVersion {
-		// v3：地域从 videos.vod_area 拆成独立实体，老库需要按现有文本回灌一次。
-		// 函数内部会判断 video_areas 是否已有数据，重复执行是空转。
-		if err := backfillAreas(db); err != nil {
-			log.Printf("回灌地域数据失败（不影响启动，重新采集会补齐）: %v", err)
-		}
-		// v5：老库只存了二级分类、父级分类从未建出，导致分类树全挤进「未归类」。
-		// 按库内已有的 type_id_1 / type_pid 补建一级分类并重挂子树，无需重新采集。
-		if err := backfillCategoryParents(db); err != nil {
-			log.Printf("重建分类层级失败（不影响启动，重新采集会补齐）: %v", err)
-		}
-		// 地域拆表后 vod_area 的单列索引失去用途（筛选走 video_areas，LIKE 用不上索引），
-		// 老库上把它删掉；新库本来就没有。
-		db.Exec("DROP INDEX IF EXISTS idx_videos_vod_area")
-		db.Exec("DROP INDEX IF EXISTS idx_videos_area")
 		// 先推进版本号再 ANALYZE：ANALYZE 只影响查询计划选择，失败（磁盘紧张、
-		// 被 kill、超时）不该让迁移「永远没完成」——否则下次启动会重跑上面那堆
-		// 整表回灌 + 全库分析，在大库上每次都要几十秒，把带健康检查的部署拖死。
+		// 被 kill、超时）不该让迁移「永远没完成」——否则下次启动会重跑 ANALYZE，
+		// 在大库上每次都要几十秒，把带健康检查的部署拖死。
 		// 统计信息后续由每次启动的 PRAGMA optimize 补齐。
 		db.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion))
 		if err := db.Exec("ANALYZE").Error; err != nil {

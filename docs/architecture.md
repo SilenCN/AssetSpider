@@ -21,7 +21,6 @@ router  →  controller  →  service  →  repository
 
 | 实体 | 文件 | 对象 / 对外接口 | 方法 |
 | --- | --- | --- | --- |
-| `Asset` | `repository/asset.go` | `AssetRepository` | `List` / `Create` / `Delete` |
 | `Source` | `repository/source.go` | `SourceRepository` | 站点 CRUD、`ListEnabledSources`、`UpdateSourceResult`、级联删除、清空站点数据 |
 | `Video` | `repository/video.go` | `VideoRepository` | `UpsertVideos`、`GetVideo`、`ListVideos`（返回 `model.VideoCard` 卡片投影）、`CountVideosBySource` / `ByCategory` |
 | `Category` | `repository/category.go` | `CategoryRepository` | `EnsureForVideos`、`List`、`Get` |
@@ -37,19 +36,19 @@ router  →  controller  →  service  →  repository
 **采集写入采用批量策略**（避免逐条 SQL 往返拖慢大站采集）：
 
 - `UpsertVideos` 对整批按 `(source_id, vod_id)` **只发 1 次 SELECT** 取回已存在行，在内存里分成「新增 / 未变 / 已变」三组：新增走 `CreateInBatches`，已变走 `INSERT … ON CONFLICT DO UPDATE` 批量更新业务列（保留 `first_seen_at` / `created_at`，FTS5 / bigram 行级触发器逐行同步两套倒排索引），未变只按 `id IN` 批量刷 `last_seen_at` 并按需补历史数据缺失的 `category_id` / `vod_play_list`。全程仍在单事务内，atomic 不变；`New / Updated / Unchanged` 统计、批内重复 (后写覆盖前写)、跨站点同 `vod_id` 互不干扰等语义全部保留。
-- 分类 / 标签 / 地域的 `EnsureForVideos` 同样改为「一次批量查询取回已存在 → 只把缺失项 `CreateInBatches`」，替代原先按名逐条 find-or-create。
-- 实测（临时库、GORM SQL 计数）：50 条纯新增 **2 条 SQL**（旧 ~100）、50 条全未变 **2 条**（旧 ~50）、40 条影片首采归档（标签/地域/分类各 40 新值）**7 条**（旧 ~240）；5000 条批量写入约 **2341 条/秒**、全未变重复扫描约 **12141 条/秒**。SQL 语句数从 O(N) 降为 O(N/批量 + 常数)。
+- 分类的 `EnsureForVideos` 同样改为「一次批量查询取回已存在 → 只把缺失项 `CreateInBatches`」，替代原先按名逐条 find-or-create。
+- 实测（临时库、GORM SQL 计数）：50 条纯新增 **2 条 SQL**（旧 ~100）、50 条全未变 **2 条**（旧 ~50）；5000 条批量写入约 **2341 条/秒**、全未变重复扫描约 **12141 条/秒**。SQL 语句数从 O(N) 降为 O(N/批量 + 常数)。
 
-**采集会话类目缓存**解决的是「页与页之间」的重复：批量化只压掉了一页内 N 条的往返，但大站采集动辄上千页，每页仍会重复查同一批分类 / 标签 / 地域、重复开事务、把没变化的分类再 UPDATE 一遍，SQLite 单写者的事务提交会成为主要开销。
+**采集会话类目缓存**解决的是「页与页之间」的重复：批量化只压掉了一页内 N 条的往返，但大站采集动辄上千页，每页仍会重复查同一批分类、重复开事务、把没变化的分类再 UPDATE 一遍，SQLite 单写者的事务提交会成为主要开销。
 
-- `CrawlCache`（`crawl_cache.go`）在任务开始时一次性 `List` 本源的 `categories` / `tags` / `areas` 建内存索引，之后每页的 `EnsureForVideos` 只做内存比对：**命中且无变化就 0 条 SQL、0 个事务**，只有真正新增或改名 / 补父级才批量写回并同步缓存。分类的父子归树与孤儿回挂（`category_cache.go`）也在内存里算出差异，不再每页全表扫描 + 逐个查父级。
-- `UpsertVideos` 顺手把解析出的 `vod_id → 主键` 写进缓存，`MapVodIDs` 直接命中，省掉「刚入库又按 vod_id 查一次主键」的往返；`LinkVideos` 改为「读现状 → 算差异 → 只写差异」，关联没变的页不再无条件 `DELETE` + `INSERT`，语义仍是幂等、可自愈。
+- `CrawlCache`（`crawl_cache.go`）在任务开始时一次性 `List` 本源的 `categories` 建内存索引，之后每页的 `EnsureForVideos` 只做内存比对：**命中且无变化就 0 条 SQL、0 个事务**，只有真正新增或改名 / 补父级才批量写回并同步缓存。分类的父子归树与孤儿回挂（`category_cache.go`）也在内存里算出差异，不再每页全表扫描 + 逐个查父级。
+- `UpsertVideos` 顺手把解析出的 `vod_id → 主键` 写进缓存，`MapVodIDs` 直接命中，省掉「刚入库又按 vod_id 查一次主键」的往返。
 - 缓存生命周期是一次 `crawl`（含断点续采的每一段），按 `sourceID` 独立、不跨任务共享、无需加锁，任务结束即丢弃、下次任务重新读库。所有仓储方法都以**可选变参**接收缓存，不传就走原查库路径；`crawl_cache_test.go` 用两个独立库逐页比对，保证两条路径结果逐字一致。
-- 实测（临时库、GORM SQL 计数）：类目全部命中的重复页，三次 `EnsureForVideos` **0 条 SQL**（逐页查库 4 条），整页链路 **4 条 / 9 条**。
+- 实测（临时库、GORM SQL 计数）：类目全部命中的重复页，分类归档 **0 条 SQL**（逐页查库有查询往返），整页链路也明显更少。
 
 约束的具体落地：
 
-- 每个 service 只注入自己需要的实体仓储**接口**（如 `AssetService` 拿 `AssetRepository`，`CrawlService` 拿 `SourceRepository` + `VideoRepository` + `JobRepository`），看不到 `*gorm.DB`；GORM 的 `ErrRecordNotFound` 在仓储层翻译为 `repository.ErrNotFound`，服务层再翻译为 `ErrInvalid / ErrUnauthorized / ErrForbidden / ErrNotFound / ErrConflict` 五个哨兵错误，控制器据此决定 400 / 401 / 403 / 404 / 409 / 500（采集接口默认 502）。
+- 每个 service 只注入自己需要的实体仓储**接口**（如 `SourceService` 拿 `SourceRepository`，`CrawlService` 拿 `SourceRepository` + `VideoRepository` + `CategoryRepository` + `JobRepository`），看不到 `*gorm.DB`；GORM 的 `ErrRecordNotFound` 在仓储层翻译为 `repository.ErrNotFound`，服务层再翻译为 `ErrInvalid / ErrUnauthorized / ErrForbidden / ErrNotFound / ErrConflict` 五个哨兵错误，控制器据此决定 400 / 401 / 403 / 404 / 409 / 500（采集接口默认 502）。
 - 采集协议客户端放在 `internal/service/collector`（service 层内部子包），只做 HTTP 抓取、JSON 零丢失解析与实体转换；原 `collector.Runner` 的编排逻辑（分页、去重入库、任务与游标回写）已上移到 `CrawlService`，不再直接访问数据库。
 - `internal/model`（实体）、`internal/config`（配置）、`internal/utils`（工具）是横切包，不属于四层，也不参与调用链；`internal/app` 是依赖装配层（composition root），只负责自底向上 `new` 出各层对象并注入，不发起任何业务调用；`main.go` 只做配置加载、装配与启动。
 - `internal/utils` 是新增的 utils 层，统一存放与业务无关的纯工具：`request.go`（路径/query 参数解析）、`json.go`（JSON 值字符串化）、`time.go`（时间归一化）、`hash.go`（内容指纹）、`env.go`（整数环境变量）。它可被任意一层引用，但自身**不允许依赖任何 `internal/*` 业务包**（由架构测试强制）。
@@ -83,7 +82,7 @@ router  →  controller  →  service  →  repository
 │   ├── router/                   # 第 1 层：按 /api/{模块}/v1 分组的路由表（只依赖 controller）
 │   ├── controller/               # 第 2 层：HTTP 适配（只依赖 service / utils）
 │   ├── service/                  # 第 3 层：业务逻辑（只依赖 repository）
-│   │   ├── asset.go / source.go / video.go / category.go / job.go / health.go / meta.go
+│   │   ├── source.go / video.go / category.go / job.go / health.go / meta.go
 │   │   ├── auth.go               # Principal（登录主体/可见站点）、认证与用户管理业务规则
 │   │   ├── crawl.go              # 全量 / 增量采集编排、分类归档、游标与去重
 │   │   ├── task.go               # 任务对外 API：入队 / 暂停 / 继续 / 重试 / 重跑 / 列表 / 容量
@@ -102,12 +101,10 @@ router  →  controller  →  service  →  repository
 │   │   ├── errors.go             # 共用的 ErrNotFound（包装 GORM 错误）
 │   │   ├── visibility.go         # 各实体共用的可见站点白名单过滤
 │   │   ├── user.go               # UserRepository → User / Session / UserSource
-│   │   ├── asset.go              # AssetRepository      → model.Asset
 │   │   ├── source.go             # SourceRepository     → model.Source
 │   │   ├── video.go              # VideoRepository      → model.Video（全字段 upsert）
 │   │   ├── category.go           # CategoryRepository   → model.Category（自动归档）
-│   │   ├── tag.go                # TagRepository        → model.Tag / VideoTag（自动归档、多对多）
-│   │   ├── crawl_cache.go        # 采集会话类目缓存（分类/标签/地域一次性预读）
+│   │   ├── crawl_cache.go        # 采集会话类目缓存（分类一次性预读）
 │   │   ├── category_cache.go     # 分类缓存归档路径（父子归树纯内存算差异）
 │   │   ├── job.go                # JobRepository        → model.CrawlJob
 │   │   ├── subscription.go        # SubscriptionRepository → model.Subscription
@@ -117,7 +114,6 @@ router  →  controller  →  service  →  repository
 │   │   ├── user.go               # User / Session / UserSource（认证与站点授权）
 │   │   ├── category.go           # Category 实体（按站点隔离）
 │   │   ├── subscription.go       # Subscription 实体（订阅地址 / 间隔 / 刷新状态）
-│   │   ├── tag.go                # Tag 实体 + VideoTag 多对多连接表
 │   │   └── video_fields.go       # VodFields 字段清单（唯一数据源）
 │   ├── config/                   # 横切：配置加载、校验与运行时热更新
 │   │   ├── config.go             # YAML 加载、env 覆盖、Config.Validate
@@ -137,9 +133,9 @@ router  →  controller  →  service  →  repository
 │   │   │   ├── index.js          #   createApp()：按顺序把各模块挂到 ctx 上
 │   │   │   ├── state.js          #   共享状态（ref / computed）+ 本地存储读写
 │   │   │   ├── client.js         #   fetch 封装：令牌、错误、401 登出
-│   │   │   ├── lookup.js         #   纯展示工具（时间 / 状态 / 标签 / 进度格式化）
+│   │   │   ├── lookup.js         #   纯展示工具（时间 / 状态 / 标签文本 / 进度格式化）
 │   │   │   ├── videos.js         #   资源库：筛选联动、分页、无限滚动
-│   │   │   ├── catalog.js        #   分类树 / 分类与标签下拉标签
+│   │   │   ├── catalog.js        #   分类树与下拉选项
 │   │   │   ├── detail.js         #   详情页：全字段资料、播放组解析、hash 路由
 │   │   │   ├── player.js         #   播放器：线路 / 选集、hls.js / iframe / 直链
 │   │   │   ├── sources.js        #   站点配置、JSON 导入导出、cron 校验反馈

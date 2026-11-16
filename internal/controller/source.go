@@ -76,7 +76,7 @@ func (s *SourceController) Delete(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// Clear 清空站点数据（影片、分类、标签、采集记录），站点配置保留。
+// Clear 清空站点数据（影片、分类、采集记录），站点配置保留。
 func (s *SourceController) Clear(c *gin.Context) {
 	id, err := utils.ParseUintParam(c.Param("id"))
 	if err != nil {

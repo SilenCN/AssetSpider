@@ -9,7 +9,7 @@
 - 除 `/api/system/v1/health`、`/api/auth/v1/status`、`/api/auth/v1/sessions`（登录）外，**所有接口都要带 `Authorization: Bearer <token>`**；未登录返回 `401`，权限不足返回 `403`。
 - **第一个登录者自动注册为管理员**，拥有全部权限；此后账号只能由管理员通过 `/api/users/v1` 创建。密码用 bcrypt 存储，数据库只保存令牌的 SHA-256 摘要。
 - 管理员可创建/启停/删除用户、修改角色与密码，并用 `sourceIds` 分配**可见站点**。非管理员只能看见被授权站点的**站点配置、影片、分类、采集记录与任务**，且只能采集这些站点；越权访问按 `404` 处理，避免泄露站点存在性。授权变更在下一个请求即刻生效，无需重新登录。
-- 站点配置的增删改、系统设置（含并发上限）、用户管理为**管理员专属**；普通用户可读取设置但不可修改。资产台账写入同样仅管理员。
+- 站点配置的增删改、系统设置（含并发上限）、用户管理为**管理员专属**；普通用户可读取设置但不可修改。
 - 停用、删除、改密或变更角色会立即吊销该账号的既有会话；系统会保证始终保留至少一名启用状态的管理员，且禁止管理员停用/降级/删除自己。
 
 | 模块 | 方法 | 路径 | 说明 |
@@ -22,13 +22,11 @@
 | users | GET / POST | `/api/users/v1` | 管理员：账号列表（含 `sourceIds`）/ 创建用户 |
 | users | PUT / DELETE | `/api/users/v1/:id` | 管理员：更新（角色、启停、密码、站点授权）/ 删除用户 |
 | system | GET | `/api/system/v1/health` | 公开：状态、数据库路径、站点数与影片数 |
-| assets | GET / POST | `/api/assets/v1` | 通用资产台账（保留能力） |
-| assets | DELETE | `/api/assets/v1/:id` | 删除资产 |
 | sources | GET | `/api/sources/v1` | 站点列表，附带每个站点已入库影片数 `videoCount`（采集运行中每分钟刷新、结束时刷新，启动时整体校准）与定时配置的下次触发时刻 `nextScheduleAt` |
 | sources | POST | `/api/sources/v1` | 新增站点（名称全系统唯一，重名返回 409） |
 | sources | PUT | `/api/sources/v1/:id` | 全量更新站点（改名成另一条已存在站点返回 409，改名成自身允许） |
 | sources | DELETE | `/api/sources/v1/:id` | 删除站点，级联清理其影片与采集记录 |
-| sources | DELETE | `/api/sources/v1/:id/data` | 清空站点数据（影片/分类/标签/采集记录）并复位采集状态，**站点配置保留**；返回各表删除条数 |
+| sources | DELETE | `/api/sources/v1/:id/data` | 清空站点数据（影片/分类/采集记录）并复位采集状态，**站点配置保留**；返回各表删除条数 |
 | sources | POST | `/api/sources/v1/:id/crawls` | 为该站点执行一次采集，**同步**返回结果摘要（脚本/命令行用） |
 | sources | GET | `/api/sources/v1/export` | 导出当前主体可见站点的配置 JSON（管理员为全部），只含可编辑字段 |
 | sources | POST | `/api/sources/v1/import` | 导入配置 JSON（仅管理员）：按站点名称 upsert，返回新增 / 更新 / 失败统计与逐条错误 |

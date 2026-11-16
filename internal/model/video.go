@@ -25,9 +25,8 @@ type Video struct {
 	//                          不再「先按站点过滤再全量排序」；SQLite 的索引末尾隐含 rowid
 	//                          （即 id），所以 vod_time 相同时的 id 次序也能一并满足；
 	//   idx_videos_source_id    (source_id, id)：单站点 + 默认 id 倒序；
-	//   （vod_area 不再单独建索引：地域已拆成 areas + video_areas，筛选项与筛选都走连接表；
+	//   （vod_area / vod_year 不再建索引：地域与标签已下线，年份不再参与筛选，
 	//    关键词检索里的 vod_area LIKE '%x%' 本来也用不上索引）
-	//   idx_videos_vod_year     年份筛选与年份下拉的 GROUP BY（单值列，无需拆表）；
 	//   idx_videos_category_id 分类筛选与按分类聚合影片数。
 	//
 	// vod_name / hash 不再建单列索引：关键词检索走 FTS5 trigram（≥3 字）或
@@ -81,9 +80,9 @@ type Video struct {
 	VodWeekday     string `gorm:"column:vod_weekday;type:varchar(128)" json:"vodWeekday"`
 
 	// ---- 属性 ----
-	VodArea     string `gorm:"column:vod_area;type:varchar(128)" json:"vodArea"` // 原始文本保留用于展示；筛选走 video_areas
+	VodArea     string `gorm:"column:vod_area;type:varchar(128)" json:"vodArea"` // 原始文本，仅用于展示
 	VodLang     string `gorm:"column:vod_lang;type:varchar(64)" json:"vodLang"`
-	VodYear     string `gorm:"column:vod_year;type:varchar(32);index" json:"vodYear"` // 站点原始年份文本；筛选与下拉都按它等值聚合
+	VodYear     string `gorm:"column:vod_year;type:varchar(32)" json:"vodYear"` // 站点原始年份文本，仅用于展示
 	VodVersion  string `gorm:"column:vod_version;type:varchar(128)" json:"vodVersion"`
 	VodState    string `gorm:"column:vod_state;type:varchar(128)" json:"vodState"`
 	VodAuthor   string `gorm:"column:vod_author;type:varchar(128)" json:"vodAuthor"`

@@ -104,7 +104,7 @@ func TestSourceClearData(t *testing.T) {
 		}
 	}
 
-	// 两个站点各写入影片、分类、标签、采集记录，用于同时验证清空范围与站点隔离。
+	// 两个站点各写入影片、分类、采集记录，用于同时验证清空范围与站点隔离。
 	for _, src := range []*model.Source{a, b} {
 		if _, err := r.Videos.UpsertVideos([]model.Video{
 			{SourceID: src.ID, VodID: "1", VodName: "片1", Hash: "h-" + src.Name + "-1", VodTag: "科幻,动作"},
@@ -116,20 +116,6 @@ func TestSourceClearData(t *testing.T) {
 			{TypeID: "6", TypeName: "动作"},
 			{TypeID: "7", TypeName: "喜剧"},
 		}); err != nil {
-			t.Fatal(err)
-		}
-		tagsByVod, err := r.Tags.EnsureForVideos(src.ID, []model.Video{
-			{SourceID: src.ID, VodID: "1", VodTag: "科幻,动作"},
-			{SourceID: src.ID, VodID: "2", VodTag: "动作"},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		idByVod, err := r.Videos.MapVodIDs(src.ID, []string{"1", "2"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := r.Tags.LinkVideos(idByVod, tagsByVod); err != nil {
 			t.Fatal(err)
 		}
 		if err := r.Jobs.CreateJob(&model.CrawlJob{
@@ -149,16 +135,12 @@ func TestSourceClearData(t *testing.T) {
 	if err := r.Sources.UpdateVideoCount(a.ID, 2); err != nil {
 		t.Fatal(err)
 	}
-	aVideoIDs, err := r.Videos.MapVodIDs(a.ID, []string{"1", "2"})
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	stats, err := r.Sources.ClearSourceData(a.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats != (ClearStats{Videos: 2, Categories: 2, Tags: 2, Jobs: 1}) {
+	if stats != (ClearStats{Videos: 2, Categories: 2, Jobs: 1}) {
 		t.Fatalf("清空回报条数异常: %+v", stats)
 	}
 
@@ -169,22 +151,8 @@ func TestSourceClearData(t *testing.T) {
 	if cats, err := r.Categories.List(a.ID); err != nil || len(cats) != 0 {
 		t.Fatalf("站 A 分类未清空: %+v err=%v", cats, err)
 	}
-	if tags, err := r.Tags.List(a.ID); err != nil || len(tags) != 0 {
-		t.Fatalf("站 A 标签未清空: %+v err=%v", tags, err)
-	}
 	if jobs, err := r.Jobs.ListJobs(a.ID, 50); err != nil || len(jobs) != 0 {
 		t.Fatalf("站 A 采集记录未清空: %+v err=%v", jobs, err)
-	}
-	var links int64
-	for _, id := range aVideoIDs {
-		var n int64
-		if err := r.db.Model(&model.VideoTag{}).Where("video_id = ?", id).Count(&n).Error; err != nil {
-			t.Fatal(err)
-		}
-		links += n
-	}
-	if links != 0 {
-		t.Fatalf("站 A 的标签关联未清理，仍有 %d 条", links)
 	}
 
 	// 2) 站点配置不变，采集状态与影片数复位。
@@ -208,9 +176,6 @@ func TestSourceClearData(t *testing.T) {
 	}
 	if cats, err := r.Categories.List(b.ID); err != nil || len(cats) != 2 {
 		t.Fatalf("站 B 分类不应受影响: %+v err=%v", cats, err)
-	}
-	if tags, err := r.Tags.List(b.ID); err != nil || len(tags) != 2 {
-		t.Fatalf("站 B 标签不应受影响: %+v err=%v", tags, err)
 	}
 	if jobs, err := r.Jobs.ListJobs(b.ID, 50); err != nil || len(jobs) != 1 {
 		t.Fatalf("站 B 采集记录不应受影响: %+v err=%v", jobs, err)

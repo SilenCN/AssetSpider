@@ -16,7 +16,6 @@ import (
 // Set 聚合全部控制器，由装配层构造后交给 router。
 type Set struct {
 	Health       *HealthController
-	Asset        *AssetController
 	Source       *SourceController
 	Subscription *SubscriptionController
 	Crawl        *CrawlController

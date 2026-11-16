@@ -1,4 +1,4 @@
-// 分类树（站点 → 一级分类 → 二级分类）与分类 / 标签下拉的展示标签。
+// 分类树（站点 → 一级分类 → 二级分类）与分类下拉的展示标签。
 import { computed, reactive } from 'vue'
 
 export function createCatalog(ctx) {

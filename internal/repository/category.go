@@ -510,15 +510,6 @@ func rebuildCategoryTree(tx *gorm.DB, sourceID uint, names map[string]string) er
 	return nil
 }
 
-// backfillCategoryParents 是启动时的老库修复：按库内已有的 type_id_1 / type_pid
-// 补建缺失的一级分类并重建父子关系。由 prepareDatabase 在版本升级时调用一次，
-// 重复执行是空转。
-func backfillCategoryParents(db *gorm.DB) error {
-	return db.Transaction(func(tx *gorm.DB) error {
-		return rebuildCategoryTree(tx, 0, nil)
-	})
-}
-
 // addCandidate 把候选分类并入收集表；键冲突时保留更有信息量的字段：
 // 名称 / 父级 ID / 自身 type_id 均优先取非空值（父级兜底名不能覆盖真实名称）。
 // 分类键相同但分别来自「影片自身 type_id」与「其它影片的 type_id_1」时，

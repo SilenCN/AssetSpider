@@ -98,7 +98,7 @@ func TestOtherTablesColumnTypesInNewDB(t *testing.T) {
 		{"users", "username", 64},
 		{"sources", "api_base", 512},
 		{"crawl_jobs", "status", 16},
-		{"assets", "ip", 64},
+		{"categories", "name", 128},
 		{"subscriptions", "url", 1024},
 	} {
 		var got string

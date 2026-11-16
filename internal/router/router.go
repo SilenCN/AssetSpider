@@ -50,13 +50,6 @@ func registerV1(api *gin.RouterGroup, set controller.Set) {
 	// ---------- 需要管理员（在登录校验之上叠加） ----------
 	admin := api.Group("", set.Auth.RequireAuth(), set.Auth.RequireAdmin())
 
-	// 通用资产台账：查询登录即可，写入仅管理员
-	assets := secured.Group("/assets/" + APIVersion)
-	assets.GET("", set.Asset.List)
-	adminAssets := admin.Group("/assets/" + APIVersion)
-	adminAssets.POST("", set.Asset.Create)
-	adminAssets.DELETE("/:id", set.Asset.Delete)
-
 	// 采集站点配置；采集动作是站点的子资源 crawls
 	// 静态路径 export / import 注册在 :id 通配路径之前。
 	sources := secured.Group("/sources/" + APIVersion)
@@ -68,7 +61,7 @@ func registerV1(api *gin.RouterGroup, set controller.Set) {
 	adminSources.POST("/import", set.Source.Import)
 	adminSources.PUT("/:id", set.Source.Update)
 	adminSources.DELETE("/:id", set.Source.Delete)
-	// 只清空站点名下的数据（影片/分类/标签/采集记录），站点配置保留。
+	// 只清空站点名下的数据（影片/分类/采集记录），站点配置保留。
 	adminSources.DELETE("/:id/data", set.Source.Clear)
 
 	// 站点配置订阅：从远程 JSON 地址批量同步站点配置；刷新是订阅的子资源 refreshes

@@ -93,7 +93,6 @@ func TestRepositoryOneObjectPerEntity(t *testing.T) {
 		impl  string
 		ctor  string
 	}{
-		{"asset.go", "AssetRepository", "assetRepository", "NewAssetRepository"},
 		{"source.go", "SourceRepository", "sourceRepository", "NewSourceRepository"},
 		{"video.go", "VideoRepository", "videoRepository", "NewVideoRepository"},
 		{"category.go", "CategoryRepository", "categoryRepository", "NewCategoryRepository"},

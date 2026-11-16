@@ -139,8 +139,6 @@ func scheduleNext(src model.Source, now time.Time) *time.Time {
 type ClearResult struct {
 	Videos     int64 `json:"videos"`
 	Categories int64 `json:"categories"`
-	Tags       int64 `json:"tags"`
-	Areas      int64 `json:"areas"`
 	Jobs       int64 `json:"jobs"`
 }
 
@@ -148,7 +146,7 @@ type ClearResult struct {
 //   - HasActiveTask：清空数据前询问该站点是否还有排队中 / 运行中的采集任务；
 //   - StartTask：新建站点后自动发起一次全量采集。
 //
-// 清空与采集并发执行会互相破坏数据（采集刚把影片与标签写回来，清空又按快照
+// 清空与采集并发执行会互相破坏数据（采集刚把影片写回来，清空又按快照
 // 删掉分类），因此清空前有任务在跑时必须拒绝，由用户先暂停或等待结束。
 type SourceCollector interface {
 	HasActiveTask(sourceID uint) bool
@@ -249,7 +247,7 @@ func (s *SourceService) Delete(id uint) error {
 	return wrapRepo(s.sources.DeleteSource(id))
 }
 
-// Clear 清空站点名下的数据（影片、分类、标签、采集记录），站点配置保持不变。
+// Clear 清空站点名下的数据（影片、分类、采集记录），站点配置保持不变。
 //
 // 该站点还有排队中 / 运行中的采集任务时拒绝执行：二者并发会互相覆盖。
 func (s *SourceService) Clear(id uint) (ClearResult, error) {
@@ -263,8 +261,6 @@ func (s *SourceService) Clear(id uint) (ClearResult, error) {
 	return ClearResult{
 		Videos:     stats.Videos,
 		Categories: stats.Categories,
-		Tags:       stats.Tags,
-		Areas:      stats.Areas,
 		Jobs:       stats.Jobs,
 	}, nil
 }

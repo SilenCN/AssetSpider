@@ -149,8 +149,6 @@ type CrawlService struct {
 	sources    repository.SourceRepository
 	videos     repository.VideoRepository
 	categories repository.CategoryRepository
-	tags       repository.TagRepository
-	areas      repository.AreaRepository
 	jobs       repository.JobRepository
 	fetcher    *collector.Fetcher
 	cfg        config.CollectorConfig // 构造时的初始快照（无 store 时兜底，兼容测试）
@@ -169,8 +167,6 @@ func NewCrawlService(
 	sources repository.SourceRepository,
 	videos repository.VideoRepository,
 	categories repository.CategoryRepository,
-	tags repository.TagRepository,
-	areas repository.AreaRepository,
 	jobs repository.JobRepository,
 	cfg config.CollectorConfig,
 	store ...*config.Store,
@@ -184,8 +180,6 @@ func NewCrawlService(
 		sources:     sources,
 		videos:      videos,
 		categories:  categories,
-		tags:        tags,
-		areas:       areas,
 		jobs:        jobs,
 		fetcher:     collector.NewFetcher(cfg, rt),
 		cfg:         cfg,
@@ -353,7 +347,7 @@ func (s *CrawlService) crawl(
 	// 类目缓存必须建在预写分类结构之后，这样一开始就能读到 typelist 补建的一级分类。
 	// 一次采集（含断点续采的每一段）共用这一个缓存，任务结束即丢弃；预读失败只记
 	// 日志并降级为原来的逐页查库路径，不影响采集正确性。
-	cache, err := repository.NewCrawlCache(src.ID, s.categories, s.tags, s.areas)
+	cache, err := repository.NewCrawlCache(src.ID, s.categories)
 	if err != nil {
 		log.Printf("站点「%s」构建类目缓存失败，本次采集退回逐页查库: %v", src.Name, err)
 		cache = nil
@@ -458,46 +452,10 @@ func (s *CrawlService) crawl(
 			}
 		}
 
-		// 按视频自带的 vod_tag 幂等创建本站标签（仅建标签实体，关联回填在影片入库后）。
-		tagIDsByVod, err := s.tags.EnsureForVideos(src.ID, videos, cache)
-		if err != nil {
-			res.ResumePage = page
-			return fmt.Errorf("第 %d 页标签归档失败: %w", page, err)
-		}
-
-		// 地域与标签同理：按 vod_area 幂等创建本站地域，关联同样在入库后回填。
-		areaIDsByVod, err := s.areas.EnsureForVideos(src.ID, videos, cache)
-		if err != nil {
-			res.ResumePage = page
-			return fmt.Errorf("第 %d 页地域归档失败: %w", page, err)
-		}
-
 		stats, err := s.videos.UpsertVideos(videos, cache)
 		if err != nil {
 			res.ResumePage = page
 			return fmt.Errorf("第 %d 页入库失败: %w", page, err)
-		}
-		// 影片主键现已确定，把本批次标签 / 地域关联分别回填到 video_tags、video_areas
-		// （都是先删后插，幂等）。注意要解析「本批全部影片」的主键而非只有带值的：
-		// 无标签 / 无地域的影片也要清空历史关联，否则被移除后旧关联会残留。
-		if len(videos) > 0 {
-			allVodIDs := make([]string, 0, len(videos))
-			for i := range videos {
-				allVodIDs = append(allVodIDs, videos[i].VodID)
-			}
-			idByVod, err := s.videos.MapVodIDs(src.ID, allVodIDs, cache)
-			if err != nil {
-				res.ResumePage = page
-				return fmt.Errorf("第 %d 页解析影片主键失败: %w", page, err)
-			}
-			if err := s.tags.LinkVideos(idByVod, tagIDsByVod); err != nil {
-				res.ResumePage = page
-				return fmt.Errorf("第 %d 页标签关联失败: %w", page, err)
-			}
-			if err := s.areas.LinkVideos(idByVod, areaIDsByVod); err != nil {
-				res.ResumePage = page
-				return fmt.Errorf("第 %d 页地域关联失败: %w", page, err)
-			}
 		}
 		res.Fetched += len(videos)
 		res.New += stats.New

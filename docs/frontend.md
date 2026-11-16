@@ -15,9 +15,9 @@ npm run build    # 产物输出到 web/dist，由 Gin 托管
 | --- | --- |
 | `app/state.js` | 所有共享 `ref` / `computed`、本地存储键、通知条、表单空白值 |
 | `app/client.js` | `request` / `jsonOptions`：带令牌、解析错误、401 清登录态 |
-| `app/lookup.js` | 纯展示格式化（时间、状态、标签拆分、进度条宽度、ETA） |
-| `app/videos.js` | 资源库：筛选与站点双向联动、分页、无限滚动、分类/标签跳转 |
-| `app/catalog.js` | 分类树（站点 → 一级 → 二级）、分类/标签下拉标签、展开收起 |
+| `app/lookup.js` | 纯展示格式化（时间、状态、标签文本拆分、进度条宽度、ETA） |
+| `app/videos.js` | 资源库：筛选与站点双向联动、分页、无限滚动、分类跳转 |
+| `app/catalog.js` | 分类树（站点 → 一级 → 二级）、分类下拉选项、展开收起 |
 | `app/detail.js` | 详情页：全字段资料、播放组解析、hash 路由进出详情、列表滚动恢复 |
 | `app/player.js` | 播放器：线路/选集、hls.js / iframe / 直链挂载与错误提示 |
 | `app/sources.js` | 站点增删改查、启停、清空数据、JSON 导入导出、cron 实时校验 |

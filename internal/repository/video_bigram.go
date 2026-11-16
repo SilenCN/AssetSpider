@@ -235,10 +235,14 @@ func videoBigramReady(db *gorm.DB) bool {
 // 其中两条评分排序表达式索引是随「移除评分排序」一并清理的：它们曾是大库上
 // 一次性 CREATE INDEX 要等 165 秒、写入时还要持续维护的重索引，功能移除后
 // 不再有任何查询会用到，DROP 掉既省空间也省采集写入的索引维护成本。
+//
+// idx_videos_vod_year 随「年份筛选」一并下线：年份不再参与资源库筛选，
+// 单列索引只剩写入维护成本。
 func dropRetiredVideoIndexes(db *gorm.DB) {
 	for _, name := range []string{
 		"idx_videos_vod_name", "idx_videos_hash",
 		"idx_videos_score_desc", "idx_videos_score_asc",
+		"idx_videos_vod_year",
 	} {
 		db.Exec("DROP INDEX IF EXISTS " + name)
 	}
