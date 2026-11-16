@@ -62,7 +62,7 @@ type Video struct {
 	VodPicScreenshot string `gorm:"column:vod_pic_screenshot;type:mediumtext" json:"vodPicScreenshot"`
 
 	// ---- 演职人员 ----
-	VodActor    string `gorm:"column:vod_actor;type:varchar(255)" json:"vodActor"`
+	VodActor    string `gorm:"column:vod_actor;type:varchar(1024)" json:"vodActor"`
 	VodDirector string `gorm:"column:vod_director;type:varchar(255)" json:"vodDirector"`
 	VodWriter   string `gorm:"column:vod_writer;type:varchar(255)" json:"vodWriter"`
 	VodBehind   string `gorm:"column:vod_behind;type:varchar(255)" json:"vodBehind"`
