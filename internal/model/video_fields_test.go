@@ -106,14 +106,14 @@ func TestVodFieldColumnTypesMatchEntity(t *testing.T) {
 
 	// 抽查 MacCMS V10 官方安装表里的代表性长度，防止整张清单被批量改错。
 	wantTypes := map[string]string{
-		"vod_id":       "varchar(64)",  // 站点 ID 保留原始文本
-		"vod_name":     "varchar(255)", // 官方 varchar(255)
-		"vod_pic":      "text",         // 图片 URL 长度不可预估，用 TEXT
-		"vod_area":     "varchar(128)", // 官方 varchar(20) + 第三方站点余量
-		"vod_director": "varchar(512)", // 官方 varchar(255) + 第三方站点余量
-		"vod_actor":    "text",         // 主演串长度不可预估，用 TEXT
-		"vod_content":  "mediumtext",   // 官方 mediumtext
-		"vod_play_url": "mediumtext",   // 官方 mediumtext
+		"vod_id":       "varchar(64)",   // 站点 ID 保留原始文本
+		"vod_name":     "varchar(255)",  // 官方 varchar(255)
+		"vod_pic":      "text",          // 图片 URL 长度不可预估，用 TEXT
+		"vod_area":     "varchar(128)",  // 官方 varchar(20) + 第三方站点余量
+		"vod_director": "varchar(1024)", // 官方 varchar(255) + 第三方站点余量
+		"vod_actor":    "text",          // 主演串长度不可预估，用 TEXT
+		"vod_content":  "mediumtext",    // 官方 mediumtext
+		"vod_play_url": "mediumtext",    // 官方 mediumtext
 	}
 	for key, want := range wantTypes {
 		for _, f := range VodFields {

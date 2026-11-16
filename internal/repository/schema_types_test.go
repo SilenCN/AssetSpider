@@ -80,7 +80,7 @@ func TestVideoColumnTypesInNewDB(t *testing.T) {
 	for _, sample := range []struct {
 		column string
 		size   int
-	}{{"vod_name", 255}, {"vod_director", 512}, {"vod_id", 64}} {
+	}{{"vod_name", 255}, {"vod_director", 1024}, {"vod_id", 64}} {
 		got := declared[strings.ToLower(sample.column)]
 		if !strings.Contains(got, "("+strconv.Itoa(sample.size)+")") {
 			t.Errorf("列 %s 的列宽应为 %d，实际 %s", sample.column, sample.size, got)

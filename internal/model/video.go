@@ -63,7 +63,7 @@ type Video struct {
 
 	// ---- 演职人员 ----
 	VodActor    string `gorm:"column:vod_actor;type:text" json:"vodActor"` // 主演串长度随站点差异极大，用 TEXT 而非 VARCHAR
-	VodDirector string `gorm:"column:vod_director;type:varchar(512)" json:"vodDirector"`
+	VodDirector string `gorm:"column:vod_director;type:varchar(1024)" json:"vodDirector"`
 	VodWriter   string `gorm:"column:vod_writer;type:varchar(255)" json:"vodWriter"`
 	VodBehind   string `gorm:"column:vod_behind;type:varchar(255)" json:"vodBehind"`
 

@@ -100,7 +100,7 @@ var VodFields = []VodField{
 
 	// 演职人员
 	{"vod_actor", "VodActor", "vod_actor", "主演", "cast", true, 0}, // 列型覆盖为 TEXT，见 vodColumnOverrides
-	{"vod_director", "VodDirector", "vod_director", "导演", "cast", false, 512},
+	{"vod_director", "VodDirector", "vod_director", "导演", "cast", false, 1024},
 	{"vod_writer", "VodWriter", "vod_writer", "编剧", "cast", false, 255},
 	{"vod_behind", "VodBehind", "vod_behind", "幕后", "cast", false, 255},
 
