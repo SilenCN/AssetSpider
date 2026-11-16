@@ -58,9 +58,11 @@ func TestVideoColumnTypesInNewDB(t *testing.T) {
 	check("hash", "varchar(64)")
 	check("extra", "mediumtext")
 
-	// 显式列型覆盖要精确落到 DDL：vod_actor 是 TEXT，不能退化成 MEDIUMTEXT 或变回 VARCHAR。
-	if got := declared["vod_actor"]; got != "TEXT" {
-		t.Errorf("vod_actor 应为 TEXT，实际 %s", got)
+	// 显式列型覆盖要精确落到 DDL：vod_actor / vod_pic 是 TEXT，不能退化成 MEDIUMTEXT 或变回 VARCHAR。
+	for _, column := range []string{"vod_actor", "vod_pic"} {
+		if got := declared[column]; got != "TEXT" {
+			t.Errorf("%s 应为 TEXT，实际 %s", column, got)
+		}
 	}
 
 	// 反向断言：短字段不应出现 LONGTEXT / 无长度 TEXT（这正是本次优化要消除的情况）。
@@ -78,7 +80,7 @@ func TestVideoColumnTypesInNewDB(t *testing.T) {
 	for _, sample := range []struct {
 		column string
 		size   int
-	}{{"vod_name", 255}, {"vod_pic", 1024}, {"vod_id", 64}} {
+	}{{"vod_name", 255}, {"vod_director", 512}, {"vod_id", 64}} {
 		got := declared[strings.ToLower(sample.column)]
 		if !strings.Contains(got, "("+strconv.Itoa(sample.size)+")") {
 			t.Errorf("列 %s 的列宽应为 %d，实际 %s", sample.column, sample.size, got)

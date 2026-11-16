@@ -14,7 +14,7 @@ import "time"
 //
 // 列类型按 MacCMS V10 安装表结构的实际长度设定（见 model.VodFields 的 Size 与列型覆盖表）：
 // 短字段是 VARCHAR(N)，长文本 / 解析后数组是 MEDIUMTEXT，长度不可预估但无需 MEDIUMTEXT
-// 那么宽的（演职人员里的 vod_actor）用 TEXT；所有值在 Go 侧仍是 string
+// 那么宽的（主演 vod_actor、图片 vod_pic）用 TEXT；所有值在 Go 侧仍是 string
 // （保留站点原始值），因此不会把数字 / 时间戳字段改成数值列而丢原始格式。
 //
 // (SourceID, VodID) 为复合唯一索引：全量/增量重复采集同一影片时执行 upsert，
@@ -55,7 +55,7 @@ type Video struct {
 	VodType  string `gorm:"column:type;type:mediumtext" json:"vodType"`
 
 	// ---- 图片 ----
-	VodPic           string `gorm:"column:vod_pic;type:varchar(1024)" json:"vodPic"`
+	VodPic           string `gorm:"column:vod_pic;type:text" json:"vodPic"`
 	VodPicThumb      string `gorm:"column:vod_pic_thumb;type:varchar(1024)" json:"vodPicThumb"`
 	VodPicSlide      string `gorm:"column:vod_pic_slide;type:varchar(1024)" json:"vodPicSlide"`
 	VodPicOriginal   string `gorm:"column:vod_pic_original;type:varchar(1024)" json:"vodPicOriginal"`

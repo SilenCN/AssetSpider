@@ -33,10 +33,12 @@ type VodField struct {
 }
 
 // vodColumnOverrides 给「长度不可预估、又不需要 MEDIUMTEXT 那么宽」的字段指定精确列型。
-// 目前只有主演：vod_actor 的长度随站点差异极大，VARCHAR 会截断或超长，TEXT（64KB）足够。
+// 目前两项：vod_actor（主演）与 vod_pic（图片 URL）长度随站点差异极大，VARCHAR 会截断或
+// 超长，TEXT（64KB）足够。
 // 键是接口字段键，必须是 VodFields 里的字段（有单测锁死，防止改名后覆盖静默失效）。
 var vodColumnOverrides = map[string]string{
 	"vod_actor": "text",
+	"vod_pic":   "text",
 }
 
 // VodColumnType 返回字段在新库中的 SQL 列类型。
@@ -90,7 +92,7 @@ var VodFields = []VodField{
 	{"type", "VodType", "type", "分类对象 / 名称", "basic", true, 0},
 
 	// 图片
-	{"vod_pic", "VodPic", "vod_pic", "图片", "image", false, 1024},
+	{"vod_pic", "VodPic", "vod_pic", "图片", "image", true, 0}, // 列型覆盖为 TEXT，见 vodColumnOverrides
 	{"vod_pic_thumb", "VodPicThumb", "vod_pic_thumb", "缩略图", "image", false, 1024},
 	{"vod_pic_slide", "VodPicSlide", "vod_pic_slide", "幻灯图", "image", false, 1024},
 	{"vod_pic_original", "VodPicOriginal", "vod_pic_original", "原图", "image", false, 1024},
