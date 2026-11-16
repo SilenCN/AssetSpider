@@ -110,6 +110,7 @@ func TestVodFieldColumnTypesMatchEntity(t *testing.T) {
 		"vod_name":     "varchar(255)",  // 官方 varchar(255)
 		"vod_pic":      "varchar(1024)", // 官方 varchar(1024)
 		"vod_area":     "varchar(128)",  // 官方 varchar(20) + 第三方站点余量
+		"vod_director": "varchar(512)",  // 官方 varchar(255) + 第三方站点余量
 		"vod_actor":    "text",          // 主演串长度不可预估，用 TEXT
 		"vod_content":  "mediumtext",    // 官方 mediumtext
 		"vod_play_url": "mediumtext",    // 官方 mediumtext
