@@ -83,6 +83,7 @@ auth:
 
 - **driver=sqlite（默认）**：沿用 `path` 指向的本地 SQLite 文件，单连接、无需额外服务，适合单机与小数据量。
 - **driver=mysql**：忽略 `path`，改走 `dsn` 连接串；连接池参数（max_open_conns / max_idle_conns / conn_max_lifetime）仅对 MySQL 生效。首次启动自动建表（`utf8mb4`），关键词检索走 **InnoDB FULLTEXT + ngram 分词器**（见下文），索引在后台异步建立、建好前自动降级为 `LIKE`，结果与 SQLite 分支完全一致。
+- **新库列型**：影片表 68 个标准字段按 MacCMS V10 官方实际长度建列——短字段 `varchar(N)`（`vod_name` 255、`vod_pic` 1024、`vod_area` 128 等），长文本 / 解析后数组为 `mediumtext`（`vod_content`、`vod_play_url`、`vod_play_list` 等）。所有字段在 Go 侧仍是字符串，保留站点原始值。此项**只为新库设计**（老库不做数据搬迁），详见架构文档。
 `-config` 指定其他配置文件，未填写的字段沿用默认值。
 `collector` 段的全部字段都可在页面「系统设置」里在线修改：保存即写回本文件并让运行中的采集器立即用上新值；被上面的 `ASSETSPIDER_COLLECTOR_*` 环境变量接管的字段在页面标为只读，需改启动环境后重启。
 

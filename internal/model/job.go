@@ -24,11 +24,11 @@ const (
 type CrawlJob struct {
 	ID         uint   `gorm:"primaryKey;index:idx_jobs_source_mode,priority:3" json:"id"`
 	SourceID   uint   `gorm:"index;index:idx_jobs_source_mode,priority:1" json:"sourceId"`
-	SourceName string `gorm:"size:128" json:"sourceName"`
+	SourceName string `gorm:"type:varchar(128)" json:"sourceName"`
 	// idx_jobs_source_mode (source_id, mode, id)：判断能否续采时要取「本站点本模式
 	// 最近一条记录」，索引直接给出有序结果，不必过滤后再排序。
-	Mode   string `gorm:"size:16;not null;index;index:idx_jobs_source_mode,priority:2" json:"mode"`
-	Status string `gorm:"size:16;not null;index" json:"status"`
+	Mode   string `gorm:"type:varchar(16);not null;index;index:idx_jobs_source_mode,priority:2" json:"mode"`
+	Status string `gorm:"type:varchar(16);not null;index" json:"status"`
 
 	Fetched   int `json:"fetched"`   // 从接口拉取的总条数
 	New       int `json:"new"`       // 新入库条数
@@ -51,7 +51,7 @@ type CrawlJob struct {
 	// 仅用于展示来源，不参与调度。
 	RetryOf uint `gorm:"index" json:"retryOf"`
 
-	Message    string     `gorm:"size:1024" json:"message"`
+	Message    string     `gorm:"type:varchar(1024)" json:"message"`
 	StartedAt  time.Time  `json:"startedAt"`
 	FinishedAt *time.Time `json:"finishedAt"`
 	CreatedAt  time.Time  `json:"createdAt"`

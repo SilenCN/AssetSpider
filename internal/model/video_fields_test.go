@@ -71,6 +71,59 @@ func TestVodFieldsMatchVideoEntity(t *testing.T) {
 	}
 }
 
+// TestVodFieldColumnTypesMatchEntity 把「实际字段长度」锁到实体标签上：
+// 字段清单的 Size 决定 VARCHAR(N) / MEDIUMTEXT，Video 的 gorm tag 必须逐字段一致。
+// 清单是解析 / 入库 / API 的唯一数据源，若只改 tag 或只改清单，新库列型就会与设计脱节。
+func TestVodFieldColumnTypesMatchEntity(t *testing.T) {
+	typ := reflect.TypeOf(Video{})
+	for _, f := range VodFields {
+		if f.Size < 0 {
+			t.Errorf("字段 %s 的列宽 %d 非法（0 表示长文本）", f.Key, f.Size)
+			continue
+		}
+		if f.Long != (f.Size == 0) {
+			t.Errorf("字段 %s 的 Long=%v 与 Size=%d 矛盾", f.Key, f.Long, f.Size)
+		}
+		sf, ok := typ.FieldByName(f.Go)
+		if !ok {
+			t.Errorf("Video 缺少字段 %s", f.Go)
+			continue
+		}
+		want := VodColumnType(f)
+		got := ""
+		for _, part := range strings.Split(sf.Tag.Get("gorm"), ";") {
+			switch {
+			case strings.HasPrefix(part, "type:"):
+				got = strings.TrimPrefix(part, "type:")
+			case strings.HasPrefix(part, "size:"):
+				got = "varchar(" + strings.TrimPrefix(part, "size:") + ")"
+			}
+		}
+		if got != want {
+			t.Errorf("字段 %s（%s）列型应为 %s，Video 的 gorm tag 为 %q", f.Key, f.Column, want, got)
+		}
+	}
+
+	// 抽查 MacCMS V10 官方安装表里的代表性长度，防止整张清单被批量改错。
+	wantTypes := map[string]string{
+		"vod_id":       "varchar(64)",   // 站点 ID 保留原始文本
+		"vod_name":     "varchar(255)",  // 官方 varchar(255)
+		"vod_pic":      "varchar(1024)", // 官方 varchar(1024)
+		"vod_area":     "varchar(128)",  // 官方 varchar(20) + 第三方站点余量
+		"vod_content":  "mediumtext",    // 官方 mediumtext
+		"vod_play_url": "mediumtext",    // 官方 mediumtext
+	}
+	for key, want := range wantTypes {
+		for _, f := range VodFields {
+			if f.Key == key {
+				if got := VodColumnType(f); got != want {
+					t.Errorf("%s 列型应为 %s，实际 %s", key, want, got)
+				}
+			}
+		}
+	}
+}
+
 func TestVodFieldMetasAndKnownKeys(t *testing.T) {
 	metas := VodFieldMetas()
 	if len(metas) != len(VodFields) {

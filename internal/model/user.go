@@ -14,9 +14,9 @@ const (
 // 建立的账号自动成为管理员；之后的账号只能由管理员创建。
 type User struct {
 	ID           uint   `gorm:"primaryKey" json:"id"`
-	Username     string `gorm:"size:64;not null;uniqueIndex" json:"username"`
-	PasswordHash string `gorm:"size:128;not null" json:"-"`
-	Role         string `gorm:"size:16;not null;index" json:"role"`
+	Username     string `gorm:"type:varchar(64);not null;uniqueIndex" json:"username"`
+	PasswordHash string `gorm:"type:varchar(128);not null" json:"-"`
+	Role         string `gorm:"type:varchar(16);not null;index" json:"role"`
 	// 不设 default:true，否则 GORM 会把显式的 false 当作零值跳过并套用默认值。
 	Enabled     bool       `gorm:"not null;index" json:"enabled"`
 	LastLoginAt *time.Time `json:"lastLoginAt"`
@@ -31,7 +31,7 @@ func (u *User) IsAdmin() bool { return u != nil && u.Role == RoleAdmin }
 // 即使数据库文件泄露也不会直接暴露可用的登录令牌。
 type Session struct {
 	ID        uint   `gorm:"primaryKey" json:"id"`
-	TokenHash string `gorm:"size:64;not null;uniqueIndex" json:"-"`
+	TokenHash string `gorm:"type:varchar(64);not null;uniqueIndex" json:"-"`
 	UserID    uint   `gorm:"not null;index" json:"userId"`
 	// ExpiresAt 过期后令牌立即失效。
 	ExpiresAt time.Time `gorm:"not null;index" json:"expiresAt"`

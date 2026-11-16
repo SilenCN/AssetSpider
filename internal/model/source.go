@@ -16,29 +16,29 @@ const (
 // Provide 协议：api.php/provide/vod/?ac=videolist）抓取并零丢失解析。
 type Source struct {
 	ID      uint   `gorm:"primaryKey" json:"id"`
-	Name    string `gorm:"size:128;not null" json:"name"`
-	APIBase string `gorm:"size:512;not null" json:"apiBase"`
-	Format  string `gorm:"size:32;not null;default:maccms_json" json:"format"`
+	Name    string `gorm:"type:varchar(128);not null" json:"name"`
+	APIBase string `gorm:"type:varchar(512);not null" json:"apiBase"`
+	Format  string `gorm:"type:varchar(32);not null;default:maccms_json" json:"format"`
 
 	// ExtraParams 是附加查询串，例如 "t=1&wd=电影"，可覆盖默认的 ac=videolist。
-	ExtraParams string `gorm:"size:512" json:"extraParams"`
+	ExtraParams string `gorm:"type:varchar(512)" json:"extraParams"`
 
 	// ParseAPI 是视频解析地址（如 https://jx.example.com/?url=）。
 	// 配置后播放时把解析地址拼在播放地址前面，交给解析服务跳转播放。
 	// 支持用 {url} 占位符指定插入位置，未包含占位符时直接前缀拼接。
-	ParseAPI string `gorm:"size:512" json:"parseApi"`
+	ParseAPI string `gorm:"type:varchar(512)" json:"parseApi"`
 
 	// PlayDomain 是视频播放域名（如 https://cdn.example.com）。
 	// 配置后播放时用它替换原播放地址中的「协议 + 域名」，只保留原地址的路径与查询串。
-	PlayDomain string `gorm:"size:255" json:"playDomain"`
+	PlayDomain string `gorm:"type:varchar(255)" json:"playDomain"`
 
 	// PicAPI 是图片解析/代理地址（如 https://img.example.com/proxy?url=）。
 	// 与解析播放地址同理：配置后封面等图片地址会拼在它的后面，支持 {url} 占位符。
-	PicAPI string `gorm:"size:512" json:"picApi"`
+	PicAPI string `gorm:"type:varchar(512)" json:"picApi"`
 
 	// PicDomain 是图片域名（如 https://img.example.com）。
 	// 配置后封面等图片地址会用它替换原来的「协议 + 域名」。
-	PicDomain string `gorm:"size:255" json:"picDomain"`
+	PicDomain string `gorm:"type:varchar(255)" json:"picDomain"`
 
 	// 不设 default:true，否则 GORM 会把显式的 false 当作零值跳过并套用默认值。
 	Enabled          bool `gorm:"not null;index" json:"enabled"`
@@ -50,7 +50,7 @@ type Source struct {
 	// （分 时 日 月 周），见 utils.ParseCron。ScheduleLastAt 记录上次自动触发
 	// 的时刻，用于同一分钟内去重（进程重启后也不会重复触发）。
 	ScheduleEnabled bool       `gorm:"not null;default:false" json:"scheduleEnabled"`
-	ScheduleCron    string     `gorm:"size:64" json:"scheduleCron"`
+	ScheduleCron    string     `gorm:"type:varchar(64)" json:"scheduleCron"`
 	ScheduleLastAt  *time.Time `json:"scheduleLastAt"`
 
 	// SubscriptionID 是站点来源订阅；0 表示手动添加。
@@ -61,10 +61,10 @@ type Source struct {
 	// 采集状态与增量游标（由采集器回写，前端只读）。
 	LastSyncAt     *time.Time `json:"lastSyncAt"`
 	LastFullSyncAt *time.Time `json:"lastFullSyncAt"`
-	LastMode       string     `gorm:"size:16" json:"lastMode"`
-	LastCursor     string     `gorm:"size:32" json:"lastCursor"` // 已采到的最大 vod_time
-	LastStatus     string     `gorm:"size:16" json:"lastStatus"` // success / failed / never
-	LastError      string     `gorm:"size:1024" json:"lastError"`
+	LastMode       string     `gorm:"type:varchar(16)" json:"lastMode"`
+	LastCursor     string     `gorm:"type:varchar(32)" json:"lastCursor"` // 已采到的最大 vod_time
+	LastStatus     string     `gorm:"type:varchar(16)" json:"lastStatus"` // success / failed / never
+	LastError      string     `gorm:"type:varchar(1024)" json:"lastError"`
 
 	// VideoCount 是该站点当前已入库的影片总数（只读快照，由采集任务维护）。
 	//

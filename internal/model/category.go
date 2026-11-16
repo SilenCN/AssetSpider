@@ -17,14 +17,14 @@ type Category struct {
 	// idx_categories_source_type (source_id, type_id)：采集时按 type_pid 归树需要
 	// 「同站内按 type_id 找父分类」，没有这个索引每找一个父级都要扫全部分类。
 	SourceID uint   `gorm:"column:source_id;not null;uniqueIndex:idx_source_cat,priority:1;index;index:idx_categories_source_type,priority:1" json:"sourceId"`
-	Key      string `gorm:"column:cat_key;size:160;not null;uniqueIndex:idx_source_cat,priority:2" json:"key"`
-	TypeID   string `gorm:"column:type_id;size:64;index:idx_categories_source_type,priority:2" json:"typeId"`
-	Name     string `gorm:"column:name;size:128;not null" json:"name"`
+	Key      string `gorm:"column:cat_key;type:varchar(160);not null;uniqueIndex:idx_source_cat,priority:2" json:"key"`
+	TypeID   string `gorm:"column:type_id;type:varchar(64);index:idx_categories_source_type,priority:2" json:"typeId"`
+	Name     string `gorm:"column:name;type:varchar(128);not null" json:"name"`
 
 	// 二级分类支持（对齐苹果CMS type_pid 模型）
-	TypePID  string `gorm:"column:type_pid;size:64" json:"typePid"` // 父级分类 ID（苹果CMS type_pid），空表示一级分类
-	ParentID uint   `gorm:"column:parent_id;index" json:"parentId"` // 父分类主键（同站），0 表示无
-	Level    int    `gorm:"column:level;default:1" json:"level"`    // 1=一级 2=二级
+	TypePID  string `gorm:"column:type_pid;type:varchar(64)" json:"typePid"` // 父级分类 ID（苹果CMS type_pid），空表示一级分类
+	ParentID uint   `gorm:"column:parent_id;index" json:"parentId"`          // 父分类主键（同站），0 表示无
+	Level    int    `gorm:"column:level;default:1" json:"level"`             // 1=一级 2=二级
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`

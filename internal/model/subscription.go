@@ -10,10 +10,10 @@ import "time"
 // 订阅刷新失败也不会影响已入库的站点与影片。
 type Subscription struct {
 	ID   uint   `gorm:"primaryKey" json:"id"`
-	Name string `gorm:"size:128;not null" json:"name"`
+	Name string `gorm:"type:varchar(128);not null" json:"name"`
 
 	// URL 是订阅地址（http/https），返回站点数组、单条站点对象或含 sources 的导出文件。
-	URL string `gorm:"size:1024;not null" json:"url"`
+	URL string `gorm:"type:varchar(1024);not null" json:"url"`
 
 	// IntervalHours 是自动刷新间隔（小时）。0 表示不自动刷新，只能手动点「刷新」。
 	// 判据是「上次成功拉取时间 + 间隔 <= 现在」，因此进程重启不会丢下次刷新时刻。
@@ -22,8 +22,8 @@ type Subscription struct {
 
 	// 刷新状态（由刷新流程回写，前端只读）。
 	LastSyncAt *time.Time `json:"lastSyncAt"`
-	LastStatus string     `gorm:"size:16" json:"lastStatus"` // success / failed / never
-	LastError  string     `gorm:"size:1024" json:"lastError"`
+	LastStatus string     `gorm:"type:varchar(16)" json:"lastStatus"` // success / failed / never
+	LastError  string     `gorm:"type:varchar(1024)" json:"lastError"`
 
 	// 上次刷新实际做了什么：新增 / 更新 / 停用（订阅里已移除）/ 跳过（校验失败）。
 	LastCreated  int `gorm:"not null;default:0" json:"lastCreated"`

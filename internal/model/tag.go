@@ -11,7 +11,7 @@ import "time"
 type Tag struct {
 	ID       uint   `gorm:"primaryKey" json:"id"`
 	SourceID uint   `gorm:"column:source_id;not null;uniqueIndex:idx_source_tag,priority:1;index" json:"sourceId"`
-	Name     string `gorm:"column:name;size:128;not null;uniqueIndex:idx_source_tag,priority:2" json:"name"`
+	Name     string `gorm:"column:name;type:varchar(128);not null;uniqueIndex:idx_source_tag,priority:2" json:"name"`
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`

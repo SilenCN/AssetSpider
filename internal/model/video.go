@@ -12,6 +12,10 @@ import "time"
 // 不再保存整条记录的原始 JSON 全文（原 raw 列）：标准列 + Extra 已覆盖全部字段，
 // 再存一份全文只会重复占用存储。
 //
+// 列类型按 MacCMS V10 安装表结构的实际长度设定（见 model.VodFields 的 Size）：
+// 短字段是 VARCHAR(N)，长文本 / 解析后数组是 MEDIUMTEXT；所有值在 Go 侧仍是 string
+// （保留站点原始值），因此不会把数字 / 时间戳字段改成数值列而丢原始格式。
+//
 // (SourceID, VodID) 为复合唯一索引：全量/增量重复采集同一影片时执行 upsert，
 // 不会产生重复行。Hash 由该条记录的全部键值计算，任何字段变化都会触发更新。
 type Video struct {
@@ -37,102 +41,102 @@ type Video struct {
 	CategoryID uint `gorm:"column:category_id;index" json:"categoryId"`
 
 	// ---- 基础信息 ----
-	VodID    string `gorm:"column:vod_id;size:64;not null;uniqueIndex:idx_source_vod,priority:2" json:"vodId"`
-	TypeID   string `gorm:"column:type_id" json:"typeId"`
-	TypeID1  string `gorm:"column:type_id_1" json:"typeId1"`
-	GroupID  string `gorm:"column:group_id" json:"groupId"`
-	VodName  string `gorm:"column:vod_name" json:"vodName"`
-	VodSub   string `gorm:"column:vod_sub" json:"vodSub"`
-	VodEn    string `gorm:"column:vod_en" json:"vodEn"`
-	VodColor string `gorm:"column:vod_color" json:"vodColor"`
-	VodTag   string `gorm:"column:vod_tag" json:"vodTag"`
-	VodClass string `gorm:"column:vod_class" json:"vodClass"`
-	TypeName string `gorm:"column:type_name" json:"typeName"`
-	VodType  string `gorm:"column:type;type:text" json:"vodType"`
+	VodID    string `gorm:"column:vod_id;type:varchar(64);not null;uniqueIndex:idx_source_vod,priority:2" json:"vodId"`
+	TypeID   string `gorm:"column:type_id;type:varchar(64)" json:"typeId"`
+	TypeID1  string `gorm:"column:type_id_1;type:varchar(64)" json:"typeId1"`
+	GroupID  string `gorm:"column:group_id;type:varchar(64)" json:"groupId"`
+	VodName  string `gorm:"column:vod_name;type:varchar(255)" json:"vodName"`
+	VodSub   string `gorm:"column:vod_sub;type:varchar(255)" json:"vodSub"`
+	VodEn    string `gorm:"column:vod_en;type:varchar(255)" json:"vodEn"`
+	VodColor string `gorm:"column:vod_color;type:varchar(16)" json:"vodColor"`
+	VodTag   string `gorm:"column:vod_tag;type:varchar(255)" json:"vodTag"`
+	VodClass string `gorm:"column:vod_class;type:varchar(255)" json:"vodClass"`
+	TypeName string `gorm:"column:type_name;type:varchar(255)" json:"typeName"`
+	VodType  string `gorm:"column:type;type:mediumtext" json:"vodType"`
 
 	// ---- 图片 ----
-	VodPic           string `gorm:"column:vod_pic" json:"vodPic"`
-	VodPicThumb      string `gorm:"column:vod_pic_thumb" json:"vodPicThumb"`
-	VodPicSlide      string `gorm:"column:vod_pic_slide" json:"vodPicSlide"`
-	VodPicOriginal   string `gorm:"column:vod_pic_original" json:"vodPicOriginal"`
-	VodPicScreenshot string `gorm:"column:vod_pic_screenshot;type:text" json:"vodPicScreenshot"`
+	VodPic           string `gorm:"column:vod_pic;type:varchar(1024)" json:"vodPic"`
+	VodPicThumb      string `gorm:"column:vod_pic_thumb;type:varchar(1024)" json:"vodPicThumb"`
+	VodPicSlide      string `gorm:"column:vod_pic_slide;type:varchar(1024)" json:"vodPicSlide"`
+	VodPicOriginal   string `gorm:"column:vod_pic_original;type:varchar(1024)" json:"vodPicOriginal"`
+	VodPicScreenshot string `gorm:"column:vod_pic_screenshot;type:mediumtext" json:"vodPicScreenshot"`
 
 	// ---- 演职人员 ----
-	VodActor    string `gorm:"column:vod_actor" json:"vodActor"`
-	VodDirector string `gorm:"column:vod_director" json:"vodDirector"`
-	VodWriter   string `gorm:"column:vod_writer" json:"vodWriter"`
-	VodBehind   string `gorm:"column:vod_behind" json:"vodBehind"`
+	VodActor    string `gorm:"column:vod_actor;type:varchar(255)" json:"vodActor"`
+	VodDirector string `gorm:"column:vod_director;type:varchar(255)" json:"vodDirector"`
+	VodWriter   string `gorm:"column:vod_writer;type:varchar(255)" json:"vodWriter"`
+	VodBehind   string `gorm:"column:vod_behind;type:varchar(255)" json:"vodBehind"`
 
 	// ---- 简介与备注 ----
-	VodBlurb   string `gorm:"column:vod_blurb;type:text" json:"vodBlurb"`
-	VodRemarks string `gorm:"column:vod_remarks" json:"vodRemarks"`
-	VodContent string `gorm:"column:vod_content;type:text" json:"vodContent"`
+	VodBlurb   string `gorm:"column:vod_blurb;type:mediumtext" json:"vodBlurb"`
+	VodRemarks string `gorm:"column:vod_remarks;type:varchar(255)" json:"vodRemarks"`
+	VodContent string `gorm:"column:vod_content;type:mediumtext" json:"vodContent"`
 
 	// ---- 上映与集数 ----
-	VodPubdate     string `gorm:"column:vod_pubdate" json:"vodPubdate"`
-	VodPublishTime string `gorm:"column:vod_publish_time" json:"vodPublishTime"`
-	VodTotal       string `gorm:"column:vod_total" json:"vodTotal"`
-	VodSerial      string `gorm:"column:vod_serial" json:"vodSerial"`
-	VodTv          string `gorm:"column:vod_tv" json:"vodTv"`
-	VodWeekday     string `gorm:"column:vod_weekday" json:"vodWeekday"`
+	VodPubdate     string `gorm:"column:vod_pubdate;type:varchar(255)" json:"vodPubdate"`
+	VodPublishTime string `gorm:"column:vod_publish_time;type:varchar(32)" json:"vodPublishTime"`
+	VodTotal       string `gorm:"column:vod_total;type:varchar(32)" json:"vodTotal"`
+	VodSerial      string `gorm:"column:vod_serial;type:varchar(64)" json:"vodSerial"`
+	VodTv          string `gorm:"column:vod_tv;type:varchar(128)" json:"vodTv"`
+	VodWeekday     string `gorm:"column:vod_weekday;type:varchar(128)" json:"vodWeekday"`
 
 	// ---- 属性 ----
-	VodArea     string `gorm:"column:vod_area" json:"vodArea"` // 原始文本保留用于展示；筛选走 video_areas
-	VodLang     string `gorm:"column:vod_lang" json:"vodLang"`
-	VodYear     string `gorm:"column:vod_year;index" json:"vodYear"` // 站点原始年份文本；筛选与下拉都按它等值聚合
-	VodVersion  string `gorm:"column:vod_version" json:"vodVersion"`
-	VodState    string `gorm:"column:vod_state" json:"vodState"`
-	VodAuthor   string `gorm:"column:vod_author" json:"vodAuthor"`
-	VodJumpurl  string `gorm:"column:vod_jumpurl" json:"vodJumpurl"`
-	VodDuration string `gorm:"column:vod_duration" json:"vodDuration"`
+	VodArea     string `gorm:"column:vod_area;type:varchar(128)" json:"vodArea"` // 原始文本保留用于展示；筛选走 video_areas
+	VodLang     string `gorm:"column:vod_lang;type:varchar(64)" json:"vodLang"`
+	VodYear     string `gorm:"column:vod_year;type:varchar(32);index" json:"vodYear"` // 站点原始年份文本；筛选与下拉都按它等值聚合
+	VodVersion  string `gorm:"column:vod_version;type:varchar(128)" json:"vodVersion"`
+	VodState    string `gorm:"column:vod_state;type:varchar(128)" json:"vodState"`
+	VodAuthor   string `gorm:"column:vod_author;type:varchar(128)" json:"vodAuthor"`
+	VodJumpurl  string `gorm:"column:vod_jumpurl;type:varchar(512)" json:"vodJumpurl"`
+	VodDuration string `gorm:"column:vod_duration;type:varchar(64)" json:"vodDuration"`
 
 	// ---- 模板与标志 ----
-	VodTplPlay string `gorm:"column:vod_tpl_play" json:"vodTplPlay"`
-	VodTplDown string `gorm:"column:vod_tpl_down" json:"vodTplDown"`
-	VodIsend   string `gorm:"column:vod_isend" json:"vodIsend"`
+	VodTplPlay string `gorm:"column:vod_tpl_play;type:varchar(128)" json:"vodTplPlay"`
+	VodTplDown string `gorm:"column:vod_tpl_down;type:varchar(128)" json:"vodTplDown"`
+	VodIsend   string `gorm:"column:vod_isend;type:varchar(32)" json:"vodIsend"`
 
 	// ---- 积分与统计 ----
-	VodHits      string `gorm:"column:vod_hits" json:"vodHits"`
-	VodHitsDay   string `gorm:"column:vod_hits_day" json:"vodHitsDay"`
-	VodHitsWeek  string `gorm:"column:vod_hits_week" json:"vodHitsWeek"`
-	VodHitsMonth string `gorm:"column:vod_hits_month" json:"vodHitsMonth"`
-	VodUp        string `gorm:"column:vod_up" json:"vodUp"`
-	VodDown      string `gorm:"column:vod_down" json:"vodDown"`
-	VodScore     string `gorm:"column:vod_score" json:"vodScore"`
-	VodScoreAll  string `gorm:"column:vod_score_all" json:"vodScoreAll"`
-	VodScoreNum  string `gorm:"column:vod_score_num" json:"vodScoreNum"`
+	VodHits      string `gorm:"column:vod_hits;type:varchar(64)" json:"vodHits"`
+	VodHitsDay   string `gorm:"column:vod_hits_day;type:varchar(64)" json:"vodHitsDay"`
+	VodHitsWeek  string `gorm:"column:vod_hits_week;type:varchar(64)" json:"vodHitsWeek"`
+	VodHitsMonth string `gorm:"column:vod_hits_month;type:varchar(64)" json:"vodHitsMonth"`
+	VodUp        string `gorm:"column:vod_up;type:varchar(64)" json:"vodUp"`
+	VodDown      string `gorm:"column:vod_down;type:varchar(64)" json:"vodDown"`
+	VodScore     string `gorm:"column:vod_score;type:varchar(64)" json:"vodScore"`
+	VodScoreAll  string `gorm:"column:vod_score_all;type:varchar(64)" json:"vodScoreAll"`
+	VodScoreNum  string `gorm:"column:vod_score_num;type:varchar(64)" json:"vodScoreNum"`
 
 	// ---- 时间 ----
-	VodTime     string `gorm:"column:vod_time;size:32;index;index:idx_videos_source_time,priority:2" json:"vodTime"` // 站点原始更新时间，归一化后可字典序比较
-	VodTimeAdd  string `gorm:"column:vod_time_add" json:"vodTimeAdd"`
-	VodTimeMake string `gorm:"column:vod_time_make" json:"vodTimeMake"`
+	VodTime     string `gorm:"column:vod_time;type:varchar(32);index;index:idx_videos_source_time,priority:2" json:"vodTime"` // 站点原始更新时间，归一化后可字典序比较
+	VodTimeAdd  string `gorm:"column:vod_time_add;type:varchar(32)" json:"vodTimeAdd"`
+	VodTimeMake string `gorm:"column:vod_time_make;type:varchar(32)" json:"vodTimeMake"`
 
 	// ---- 来源与关联 ----
-	VodDoubanID    string `gorm:"column:vod_douban_id" json:"vodDoubanId"`
-	VodDoubanScore string `gorm:"column:vod_douban_score" json:"vodDoubanScore"`
+	VodDoubanID    string `gorm:"column:vod_douban_id;type:varchar(64)" json:"vodDoubanId"`
+	VodDoubanScore string `gorm:"column:vod_douban_score;type:varchar(64)" json:"vodDoubanScore"`
 
 	// ---- 播放 ----
-	VodPlayFrom   string `gorm:"column:vod_play_from" json:"vodPlayFrom"`
-	VodPlayServer string `gorm:"column:vod_play_server" json:"vodPlayServer"`
-	VodPlayNote   string `gorm:"column:vod_play_note" json:"vodPlayNote"`
-	VodPlayURL    string `gorm:"column:vod_play_url;type:text" json:"vodPlayUrl"`
-	VodPlayList   string `gorm:"column:vod_play_list;type:text" json:"vodPlayList"`
+	VodPlayFrom   string `gorm:"column:vod_play_from;type:varchar(255)" json:"vodPlayFrom"`
+	VodPlayServer string `gorm:"column:vod_play_server;type:varchar(255)" json:"vodPlayServer"`
+	VodPlayNote   string `gorm:"column:vod_play_note;type:varchar(255)" json:"vodPlayNote"`
+	VodPlayURL    string `gorm:"column:vod_play_url;type:mediumtext" json:"vodPlayUrl"`
+	VodPlayList   string `gorm:"column:vod_play_list;type:mediumtext" json:"vodPlayList"`
 
 	// ---- 下载 ----
-	VodDownFrom   string `gorm:"column:vod_down_from" json:"vodDownFrom"`
-	VodDownServer string `gorm:"column:vod_down_server" json:"vodDownServer"`
-	VodDownNote   string `gorm:"column:vod_down_note" json:"vodDownNote"`
-	VodDownURL    string `gorm:"column:vod_down_url;type:text" json:"vodDownUrl"`
-	VodDownList   string `gorm:"column:vod_down_list;type:text" json:"vodDownList"`
+	VodDownFrom   string `gorm:"column:vod_down_from;type:varchar(255)" json:"vodDownFrom"`
+	VodDownServer string `gorm:"column:vod_down_server;type:varchar(255)" json:"vodDownServer"`
+	VodDownNote   string `gorm:"column:vod_down_note;type:varchar(255)" json:"vodDownNote"`
+	VodDownURL    string `gorm:"column:vod_down_url;type:mediumtext" json:"vodDownUrl"`
+	VodDownList   string `gorm:"column:vod_down_list;type:mediumtext" json:"vodDownList"`
 
 	// ---- 分集剧情 ----
-	VodPlot       string `gorm:"column:vod_plot" json:"vodPlot"`
-	VodPlotName   string `gorm:"column:vod_plot_name;type:text" json:"vodPlotName"`
-	VodPlotDetail string `gorm:"column:vod_plot_detail;type:text" json:"vodPlotDetail"`
+	VodPlot       string `gorm:"column:vod_plot;type:varchar(32)" json:"vodPlot"`
+	VodPlotName   string `gorm:"column:vod_plot_name;type:mediumtext" json:"vodPlotName"`
+	VodPlotDetail string `gorm:"column:vod_plot_detail;type:mediumtext" json:"vodPlotDetail"`
 
 	// ---- 采集元数据 ----
-	Hash  string `gorm:"column:hash;size:64" json:"-"`                  // 全字段内容指纹
-	Extra string `gorm:"column:extra;type:text" json:"extra,omitempty"` // 未映射字段（原始 JSON 值）
+	Hash  string `gorm:"column:hash;type:varchar(64)" json:"-"`               // 全字段内容指纹
+	Extra string `gorm:"column:extra;type:mediumtext" json:"extra,omitempty"` // 未映射字段（原始 JSON 值）
 
 	FirstSeenAt time.Time `json:"firstSeenAt"`
 	LastSeenAt  time.Time `json:"lastSeenAt"`

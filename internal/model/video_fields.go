@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 )
@@ -11,6 +12,13 @@ import (
 // 并补充资源站接口常见的 type_name / type / vod_play_list / vod_down_list。
 // 这份清单是采集解析、入库更新、API 元数据与前端展示的唯一数据源，放在 model 包
 // 作为横切领域定义，避免 service/collector 与 repository 之间产生循环依赖。
+//
+// Size 是按官方字段长度确定的新库列宽（VARCHAR 的字符数）：
+//   - 官方 short varchar 会按资源站实际情况留安全余量（例如 vod_area 官方 20、
+//     这里 128），避免第三方站点返回稍长的多地区文本时被 MySQL 严格模式拒绝；
+//   - Size=0 表示长文本（官方 text/mediumtext，或解析后的数组 JSON），落 MEDIUMTEXT。
+//
+// 具体映射见 VodColumnType；Video 的 gorm tag 必须与之一致（有单测锁死）。
 type VodField struct {
 	Key    string // 接口 JSON 键，如 vod_name
 	Go     string // Video 结构体字段名
@@ -18,6 +26,17 @@ type VodField struct {
 	Desc   string // 中文含义
 	Group  string // 分组 key
 	Long   bool   // 是否长文本（简介、播放地址、解析后的列表等）
+	Size   int    // VARCHAR 长度；0 表示长文本（MEDIUMTEXT）
+}
+
+// VodColumnType 返回字段在新库中的 SQL 列类型。
+// 所有影片字段在 Go 侧都是 string（保留站点原始值，包括数字/时间戳/对象 JSON），
+// 因此只按字符长度选择 VARCHAR(N) 或 MEDIUMTEXT，不把数字字段改成数值列。
+func VodColumnType(f VodField) string {
+	if f.Size == 0 {
+		return "mediumtext"
+	}
+	return fmt.Sprintf("varchar(%d)", f.Size)
 }
 
 // VodGroupLabels 是分组的中文名，顺序即前端详情展示顺序。
@@ -44,98 +63,98 @@ var VodGroupLabels = []struct {
 // 新增字段只需在此追加，并在 Video 中补上同名 Go 字段即可全链路生效。
 var VodFields = []VodField{
 	// 基础信息
-	{"vod_id", "VodID", "vod_id", "视频 ID", "basic", false},
-	{"type_id", "TypeID", "type_id", "分类 ID", "basic", false},
-	{"type_id_1", "TypeID1", "type_id_1", "一级分类 ID", "basic", false},
-	{"group_id", "GroupID", "group_id", "用户组 ID", "basic", false},
-	{"vod_name", "VodName", "vod_name", "视频名称", "basic", false},
-	{"vod_sub", "VodSub", "vod_sub", "副标题", "basic", false},
-	{"vod_en", "VodEn", "vod_en", "别名 / 英文名", "basic", false},
-	{"vod_color", "VodColor", "vod_color", "颜色", "basic", false},
-	{"vod_tag", "VodTag", "vod_tag", "标签", "basic", false},
-	{"vod_class", "VodClass", "vod_class", "扩展分类", "basic", false},
-	{"type_name", "TypeName", "type_name", "分类名称", "basic", false},
-	{"type", "VodType", "type", "分类对象 / 名称", "basic", true},
+	{"vod_id", "VodID", "vod_id", "视频 ID", "basic", false, 64},
+	{"type_id", "TypeID", "type_id", "分类 ID", "basic", false, 64},
+	{"type_id_1", "TypeID1", "type_id_1", "一级分类 ID", "basic", false, 64},
+	{"group_id", "GroupID", "group_id", "用户组 ID", "basic", false, 64},
+	{"vod_name", "VodName", "vod_name", "视频名称", "basic", false, 255},
+	{"vod_sub", "VodSub", "vod_sub", "副标题", "basic", false, 255},
+	{"vod_en", "VodEn", "vod_en", "别名 / 英文名", "basic", false, 255},
+	{"vod_color", "VodColor", "vod_color", "颜色", "basic", false, 16},
+	{"vod_tag", "VodTag", "vod_tag", "标签", "basic", false, 255},
+	{"vod_class", "VodClass", "vod_class", "扩展分类", "basic", false, 255},
+	{"type_name", "TypeName", "type_name", "分类名称", "basic", false, 255},
+	{"type", "VodType", "type", "分类对象 / 名称", "basic", true, 0},
 
 	// 图片
-	{"vod_pic", "VodPic", "vod_pic", "图片", "image", false},
-	{"vod_pic_thumb", "VodPicThumb", "vod_pic_thumb", "缩略图", "image", false},
-	{"vod_pic_slide", "VodPicSlide", "vod_pic_slide", "幻灯图", "image", false},
-	{"vod_pic_original", "VodPicOriginal", "vod_pic_original", "原图", "image", false},
-	{"vod_pic_screenshot", "VodPicScreenshot", "vod_pic_screenshot", "截图（多个用 # 连接）", "image", true},
+	{"vod_pic", "VodPic", "vod_pic", "图片", "image", false, 1024},
+	{"vod_pic_thumb", "VodPicThumb", "vod_pic_thumb", "缩略图", "image", false, 1024},
+	{"vod_pic_slide", "VodPicSlide", "vod_pic_slide", "幻灯图", "image", false, 1024},
+	{"vod_pic_original", "VodPicOriginal", "vod_pic_original", "原图", "image", false, 1024},
+	{"vod_pic_screenshot", "VodPicScreenshot", "vod_pic_screenshot", "截图（多个用 # 连接）", "image", true, 0},
 
 	// 演职人员
-	{"vod_actor", "VodActor", "vod_actor", "主演", "cast", false},
-	{"vod_director", "VodDirector", "vod_director", "导演", "cast", false},
-	{"vod_writer", "VodWriter", "vod_writer", "编剧", "cast", false},
-	{"vod_behind", "VodBehind", "vod_behind", "幕后", "cast", false},
+	{"vod_actor", "VodActor", "vod_actor", "主演", "cast", false, 255},
+	{"vod_director", "VodDirector", "vod_director", "导演", "cast", false, 255},
+	{"vod_writer", "VodWriter", "vod_writer", "编剧", "cast", false, 255},
+	{"vod_behind", "VodBehind", "vod_behind", "幕后", "cast", false, 255},
 
 	// 简介与备注
-	{"vod_blurb", "VodBlurb", "vod_blurb", "简介", "content", true},
-	{"vod_remarks", "VodRemarks", "vod_remarks", "备注", "content", false},
-	{"vod_content", "VodContent", "vod_content", "详细介绍", "content", true},
+	{"vod_blurb", "VodBlurb", "vod_blurb", "简介", "content", true, 0},
+	{"vod_remarks", "VodRemarks", "vod_remarks", "备注", "content", false, 255},
+	{"vod_content", "VodContent", "vod_content", "详细介绍", "content", true, 0},
 
 	// 上映与集数
-	{"vod_pubdate", "VodPubdate", "vod_pubdate", "上映日期", "release", false},
-	{"vod_publish_time", "VodPublishTime", "vod_publish_time", "定时上架时间戳", "release", false},
-	{"vod_total", "VodTotal", "vod_total", "总集数", "release", false},
-	{"vod_serial", "VodSerial", "vod_serial", "连载数", "release", false},
-	{"vod_tv", "VodTv", "vod_tv", "上映电视台", "release", false},
-	{"vod_weekday", "VodWeekday", "vod_weekday", "节目周期", "release", false},
+	{"vod_pubdate", "VodPubdate", "vod_pubdate", "上映日期", "release", false, 255},
+	{"vod_publish_time", "VodPublishTime", "vod_publish_time", "定时上架时间戳", "release", false, 32},
+	{"vod_total", "VodTotal", "vod_total", "总集数", "release", false, 32},
+	{"vod_serial", "VodSerial", "vod_serial", "连载数", "release", false, 64},
+	{"vod_tv", "VodTv", "vod_tv", "上映电视台", "release", false, 128},
+	{"vod_weekday", "VodWeekday", "vod_weekday", "节目周期", "release", false, 128},
 
 	// 属性
-	{"vod_area", "VodArea", "vod_area", "地区", "attribute", false},
-	{"vod_lang", "VodLang", "vod_lang", "语言", "attribute", false},
-	{"vod_year", "VodYear", "vod_year", "年代", "attribute", false},
-	{"vod_version", "VodVersion", "vod_version", "版本", "attribute", false},
-	{"vod_state", "VodState", "vod_state", "资源类别", "attribute", false},
-	{"vod_author", "VodAuthor", "vod_author", "编辑人员", "attribute", false},
-	{"vod_jumpurl", "VodJumpurl", "vod_jumpurl", "跳转地址", "attribute", false},
-	{"vod_duration", "VodDuration", "vod_duration", "时长", "attribute", false},
+	{"vod_area", "VodArea", "vod_area", "地区", "attribute", false, 128},
+	{"vod_lang", "VodLang", "vod_lang", "语言", "attribute", false, 64},
+	{"vod_year", "VodYear", "vod_year", "年代", "attribute", false, 32},
+	{"vod_version", "VodVersion", "vod_version", "版本", "attribute", false, 128},
+	{"vod_state", "VodState", "vod_state", "资源类别", "attribute", false, 128},
+	{"vod_author", "VodAuthor", "vod_author", "编辑人员", "attribute", false, 128},
+	{"vod_jumpurl", "VodJumpurl", "vod_jumpurl", "跳转地址", "attribute", false, 512},
+	{"vod_duration", "VodDuration", "vod_duration", "时长", "attribute", false, 64},
 
 	// 模板与标志
-	{"vod_tpl_play", "VodTplPlay", "vod_tpl_play", "播放页模板", "flags", false},
-	{"vod_tpl_down", "VodTplDown", "vod_tpl_down", "下载页模板", "flags", false},
-	{"vod_isend", "VodIsend", "vod_isend", "是否完结", "flags", false},
+	{"vod_tpl_play", "VodTplPlay", "vod_tpl_play", "播放页模板", "flags", false, 128},
+	{"vod_tpl_down", "VodTplDown", "vod_tpl_down", "下载页模板", "flags", false, 128},
+	{"vod_isend", "VodIsend", "vod_isend", "是否完结", "flags", false, 32},
 
 	// 积分与统计
-	{"vod_hits", "VodHits", "vod_hits", "总点击量", "stats", false},
-	{"vod_hits_day", "VodHitsDay", "vod_hits_day", "日点击量", "stats", false},
-	{"vod_hits_week", "VodHitsWeek", "vod_hits_week", "周点击量", "stats", false},
-	{"vod_hits_month", "VodHitsMonth", "vod_hits_month", "月点击量", "stats", false},
-	{"vod_up", "VodUp", "vod_up", "顶 / 赞次数", "stats", false},
-	{"vod_down", "VodDown", "vod_down", "踩次数", "stats", false},
-	{"vod_score", "VodScore", "vod_score", "平均分", "stats", false},
-	{"vod_score_all", "VodScoreAll", "vod_score_all", "总评分", "stats", false},
-	{"vod_score_num", "VodScoreNum", "vod_score_num", "评分次数", "stats", false},
+	{"vod_hits", "VodHits", "vod_hits", "总点击量", "stats", false, 64},
+	{"vod_hits_day", "VodHitsDay", "vod_hits_day", "日点击量", "stats", false, 64},
+	{"vod_hits_week", "VodHitsWeek", "vod_hits_week", "周点击量", "stats", false, 64},
+	{"vod_hits_month", "VodHitsMonth", "vod_hits_month", "月点击量", "stats", false, 64},
+	{"vod_up", "VodUp", "vod_up", "顶 / 赞次数", "stats", false, 64},
+	{"vod_down", "VodDown", "vod_down", "踩次数", "stats", false, 64},
+	{"vod_score", "VodScore", "vod_score", "平均分", "stats", false, 64},
+	{"vod_score_all", "VodScoreAll", "vod_score_all", "总评分", "stats", false, 64},
+	{"vod_score_num", "VodScoreNum", "vod_score_num", "评分次数", "stats", false, 64},
 
 	// 时间
-	{"vod_time", "VodTime", "vod_time", "更新时间", "time", false},
-	{"vod_time_add", "VodTimeAdd", "vod_time_add", "添加时间", "time", false},
-	{"vod_time_make", "VodTimeMake", "vod_time_make", "生成时间", "time", false},
+	{"vod_time", "VodTime", "vod_time", "更新时间", "time", false, 32},
+	{"vod_time_add", "VodTimeAdd", "vod_time_add", "添加时间", "time", false, 32},
+	{"vod_time_make", "VodTimeMake", "vod_time_make", "生成时间", "time", false, 32},
 
 	// 来源与关联
-	{"vod_douban_id", "VodDoubanID", "vod_douban_id", "豆瓣 ID", "relation", false},
-	{"vod_douban_score", "VodDoubanScore", "vod_douban_score", "豆瓣评分", "relation", false},
+	{"vod_douban_id", "VodDoubanID", "vod_douban_id", "豆瓣 ID", "relation", false, 64},
+	{"vod_douban_score", "VodDoubanScore", "vod_douban_score", "豆瓣评分", "relation", false, 64},
 
 	// 播放
-	{"vod_play_from", "VodPlayFrom", "vod_play_from", "播放组", "play", false},
-	{"vod_play_server", "VodPlayServer", "vod_play_server", "播放服务器组", "play", false},
-	{"vod_play_note", "VodPlayNote", "vod_play_note", "播放备注", "play", false},
-	{"vod_play_url", "VodPlayURL", "vod_play_url", "播放地址", "play", true},
-	{"vod_play_list", "VodPlayList", "vod_play_list", "播放列表（解析后数组）", "play", true},
+	{"vod_play_from", "VodPlayFrom", "vod_play_from", "播放组", "play", false, 255},
+	{"vod_play_server", "VodPlayServer", "vod_play_server", "播放服务器组", "play", false, 255},
+	{"vod_play_note", "VodPlayNote", "vod_play_note", "播放备注", "play", false, 255},
+	{"vod_play_url", "VodPlayURL", "vod_play_url", "播放地址", "play", true, 0},
+	{"vod_play_list", "VodPlayList", "vod_play_list", "播放列表（解析后数组）", "play", true, 0},
 
 	// 下载
-	{"vod_down_from", "VodDownFrom", "vod_down_from", "下载组", "download", false},
-	{"vod_down_server", "VodDownServer", "vod_down_server", "下载服务器组", "download", false},
-	{"vod_down_note", "VodDownNote", "vod_down_note", "下载备注", "download", false},
-	{"vod_down_url", "VodDownURL", "vod_down_url", "下载地址", "download", true},
-	{"vod_down_list", "VodDownList", "vod_down_list", "下载列表（解析后数组）", "download", true},
+	{"vod_down_from", "VodDownFrom", "vod_down_from", "下载组", "download", false, 255},
+	{"vod_down_server", "VodDownServer", "vod_down_server", "下载服务器组", "download", false, 255},
+	{"vod_down_note", "VodDownNote", "vod_down_note", "下载备注", "download", false, 255},
+	{"vod_down_url", "VodDownURL", "vod_down_url", "下载地址", "download", true, 0},
+	{"vod_down_list", "VodDownList", "vod_down_list", "下载列表（解析后数组）", "download", true, 0},
 
 	// 分集剧情
-	{"vod_plot", "VodPlot", "vod_plot", "是否含分集剧情", "plot", false},
-	{"vod_plot_name", "VodPlotName", "vod_plot_name", "分集剧情名称", "plot", true},
-	{"vod_plot_detail", "VodPlotDetail", "vod_plot_detail", "分集剧情详情", "plot", true},
+	{"vod_plot", "VodPlot", "vod_plot", "是否含分集剧情", "plot", false, 32},
+	{"vod_plot_name", "VodPlotName", "vod_plot_name", "分集剧情名称", "plot", true, 0},
+	{"vod_plot_detail", "VodPlotDetail", "vod_plot_detail", "分集剧情详情", "plot", true, 0},
 }
 
 // vodFieldKeys 供采集器快速判断某字段是否已被显式映射。
