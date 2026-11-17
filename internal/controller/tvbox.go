@@ -77,12 +77,6 @@ func (t *TVBoxController) Vod(c *gin.Context) {
 		IDs:      ids,
 		Page:     clampQueryInt(c.Query("pg"), 1),
 		Size:     clampQueryInt(limit, 20),
-		// 二次筛选参数：key 与筛选面板里的 VodFilter.Key 一致。
-		By:    strings.TrimSpace(c.Query("by")),
-		Year:  strings.TrimSpace(c.Query("year")),
-		Area:  strings.TrimSpace(c.Query("area")),
-		Class: strings.TrimSpace(c.Query("class")),
-		State: strings.TrimSpace(c.Query("state")),
 	}
 	out, err := t.tvbox.Vod(req, p)
 	if err != nil {

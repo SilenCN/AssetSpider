@@ -3,7 +3,6 @@ package repository
 import (
 	"fmt"
 	"reflect"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -31,13 +30,6 @@ type VideoQuery struct {
 	Sort       string // 排序标识，见 videoOrder；空则按 id 倒序
 	Page       int
 	Size       int
-	// TVBox 二次筛选：按影片上保留的原始字段做精确/前缀匹配。
-	// 这些字段在库里保留原始文本（见 model.Video），只是新库不再为它们建索引，
-	// 这里只用它们做 LIKE/等值条件，不恢复已下线的独立筛选维度。
-	Year  string // vod_year
-	Area  string // vod_area（模糊匹配）
-	Class string // vod_class（模糊匹配，苹果CMS 的"类型"筛选）
-	State string // vod_state（完结/连载等）
 	// VisibleSourceIDs 是可选的站点白名单：nil 表示不过滤（管理员），
 	// 长度为 0 的非 nil 切片表示不返回任何影片。
 	VisibleSourceIDs []uint
@@ -73,9 +65,6 @@ type VideoRepository interface {
 	ListVideosForFeed(query VideoQuery) ([]model.Video, int64, error)
 	// GetVideosByVodIDs 按 (source_id, vod_id) 批量取完整影片，供苹果CMS detail 的 ids 查询。
 	GetVideosByVodIDs(sourceID uint, vodIDs []string) ([]model.Video, error)
-	// DistinctFieldValues 返回某站点某字段的非空去重值，用于 TVBox 筛选面板只展示
-	// 库里真实存在的年份 / 地区 / 类型 / 状态，避免列出选了也没结果的选项。
-	DistinctFieldValues(sourceID uint, column string, limit int) ([]string, error)
 }
 
 // videoRepository 是 Video 实体专属的仓储对象。
@@ -373,11 +362,6 @@ func videoOrder(sort string) string {
 		return "vod_time DESC, id DESC"
 	case "time_asc":
 		return "vod_time ASC, id ASC"
-	case "score_desc":
-		// 评分优先（字符串排序，站点原始分多为 "9.2" 这类等宽文本），再按时间倒序。
-		return "vod_score DESC, id DESC"
-	case "hits_desc":
-		return "CAST(vod_hits AS INTEGER) DESC, id DESC"
 	default:
 		return "id DESC"
 	}
@@ -462,27 +446,6 @@ func (r *videoRepository) feedQuery(query VideoQuery) *gorm.DB {
 			mysqlFulltext: r.dialect == DialectMySQL && r.searchReady.Load(),
 		})
 	}
-	q = applyVideoFilters(q, query)
-	return q
-}
-
-// applyVideoFilters 把 TVBox 二次筛选条件叠加到查询上。
-// year / state 用等值（年份是 4 位、state 是短枚举），area / class 用 LIKE：
-// 这些字段常是逗号分隔的多值串（如 vod_class="剧情,爱情,科幻"），等值匹配不到，
-// LIKE '%值%' 才能命中。值来自筛选面板的聚合，本身已去重去空。
-func applyVideoFilters(q *gorm.DB, query VideoQuery) *gorm.DB {
-	if v := strings.TrimSpace(query.Year); v != "" {
-		q = q.Where("TRIM(COALESCE(vod_year, '')) = ?", v)
-	}
-	if v := strings.TrimSpace(query.State); v != "" {
-		q = q.Where("TRIM(COALESCE(vod_state, '')) = ?", v)
-	}
-	if v := strings.TrimSpace(query.Area); v != "" {
-		q = q.Where("vod_area LIKE ?", "%"+v+"%")
-	}
-	if v := strings.TrimSpace(query.Class); v != "" {
-		q = q.Where("vod_class LIKE ?", "%"+v+"%")
-	}
 	return q
 }
 
@@ -505,29 +468,6 @@ func (r *videoRepository) ListVideosForFeed(query VideoQuery) ([]model.Video, in
 		return nil, 0, err
 	}
 	return items, total, nil
-}
-
-// DistinctFieldValues 见接口注释。column 只允许白名单内的列，防止把方法参数
-// 直接拼进 SQL 造成注入（调用方传的是固定字段名，但这里仍显式校验）。
-func (r *videoRepository) DistinctFieldValues(sourceID uint, column string, limit int) ([]string, error) {
-	allowed := map[string]bool{
-		"vod_year": true, "vod_area": true, "vod_class": true, "vod_state": true,
-	}
-	if !allowed[column] {
-		return nil, fmt.Errorf("非法筛选字段: %s", column)
-	}
-	if limit < 1 || limit > 500 {
-		limit = 200
-	}
-	var values []string
-	err := r.db.Model(&model.Video{}).
-		Where("source_id = ?", sourceID).
-		Where("TRIM(COALESCE("+column+", '')) <> ''").
-		Distinct(column).
-		Order(column+" ASC").
-		Limit(limit).
-		Pluck(column, &values).Error
-	return values, err
 }
 
 // GetVideosByVodIDs 见接口注释：按 (source_id, vod_id) 批量取完整影片。
