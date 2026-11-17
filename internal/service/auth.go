@@ -500,3 +500,81 @@ func (s *AuthService) DeleteUser(id uint, p ...Principal) error {
 	}
 	return s.users.DeleteUser(id)
 }
+
+// ---------- TVBox 专属接口鉴权键 ----------
+
+// ApiKeyView 是「我的接口」页展示的鉴权键视图。
+// Key 为空表示尚未生成；KeyPrefix 用于在不泄露完整 key 的情况下做列表标识。
+type ApiKeyView struct {
+	Key      string `json:"key"`
+	Enabled  bool   `json:"enabled"`
+	Username string `json:"username"`
+}
+
+// randomApiKey 生成一个 32 字节随机数的十六进制串（64 字符），
+// 与登录令牌同规格；唯一索引兜底极小概率的碰撞。
+func randomApiKey() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+// GetApiKey 返回当前用户的接口键（可能为空，表示未生成）。
+func (s *AuthService) GetApiKey(p Principal) (ApiKeyView, error) {
+	u, err := s.users.GetUser(p.UserID)
+	if err != nil {
+		return ApiKeyView{}, wrapRepo(err)
+	}
+	key := ""
+	if u.ApiKey != nil {
+		key = *u.ApiKey
+	}
+	return ApiKeyView{Key: key, Enabled: u.Enabled, Username: u.Username}, nil
+}
+
+// RegenerateApiKey 为当前用户生成一个新的接口键并覆盖旧键，旧 key 立即失效。
+// 32 字节随机数的碰撞概率是 2^-256，唯一索引只是兜底，无需针对各数据库方言
+// 做重复键重试（那会把存储层错误细节带进服务层）。停用用户不允许生成。
+func (s *AuthService) RegenerateApiKey(p Principal) (ApiKeyView, error) {
+	u, err := s.users.GetUser(p.UserID)
+	if err != nil {
+		return ApiKeyView{}, wrapRepo(err)
+	}
+	if !u.Enabled {
+		return ApiKeyView{}, fmt.Errorf("%w: 账号已停用", ErrForbidden)
+	}
+	key, err := randomApiKey()
+	if err != nil {
+		return ApiKeyView{}, fmt.Errorf("生成接口键失败: %w", err)
+	}
+	if err := s.users.SetUserApiKey(u.ID, key); err != nil {
+		return ApiKeyView{}, wrapRepo(err)
+	}
+	return ApiKeyView{Key: key, Enabled: true, Username: u.Username}, nil
+}
+
+// RevokeApiKey 撤销当前用户的接口键（置空），此后用旧 key 访问一律 401。
+func (s *AuthService) RevokeApiKey(p Principal) error {
+	return wrapRepo(s.users.SetUserApiKey(p.UserID, ""))
+}
+
+// ResolveByApiKey 按 TVBox 接口键解析请求主体。
+// 与 Resolve（登录会话）走同一套 principalOfUser，因此站点可见性规则完全一致；
+// 用过的 key 一旦被重置 / 用户停用，GetUserByApiKey 就查不到，立即失效。
+func (s *AuthService) ResolveByApiKey(key string) (Principal, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return Principal{}, fmt.Errorf("%w: 接口鉴权键无效", ErrUnauthorized)
+	}
+	u, err := s.users.GetUserByApiKey(key)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return Principal{}, fmt.Errorf("%w: 接口鉴权键无效或已失效", ErrUnauthorized)
+		}
+		return Principal{}, err
+	}
+	// ApiKey 不写进 Principal.TokenHash（那是会话摘要）：这里只需要用户身份与可见范围。
+	return s.principalOfUser(u, "")
+}

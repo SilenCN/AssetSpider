@@ -13,6 +13,7 @@ import { createTasks } from './tasks.js'
 import { createSettings } from './settings.js'
 import { createUsers } from './users.js'
 import { createAuth } from './auth.js'
+import { createTvbox } from './tvbox.js'
 import { createShell } from './shell.js'
 
 export function createApp() {
@@ -29,6 +30,7 @@ export function createApp() {
   Object.assign(ctx, createSettings(ctx))
   Object.assign(ctx, createUsers(ctx))
   Object.assign(ctx, createAuth(ctx))
+  Object.assign(ctx, createTvbox(ctx))
   Object.assign(ctx, createShell(ctx))
   return ctx
 }

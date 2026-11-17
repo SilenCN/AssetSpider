@@ -43,7 +43,8 @@ go build -o bin/assetspider .
 | 归档 | 分类（两级树）随采集自动建立与关联，任务级类目缓存 + 批量 upsert 避免逐页重复查库写入；标签 / 地域 / 年份只保留影片上的原始字段作展示，不建归档表、不参与资源库筛选 | [采集能力](docs/collecting.md) |
 | 播放 | 播放组解析为线路 / 剧集，m3u8（hls.js）/ 直链 / 解析页 iframe 三种承载方式 | [采集能力](docs/collecting.md) |
 | 站点 | 手工添加、JSON 导入 / 导出，以及**网络订阅**：填一个远程 JSON 地址，按间隔自动刷新或手动刷新 | [配置](docs/configuration.md) |
-| 页面 | 资源库、站点配置、视频分类、采集记录、系统设置、用户管理（角色与站点白名单） | [前端](docs/frontend.md) |
+| 页面 | 资源库、站点配置、视频分类、采集记录、系统设置、用户管理（角色与站点白名单）、我的接口（TVBox 专属配置地址） | [前端](docs/frontend.md) |
+| TVBox | 每个用户自助生成带鉴权的 TVBox / 影视仓配置地址，苹果CMS V10 协议，可见站点与登录态一致 | [配置](docs/configuration.md#tvbox--影视仓专属接口) |
 | 运维 | 系统设置在线热更并写回 YAML；设置页一键重启（优雅停止后原地重建进程）；推送 `main` 自动部署，健康检查失败自动回滚 | [配置](docs/configuration.md) · [部署](docs/deployment.md) |
 
 ## 文档
@@ -52,7 +53,7 @@ go build -o bin/assetspider .
 | --- | --- |
 | [架构与目录](docs/architecture.md) | 四层架构与依赖约束、仓储拆分、批量写入策略、完整目录结构 |
 | [采集能力](docs/collecting.md) | 接口格式、全字段保留、全量 / 增量、任务调度、分类归档、播放组解析与地址改写 |
-| [配置](docs/configuration.md) | 系统设置热更新、`conf/config.yaml`、站点字段、JSON 导入导出、检索索引、清空站点数据 |
+| [配置](docs/configuration.md) | 系统设置热更新、`conf/config.yaml`、站点字段、JSON 导入导出、检索索引、清空站点数据、TVBox 专属接口 |
 | [API](docs/api.md) | 登录与权限模型、全部接口与调用示例 |
 | [前端](docs/frontend.md) | 页面结构、交互约定、样式变量与移动端适配 |
 | [测试](docs/testing.md) | 测试覆盖范围与运行方式 |

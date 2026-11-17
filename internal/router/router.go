@@ -9,6 +9,9 @@
 //
 // 认证分层：登录状态查询与创建会话（登录）公开；其余接口统一要求 Bearer 令牌；
 // 账号管理、站点配置写操作与并发上限调整再叠加管理员限制。
+//
+// 另有 TVBox 专用入口 /tvbox/{key}/...（见 registerTVBox）：盒子无法填 Bearer 头，
+// 改用 URL 路径里的接口 key 鉴权，可见范围与登录态一致。
 package router
 
 import (
@@ -23,6 +26,7 @@ const APIVersion = "v1"
 func New(set controller.Set) *gin.Engine {
 	r := gin.Default()
 	registerV1(r.Group("/api"), set)
+	registerTVBox(r.Group("/tvbox"), set)
 
 	if set.Page.HasAssets() {
 		r.Static("/assets", set.Page.AssetsDir())
@@ -46,6 +50,10 @@ func registerV1(api *gin.RouterGroup, set controller.Set) {
 	auth.DELETE("/sessions", set.Auth.Logout)
 	auth.GET("/me", set.Auth.Me)
 	auth.PUT("/password", set.Auth.ChangePassword)
+	// TVBox 接口鉴权键：登录即可查看 / 生成 / 重置 / 撤销自己的 key。
+	auth.GET("/api-key", set.Auth.ApiKey)
+	auth.POST("/api-key", set.Auth.RegenerateApiKey)
+	auth.DELETE("/api-key", set.Auth.RevokeApiKey)
 
 	// ---------- 需要管理员（在登录校验之上叠加） ----------
 	admin := api.Group("", set.Auth.RequireAuth(), set.Auth.RequireAdmin())
@@ -123,4 +131,14 @@ func registerV1(api *gin.RouterGroup, set controller.Set) {
 	users.POST("", set.Users.Create)
 	users.PUT("/:id", set.Users.Update)
 	users.DELETE("/:id", set.Users.Delete)
+}
+
+// registerTVBox 注册 TVBox / 影视仓的公开入口。
+// 这些路径不在 /api 命名空间下：它们给盒子直接填 URL 用，靠路径里的 api key
+// 鉴权（而非登录会话），但仍然经过 controller 解析 Principal，可见范围与站内
+// 其它接口一致。key 由 /api/auth/v1/api-key 自助生成。
+func registerTVBox(base *gin.RouterGroup, set controller.Set) {
+	g := base.Group("/:key")
+	g.GET("/config", set.TVBox.Config)
+	g.GET("/vod/:sourceID", set.TVBox.Vod)
 }

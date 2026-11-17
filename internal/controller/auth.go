@@ -122,6 +122,35 @@ func (a *AuthController) Me(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
+// ApiKey 返回当前用户的 TVBox 接口鉴权键（未生成时 key 为空）。
+func (a *AuthController) ApiKey(c *gin.Context) {
+	out, err := a.svc.GetApiKey(principalOf(c))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// RegenerateApiKey 生成 / 重置当前用户的 TVBox 接口鉴权键，旧键立即失效。
+func (a *AuthController) RegenerateApiKey(c *gin.Context) {
+	out, err := a.svc.RegenerateApiKey(principalOf(c))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// RevokeApiKey 撤销当前用户的 TVBox 接口鉴权键。
+func (a *AuthController) RevokeApiKey(c *gin.Context) {
+	if err := a.svc.RevokeApiKey(principalOf(c)); err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
 // ChangePassword 修改当前账号密码，签发新令牌并作废旧会话。
 func (a *AuthController) ChangePassword(c *gin.Context) {
 	var in struct {

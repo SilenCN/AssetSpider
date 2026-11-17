@@ -12,6 +12,7 @@ import SettingsView from './views/SettingsView.vue'
 import VideoDetailView from './views/VideoDetailView.vue'
 import JobsView from './views/JobsView.vue'
 import UsersView from './views/UsersView.vue'
+import TvboxView from './views/TvboxView.vue'
 
 const app = createApp()
 provide('app', app)
@@ -170,6 +171,7 @@ const {
           <JobsView v-else-if="tab === 'jobs'" />
           <SettingsView v-else-if="tab === 'settings' && isAdmin" />
           <UsersView v-else-if="tab === 'users' && isAdmin" />
+          <TvboxView v-else-if="tab === 'tvbox'" />
         </template>
       </main>
     </div>

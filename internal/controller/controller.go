@@ -26,6 +26,7 @@ type Set struct {
 	Job          *JobController
 	Auth         *AuthController
 	Users        *UserController
+	TVBox        *TVBoxController
 	Settings     *SettingsController
 	Page         *PageController
 }

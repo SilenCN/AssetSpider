@@ -9,7 +9,7 @@ test('资源库是默认页且排在第一位', () => {
   assert.equal(DEFAULT_TAB, 'videos')
   assert.equal(NAV_ITEMS[0].key, 'videos')
   assert.equal(NAV_ITEMS[0].primary, true)
-  assert.deepEqual(TAB_KEYS, ['videos', 'sources', 'categories', 'jobs', 'settings', 'users'])
+  assert.deepEqual(TAB_KEYS, ['videos', 'sources', 'categories', 'jobs', 'tvbox', 'settings', 'users'])
 })
 
 test('tabToHash 输出稳定的 hash', () => {
@@ -40,7 +40,7 @@ test('TAB_KEYS 里的每个值都能被 normalizeTab 往返', () => {
 })
 
 test('navItemsFor 按管理员权限过滤用户管理', () => {
-  assert.deepEqual(navItemsFor(false).map(i => i.key), ['videos', 'sources', 'categories', 'jobs'])
+  assert.deepEqual(navItemsFor(false).map(i => i.key), ['videos', 'sources', 'categories', 'jobs', 'tvbox'])
   assert.deepEqual(navItemsFor(true).map(i => i.key), TAB_KEYS)
 })
 
@@ -82,5 +82,5 @@ test('详情 hash 与 tab hash 互不混淆，且可往返', () => {
   for (const key of TAB_KEYS) {
     assert.equal(detailIdFromHash(tabToHash(key)), null, `${key} 的 hash 不应被当成详情`)
   }
-  assert.deepEqual(TAB_KEYS, ['videos', 'sources', 'categories', 'jobs', 'settings', 'users'], '详情页不应进入侧边栏')
+  assert.deepEqual(TAB_KEYS, ['videos', 'sources', 'categories', 'jobs', 'tvbox', 'settings', 'users'], '详情页不应进入侧边栏')
 })

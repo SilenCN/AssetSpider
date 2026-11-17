@@ -152,6 +152,11 @@ export function createState() {
   const userForm = reactive(emptyUserForm())
   const userFormOpen = ref(false)
 
+  // ---------- TVBox 专属接口 ----------
+  // 当前用户的接口鉴权键（未生成时 key 为空）。进入「我的接口」页时按需加载。
+  const apiKey = ref({ key: '', enabled: false, username: '' })
+  const apiKeyBusy = ref(false)
+
   // ---------- 侧边栏 ----------
   const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_KEY) === '1')
   const sidebarMobileOpen = ref(false)
@@ -171,5 +176,6 @@ export function createState() {
     form, sourceOpen, importOpen, importBusy, importFileName, importRaw, importPreview, importFileEl,
     subscriptions, subForm, subOpen, subBusy, subRefreshing,
     userForm, userFormOpen, sidebarCollapsed, sidebarMobileOpen,
+    apiKey, apiKeyBusy,
   }
 }

@@ -19,6 +19,9 @@
 | auth | DELETE | `/api/auth/v1/sessions` | 登出，吊销当前令牌 |
 | auth | GET | `/api/auth/v1/me` | 当前账号、角色与可见站点 ID |
 | auth | PUT | `/api/auth/v1/password` | 修改自己的密码，返回新令牌并作废旧会话 |
+| auth | GET | `/api/auth/v1/api-key` | 查看自己的 TVBox 接口密钥（未生成时 `key` 为空） |
+| auth | POST | `/api/auth/v1/api-key` | 生成 / 重置 TVBox 接口密钥，旧密钥立即失效 |
+| auth | DELETE | `/api/auth/v1/api-key` | 撤销 TVBox 接口密钥 |
 | users | GET / POST | `/api/users/v1` | 管理员：账号列表（含 `sourceIds`）/ 创建用户 |
 | users | PUT / DELETE | `/api/users/v1/:id` | 管理员：更新（角色、启停、密码、站点授权）/ 删除用户 |
 | system | GET | `/api/system/v1/health` | 公开：状态、数据库路径、站点数与影片数 |
@@ -55,6 +58,19 @@
 | categories | GET | `/api/categories/v1/:id` | 单个分类详情 |
 | meta | GET | `/api/meta/v1/fields` | 全字段元数据：`total`、`groups`、`fields[]`（`key` 原始键、`json` 前端键、`desc` 中文含义、`group`、`label`、`long`） |
 | jobs | GET | `/api/jobs/v1?source_id=&limit=` | 采集记录（含 `queued` / `running` / `paused` / `success` / `failed` 与续采页码 `resumePage`） |
+
+## TVBox / 影视仓接口（旁路鉴权）
+
+以下接口**不在 `/api` 命名空间、也不带 Bearer 头**，改用 URL 路径里的接口密钥鉴权——盒子无法填请求头。
+密钥由登录用户通过 `/api/auth/v1/api-key` 自助生成 / 重置 / 撤销，可见站点范围与登录态一致。
+无密钥 / 无效密钥返回 `401`，访问未授权站点返回 `403`。详见[配置 · TVBox 专属接口](configuration.md#tvbox--影视仓专属接口)。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/tvbox/:key/config` | TVBox 配置文件：`sites[]` 列出可见站点，每条 `type:1`，`api` 内嵌密钥与站点 ID；`lives` / `parses` 为空 |
+| GET | `/tvbox/:key/vod/:sourceID?ac=list` | 苹果CMS 分类：`class[]`（`type_id` / `type_name`） |
+| GET | `/tvbox/:key/vod/:sourceID?ac=videolist&pg=&limit=&t=&wd=` | 苹果CMS 影片列表：`total` / `pagecount` / `list[]`（含播放字段），`t` 为 `type_id`、`wd` 为搜索词 |
+| GET | `/tvbox/:key/vod/:sourceID?ac=detail&ids=` | 苹果CMS 详情：`ids` 为逗号分隔的 `vod_id`；无 `ids` 时按 `wd` 搜索 |
 
 采集任务用 `POST` 创建，参数 `mode`（`full` / `incremental`，缺省 `incremental`）放在 **JSON body**，同时也兼容 query：
 

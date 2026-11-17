@@ -59,6 +59,12 @@ type VideoRepository interface {
 	CountVideos(sourceID uint) (int64, error)
 	CountVideosBySource(visible ...[]uint) (map[uint]int64, error)
 	CountVideosByCategory(visible ...[]uint) (map[uint]int64, error)
+	// ListVideosForFeed 为 TVBox 苹果CMS 采集接口返回本页完整影片（含播放 / 详情
+	// 原始字段）与命中总数。与 ListVideos 的区别：返回完整 Video 且计算 total，
+	// 因为苹果CMS 的 videolist 协议要求 pagecount / total 并带播放字段。
+	ListVideosForFeed(query VideoQuery) ([]model.Video, int64, error)
+	// GetVideosByVodIDs 按 (source_id, vod_id) 批量取完整影片，供苹果CMS detail 的 ids 查询。
+	GetVideosByVodIDs(sourceID uint, vodIDs []string) ([]model.Video, error)
 }
 
 // videoRepository 是 Video 实体专属的仓储对象。
@@ -411,6 +417,66 @@ func (r *videoRepository) ListVideos(query VideoQuery) ([]model.VideoCard, error
 	if err := q.Select(videoCardColumns).
 		Order(videoOrder(query.Sort)).
 		Offset((query.Page - 1) * query.Size).Limit(query.Size).Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// feedQuery 为 TVBox 采集接口构造影片查询条件，复用资源库的可见性、分类与关键词规则。
+// sourceID > 0 时锁定单一站点（TVBox 的 type_id 归属站点），否则跨可见站点检索。
+func (r *videoRepository) feedQuery(query VideoQuery) *gorm.DB {
+	q := applyVisibility(r.db.Model(&model.Video{}), "source_id", query.VisibleSourceIDs)
+	if query.SourceID > 0 {
+		q = q.Where("source_id = ?", query.SourceID)
+	}
+	if query.CategoryID > 0 {
+		var ids []uint
+		if err := r.db.Model(&model.Category{}).
+			Where("id = ? OR parent_id = ?", query.CategoryID, query.CategoryID).
+			Pluck("id", &ids).Error; err == nil && len(ids) > 0 {
+			q = q.Where("category_id IN ?", ids)
+		} else {
+			q = q.Where("category_id = ?", query.CategoryID)
+		}
+	}
+	if query.Keyword != "" {
+		q = applyVideoKeyword(q, query.Keyword, videoSearchCaps{
+			fts:           r.dialect == DialectSQLite && r.searchReady.Load(),
+			bigram:        r.bigram(),
+			mysqlFulltext: r.dialect == DialectMySQL && r.searchReady.Load(),
+		})
+	}
+	return q
+}
+
+// ListVideosForFeed 见接口注释：完整影片 + 总数，供苹果CMS videolist 协议使用。
+func (r *videoRepository) ListVideosForFeed(query VideoQuery) ([]model.Video, int64, error) {
+	if query.Page < 1 {
+		query.Page = 1
+	}
+	if query.Size < 1 || query.Size > 200 {
+		query.Size = 20
+	}
+	q := r.feedQuery(query)
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var items []model.Video
+	if err := q.Order(videoOrder(query.Sort)).
+		Offset((query.Page - 1) * query.Size).Limit(query.Size).Find(&items).Error; err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
+// GetVideosByVodIDs 见接口注释：按 (source_id, vod_id) 批量取完整影片。
+func (r *videoRepository) GetVideosByVodIDs(sourceID uint, vodIDs []string) ([]model.Video, error) {
+	if len(vodIDs) == 0 {
+		return nil, nil
+	}
+	var items []model.Video
+	if err := r.db.Where("source_id = ? AND vod_id IN ?", sourceID, vodIDs).Find(&items).Error; err != nil {
 		return nil, err
 	}
 	return items, nil

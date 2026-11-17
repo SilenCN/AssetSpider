@@ -15,6 +15,8 @@ type UserRepository interface {
 	CreateUser(u *model.User) error
 	GetUser(id uint) (*model.User, error)
 	GetUserByUsername(username string) (*model.User, error)
+	GetUserByApiKey(key string) (*model.User, error)
+	SetUserApiKey(id uint, key string) error
 	ListUsers() ([]model.User, error)
 	SaveUser(u *model.User) error
 	DeleteUser(id uint) error
@@ -85,6 +87,35 @@ func (r *userRepository) GetUserByUsername(username string) (*model.User, error)
 		return nil, ErrNotFound
 	}
 	return &u, nil
+}
+
+// GetUserByApiKey 按 TVBox 接口鉴权键查找「启用」用户。
+// 空 key 直接返回 ErrNotFound，避免误命中 api_key 为空的历史用户。
+func (r *userRepository) GetUserByApiKey(key string) (*model.User, error) {
+	if key == "" {
+		return nil, ErrNotFound
+	}
+	var u model.User
+	res := r.db.Where("api_key = ? AND enabled = ?", key, true).Limit(1).Find(&u)
+	if res.Error != nil {
+		return nil, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return nil, ErrNotFound
+	}
+	return &u, nil
+}
+
+// SetUserApiKey 设置用户的 TVBox 鉴权键；传空字符串表示撤销。
+// 撤销时写 NULL（而非空串），因为 api_key 有唯一索引，多个空串会互相冲突。
+func (r *userRepository) SetUserApiKey(id uint, key string) error {
+	var value interface{}
+	if key == "" {
+		value = nil
+	} else {
+		value = key
+	}
+	return r.db.Model(&model.User{}).Where("id = ?", id).Update("api_key", value).Error
 }
 
 func (r *userRepository) ListUsers() ([]model.User, error) {

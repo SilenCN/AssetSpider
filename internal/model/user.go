@@ -20,8 +20,15 @@ type User struct {
 	// 不设 default:true，否则 GORM 会把显式的 false 当作零值跳过并套用默认值。
 	Enabled     bool       `gorm:"not null;index" json:"enabled"`
 	LastLoginAt *time.Time `json:"lastLoginAt"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	UpdatedAt   time.Time  `json:"updatedAt"`
+
+	// ApiKey 是该用户的 TVBox 专属接口鉴权键（32 字节随机数的十六进制，64 字符）。
+	// 用指针是为了让"未生成"存成 NULL 而非空串：SQL 唯一索引允许多个 NULL，
+	// 但不允许多个空串，否则批量建用户会在 api_key 上撞唯一约束。
+	// 用户在「我的接口」页自助生成 / 重置；它不同于会过期的 Session，长期有效直至重置。
+	// json:"-" 避免随普通用户列表 / me 接口泄露，只在专门的 api-key 接口显式返回。
+	ApiKey    *string   `gorm:"type:varchar(64);uniqueIndex" json:"-"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // IsAdmin 判断该用户是否为管理员。
