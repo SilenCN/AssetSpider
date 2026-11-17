@@ -142,10 +142,12 @@ func TestTVBoxConfigAndVodProtocol(t *testing.T) {
 	// 5) ac=detail&ids：按 vod_id 取详情。
 	w = tvboxReq(r, http.MethodGet, fmt.Sprintf("/tvbox/%s/vod/%d?ac=detail&ids=vod-2", key, sourceID))
 	var detail struct {
-		Page      int `json:"page"`
-		PageCount int `json:"pagecount"`
-		Limit     int `json:"limit"`
-		Total     int `json:"total"`
+		Code      int    `json:"code"`
+		Msg       string `json:"msg"`
+		Page      int    `json:"page"`
+		PageCount int    `json:"pagecount"`
+		Limit     int    `json:"limit"`
+		Total     int    `json:"total"`
 		List      []struct {
 			VodID      string `json:"vod_id"`
 			VodPlayURL string `json:"vod_play_url"`
@@ -158,6 +160,12 @@ func TestTVBoxConfigAndVodProtocol(t *testing.T) {
 	// 判为无效并显示「没找到数据」。detail 必须与 videolist 顶层结构一致。
 	if detail.Page != 1 || detail.PageCount != 1 || detail.Limit < 1 || detail.Total != 1 {
 		t.Fatalf("ac=detail 缺少完整分页字段: %s", w.Body.String())
+	}
+	// 回归守卫：q215613905/TVBoxOS 等老版 TVBox 在 DetailActivity 里判定
+	// msg 非空且 != "数据列表" 就 showEmpty() 并 return，导致播放组/播放列表
+	// 一律无法显示（"没找到数据"）。msg 必须是苹果CMS 标准值 "数据列表"。
+	if detail.Msg != "数据列表" {
+		t.Fatalf("ac=detail msg 非苹果CMS标准值（应为\"数据列表\"）: %q, body=%s", detail.Msg, w.Body.String())
 	}
 
 	// 6) 客户端点播详情的写法并不统一：ids 搭配任意 ac、仅 ids、单数 id、

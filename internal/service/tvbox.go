@@ -95,8 +95,17 @@ type VodRequest struct {
 	Size     int
 }
 
+// vodMsgOK 是苹果CMS V10 provide/vod 成功响应里 msg 字段的标准值。
+// 不能写成 "ok" 或留空：以 q215613905/TVBoxOS 为代表的老版 TVBox 客户端在
+// DetailActivity 中对详情响应用如下判定——msg 非空且不等于 "数据列表" 就视为
+// 错误提示，直接 showEmpty() 并 return，导致影片详情的播放组 / 播放列表全部
+// 无法显示（表现为"没找到数据"，且所有站点都失败，与影片内容无关）。
+// 回归苹果CMS 标准值 "数据列表" 即可让这类客户端正常进入详情解析。
+const vodMsgOK = "数据列表"
+
 // VodResponse 是苹果CMS provide/vod 的标准响应。
 // Code=1 成功；list 为空时仍返回 code=1（苹果CMS 语义），只在错误时 code=0。
+// Msg 固定为苹果CMS 标准值 "数据列表"，兼容老版 TVBox 的详情判定（见 vodMsgOK）。
 type VodResponse struct {
 	Code      int        `json:"code"`
 	Msg       string     `json:"msg"`
@@ -155,7 +164,7 @@ func (s *TVBoxService) vodListClasses(req VodRequest) (VodResponse, error) {
 	for _, c := range cats {
 		out = append(out, VodClass{TypeID: c.TypeID, TypePID: c.TypePID, Name: c.Name})
 	}
-	return VodResponse{Code: 1, Msg: "ok", Class: out, List: []VodItem{}}, nil
+	return VodResponse{Code: 1, Msg: vodMsgOK, Class: out, List: []VodItem{}}, nil
 }
 
 // vodVideoList 按分类 / 关键词分页返回影片（ac=videolist）。
@@ -191,7 +200,7 @@ func (s *TVBoxService) vodVideoList(req VodRequest) (VodResponse, error) {
 		pageCount = int((total + int64(query.Size) - 1) / int64(query.Size))
 	}
 	return VodResponse{
-		Code: 1, Msg: "ok", Page: query.Page, PageCount: pageCount,
+		Code: 1, Msg: vodMsgOK, Page: query.Page, PageCount: pageCount,
 		Limit: query.Size, Total: total, List: items,
 	}, nil
 }
@@ -237,7 +246,7 @@ func (s *TVBoxService) vodDetail(req VodRequest) (VodResponse, error) {
 		size = 20
 	}
 	return VodResponse{
-		Code: 1, Msg: "ok",
+		Code: 1, Msg: vodMsgOK,
 		Page: 1, PageCount: 1, Limit: size, Total: int64(len(items)),
 		List: items,
 	}, nil
