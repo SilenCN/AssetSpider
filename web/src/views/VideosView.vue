@@ -5,7 +5,7 @@ import { inject } from 'vue'
 const {
   catSelectLabel, clearAllFilters, clearSearch, debouncedSearch, episodeLabel, error,
   formatTime, hasActiveFilters, isAdmin, markPicFailed, metaLine, onFilterChange,
-  openDetail, posterOf, scoreOf, searchVideos, sources, tagListOf,
+  openDetail, posterOf, scoreOf, searchVideos, siteNameOf, sources, tagListOf,
   videoCategory, videoEnd, videoLoading, videoLoadingMore, videoQuery, videoSentinel,
   videoSort, videoSource, videos, visibleCategories,
 } = inject('app')
@@ -44,6 +44,7 @@ const {
               <div class="res-poster">
                 <img v-if="posterOf(v)" :src="posterOf(v)" :alt="v.vodName" loading="lazy" @error="markPicFailed(v)" />
                 <div v-else class="res-poster-ph">{{ (v.vodName || '#').slice(0, 1) }}</div>
+                <span v-if="v.sourceId" class="res-site" :title="siteNameOf(v.sourceId)">{{ siteNameOf(v.sourceId) }}</span>
                 <span v-if="scoreOf(v)" class="res-score">{{ scoreOf(v) }}</span>
                 <span v-if="episodeLabel(v) !== '-'" class="res-eps">{{ episodeLabel(v) }}</span>
               </div>
