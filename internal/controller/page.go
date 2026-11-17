@@ -33,8 +33,15 @@ func (p *PageController) HasAssets() bool {
 func (p *PageController) Index(c *gin.Context) { p.serveIndex(c) }
 
 func (p *PageController) Fallback(c *gin.Context) {
+	// /api/ 与 /tvbox/ 都是机读 JSON 接口：未匹配路径也必须回 JSON。
+	// 尤其 TVBox / 影视仓拿到前端 HTML 会当 JSON 解析失败，表现为详情页白屏 / 一直转圈。
 	if strings.HasPrefix(c.Request.URL.Path, "/api/") {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	if strings.HasPrefix(c.Request.URL.Path, "/tvbox/") {
+		// 苹果CMS 客户端约定 code=0 表示失败；msg 便于在盒子端直接看到原因。
+		c.JSON(http.StatusNotFound, gin.H{"code": 0, "msg": "not found"})
 		return
 	}
 	p.serveIndex(c)

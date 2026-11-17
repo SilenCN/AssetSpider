@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -79,9 +80,16 @@ func (t *TVBoxController) Vod(c *gin.Context) {
 	}
 	out, err := t.tvbox.Vod(req, p)
 	if err != nil {
+		log.Printf("[tvbox] vod 失败 sourceID=%d ac=%q ids=%q wd=%q err=%v",
+			sourceID, req.Action, req.IDs, req.Keyword, err)
 		writeError(c, err)
 		return
 	}
+	// 诊断日志：TVBox / 影视仓点播排障时，可据此确认请求是否到达、客户端实际
+	// 拼了哪些参数、以及是否命中了影片。list 为空通常是客户端拿不到播放地址的
+	// 直接原因（ids 对不上 / 站点不可见 / 库里无此片）。量可控，仅点播请求触发。
+	log.Printf("[tvbox] vod sourceID=%d ac=%q ids=%q wd=%q t=%q pg=%d size=%d -> list=%d",
+		sourceID, req.Action, req.IDs, req.Keyword, req.TypeID, req.Page, req.Size, len(out.List))
 	c.JSON(http.StatusOK, out)
 }
 
