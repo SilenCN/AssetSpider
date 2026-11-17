@@ -109,6 +109,7 @@ func OpenOptions(o Options) (*Repositories, error) {
 		&model.User{},
 		&model.Session{},
 		&model.UserSource{},
+		&model.UserTVBoxSource{},
 		&model.Subscription{},
 	); err != nil {
 		return nil, fmt.Errorf("迁移表结构: %w", err)

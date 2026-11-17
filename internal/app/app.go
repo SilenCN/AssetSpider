@@ -77,7 +77,7 @@ func New(cfg *config.Config) (*App, error) {
 	}
 	videoSvc := service.NewVideoService(repos.Videos, repos.Sources)
 	categorySvc := service.NewCategoryService(repos.Categories, repos.Videos)
-	tvboxSvc := service.NewTVBoxService(repos.Sources, repos.Categories, repos.Videos)
+	tvboxSvc := service.NewTVBoxService(repos.Sources, repos.Categories, repos.Videos, repos.Users)
 	metaSvc := service.NewMetaService()
 	jobSvc := service.NewJobService(repos.Jobs)
 	// 采集记录页要显示运行中任务的实时进度，这里把调度层注入为进度来源。

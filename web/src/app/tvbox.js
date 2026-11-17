@@ -42,6 +42,48 @@ export function createTvbox(ctx) {
     }
   }
 
+  // ---- 用户在自己接口里开放哪些站点 ----
+  async function loadTVBoxSources() {
+    if (!ctx.token.value) return
+    try {
+      ctx.tvboxSources.value = await ctx.request('/api/auth/v1/tvbox-sources')
+    } catch (e) {
+      ctx.notify(e.message, 'err')
+    }
+  }
+
+  async function saveTVBoxSources(mode, selected) {
+    if (ctx.tvboxSourcesBusy.value) return false
+    ctx.tvboxSourcesBusy.value = true
+    try {
+      ctx.tvboxSources.value = await ctx.request(
+        '/api/auth/v1/tvbox-sources',
+        ctx.jsonOptions('PUT', { mode, selected }),
+      )
+      ctx.notify('站点选择已保存，TVBox 重新加载配置后生效')
+      return true
+    } catch (e) {
+      ctx.notify(e.message, 'err')
+      return false
+    } finally {
+      ctx.tvboxSourcesBusy.value = false
+    }
+  }
+
+  // 可勾选的站点：服务端给的可见 ID ∩ 前端已有的站点名称。
+  // 管理员 available 为 null（表示全部），此时用前端全部站点。
+  const tvboxAvailableSites = computed(() => {
+    const view = ctx.tvboxSources.value || {}
+    const all = Array.isArray(ctx.sources.value) ? ctx.sources.value : []
+    const available = view.available
+    const allowed = Array.isArray(available)
+      ? new Set(available.map(Number))
+      : null
+    return all
+      .filter(s => s && s.enabled !== false && (allowed === null || allowed.has(Number(s.id))))
+      .map(s => ({ id: Number(s.id), name: s.name || `站点 ${s.id}` }))
+  })
+
   // 配置地址：用当前站点根地址拼上 /tvbox/<key>/config。
   // 未生成 key 时返回空串，页面据此提示先生成。
   const tvboxConfigURL = computed(() => {
@@ -74,5 +116,6 @@ export function createTvbox(ctx) {
 
   return {
     loadApiKey, regenerateApiKey, revokeApiKey, tvboxConfigURL, copyText,
+    loadTVBoxSources, saveTVBoxSources, tvboxAvailableSites,
   }
 }

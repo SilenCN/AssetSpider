@@ -31,6 +31,10 @@ type UserRepository interface {
 	ListSourceIDsByUser(userID uint) ([]uint, error)
 	ListSourceIDsByUsers() (map[uint][]uint, error)
 	SetUserSources(userID uint, sourceIDs []uint) error
+
+	// TVBox 站点自选：mode 见 model.User.TVBoxSourcesMode；勾选表只在 selected 模式生效。
+	ListTVBoxSourceIDsByUser(userID uint) ([]uint, error)
+	SetUserTVBoxSources(userID uint, mode string, sourceIDs []uint) error
 }
 
 // userRepository 是账号实体专属的仓储对象。
@@ -139,6 +143,9 @@ func (r *userRepository) DeleteUser(id uint) error {
 		if err := tx.Where("user_id = ?", id).Delete(&model.UserSource{}).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("user_id = ?", id).Delete(&model.UserTVBoxSource{}).Error; err != nil {
+			return err
+		}
 		return tx.Delete(&model.User{}, id).Error
 	})
 }
@@ -228,6 +235,50 @@ func (r *userRepository) SetUserSources(userID uint, sourceIDs []uint) error {
 				continue
 			}
 			rows = append(rows, model.UserSource{UserID: userID, SourceID: id})
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		return tx.Create(&rows).Error
+	})
+}
+
+// ---------- TVBox 站点自选 ----------
+
+func (r *userRepository) ListTVBoxSourceIDsByUser(userID uint) ([]uint, error) {
+	var ids []uint
+	err := r.db.Model(&model.UserTVBoxSource{}).
+		Where("user_id = ?", userID).Order("source_id ASC").Pluck("source_id", &ids).Error
+	return ids, err
+}
+
+// SetUserTVBoxSources 在一个事务里更新用户的 TVBox 站点模式并全量替换勾选列表。
+// mode 与 sourceIDs 都来自服务层校验后的数据；空列表在 selected 模式下表示
+// 「一个站点都不开放」（这是用户的合法选择），不能与「未设置」混淆——后者由 mode=all 表达。
+func (r *userRepository) SetUserTVBoxSources(userID uint, mode string, sourceIDs []uint) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.User{}).Where("id = ?", userID).
+			Update("tvbox_sources_mode", mode).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", userID).Delete(&model.UserTVBoxSource{}).Error; err != nil {
+			return err
+		}
+		seen := make(map[uint]bool, len(sourceIDs))
+		rows := make([]model.UserTVBoxSource, 0, len(sourceIDs))
+		for _, id := range sourceIDs {
+			if id == 0 || seen[id] {
+				continue
+			}
+			seen[id] = true
+			var cnt int64
+			if err := tx.Model(&model.Source{}).Where("id = ?", id).Count(&cnt).Error; err != nil {
+				return err
+			}
+			if cnt == 0 {
+				continue
+			}
+			rows = append(rows, model.UserTVBoxSource{UserID: userID, SourceID: id})
 		}
 		if len(rows) == 0 {
 			return nil

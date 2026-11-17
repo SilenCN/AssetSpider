@@ -156,6 +156,9 @@ export function createState() {
   // 当前用户的接口鉴权键（未生成时 key 为空）。进入「我的接口」页时按需加载。
   const apiKey = ref({ key: '', enabled: false, username: '' })
   const apiKeyBusy = ref(false)
+  // 当前用户在自己 TVBox 接口里开放的站点选择：{ mode, selected, available }。
+  const tvboxSources = ref({ mode: 'all', selected: [], available: [] })
+  const tvboxSourcesBusy = ref(false)
 
   // ---------- 侧边栏 ----------
   const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_KEY) === '1')
@@ -176,6 +179,6 @@ export function createState() {
     form, sourceOpen, importOpen, importBusy, importFileName, importRaw, importPreview, importFileEl,
     subscriptions, subForm, subOpen, subBusy, subRefreshing,
     userForm, userFormOpen, sidebarCollapsed, sidebarMobileOpen,
-    apiKey, apiKeyBusy,
+    apiKey, apiKeyBusy, tvboxSources, tvboxSourcesBusy,
   }
 }

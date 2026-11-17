@@ -20,14 +20,16 @@ type TVBoxService struct {
 	sources    repository.SourceRepository
 	categories repository.CategoryRepository
 	videos     repository.VideoRepository
+	users      repository.UserRepository
 }
 
 func NewTVBoxService(
 	sources repository.SourceRepository,
 	categories repository.CategoryRepository,
 	videos repository.VideoRepository,
+	users repository.UserRepository,
 ) *TVBoxService {
-	return &TVBoxService{sources: sources, categories: categories, videos: videos}
+	return &TVBoxService{sources: sources, categories: categories, videos: videos, users: users}
 }
 
 // TVBoxSite 是 TVBox 配置文件里的一个点播站点。
@@ -60,9 +62,19 @@ func (s *TVBoxService) Config(baseURL, apiKey string, p Principal) (TVBoxConfig,
 	if err != nil {
 		return TVBoxConfig{}, err
 	}
+	// 用户可在自己的接口里进一步选择开放哪些站点（见 AuthService.TVBoxSources）。
+	// 这是可见范围内的"软选择"：selected 模式下只列出勾选站点，且勾选已在
+	// AuthService 里校验过不越权；all（含历史空值）保持全开，保证升级兼容。
+	allowed, err := s.tvboxSelectedSources(p)
+	if err != nil {
+		return TVBoxConfig{}, err
+	}
 	sites := make([]TVBoxSite, 0, len(srcs))
 	for _, src := range srcs {
 		if !src.Enabled {
+			continue
+		}
+		if allowed != nil && !allowed[src.ID] {
 			continue
 		}
 		sites = append(sites, TVBoxSite{
@@ -76,6 +88,29 @@ func (s *TVBoxService) Config(baseURL, apiKey string, p Principal) (TVBoxConfig,
 		})
 	}
 	return TVBoxConfig{Sites: sites, Lives: []interface{}{}, Parses: []interface{}{}}, nil
+}
+
+// tvboxSelectedSources 返回该用户勾选开放的站点集合；nil 表示"不做选择过滤"（全开）。
+// selected 模式下返回结果再与可见范围求交，即便勾选表里残留了已撤销授权的站点也不会放行。
+func (s *TVBoxService) tvboxSelectedSources(p Principal) (map[uint]bool, error) {
+	u, err := s.users.GetUser(p.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if normalizeTVBoxMode(u.TVBoxSourcesMode) != TVBoxSourcesSelected {
+		return nil, nil
+	}
+	ids, err := s.users.ListTVBoxSourceIDsByUser(p.UserID)
+	if err != nil {
+		return nil, err
+	}
+	allowed := make(map[uint]bool, len(ids))
+	for _, id := range ids {
+		if p.CanSee(id) {
+			allowed[id] = true
+		}
+	}
+	return allowed, nil
 }
 
 // tvboxSiteKey 生成稳定的站点标识：tvbox_<sourceID>。
@@ -128,6 +163,14 @@ type VodClass struct {
 func (s *TVBoxService) Vod(req VodRequest, p Principal) (VodResponse, error) {
 	if !p.CanSee(req.SourceID) {
 		return VodResponse{}, fmt.Errorf("%w: 无权访问该站点", ErrForbidden)
+	}
+	// 与 config 一致：用户在自己接口里屏蔽的站点，也不能通过 vod 接口绕过访问。
+	allowed, err := s.tvboxSelectedSources(p)
+	if err != nil {
+		return VodResponse{}, err
+	}
+	if allowed != nil && !allowed[req.SourceID] {
+		return VodResponse{}, fmt.Errorf("%w: 该站点已在 TVBox 接口中屏蔽", ErrForbidden)
 	}
 	if _, err := s.sources.GetSource(req.SourceID, p.Visible()); err != nil {
 		return VodResponse{}, wrapRepo(err)

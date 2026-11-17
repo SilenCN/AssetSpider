@@ -771,3 +771,18 @@ tr.fail-row td { background: #fff6f6; color: var(--danger, #d93a3f); font-size: 
 }
 .tvbox-actions { margin: 6px 0 10px; }
 button.ghost.danger { background: #fdeef0; color: var(--danger, #d93a3f); }
+
+/* TVBox 站点自选 */
+.tvbox-sources { border-top: 1px solid var(--border, #e2e6ee); padding-top: 14px; }
+.tvbox-mode { display: flex; flex-wrap: wrap; gap: 18px; margin: 10px 0; }
+.tvbox-mode label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.tvbox-site-tools { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+button.ghost.tiny { padding: 3px 10px; font-size: 12px; }
+.tvbox-site-list {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 14px;
+  max-height: 260px; overflow: auto; padding: 8px 10px;
+  border: 1px solid var(--border, #e2e6ee); border-radius: 8px; background: var(--code-bg, #f5f7fa);
+}
+.tvbox-site-item { display: flex; align-items: center; gap: 7px; font-size: 13px; cursor: pointer; padding: 3px 0; }
+.tvbox-sources-actions { margin: 12px 0 4px; }
+.empty.tiny { font-size: 12px; }

@@ -26,7 +26,14 @@ type User struct {
 	// 但不允许多个空串，否则批量建用户会在 api_key 上撞唯一约束。
 	// 用户在「我的接口」页自助生成 / 重置；它不同于会过期的 Session，长期有效直至重置。
 	// json:"-" 避免随普通用户列表 / me 接口泄露，只在专门的 api-key 接口显式返回。
-	ApiKey    *string   `gorm:"type:varchar(64);uniqueIndex" json:"-"`
+	ApiKey *string `gorm:"type:varchar(64);uniqueIndex" json:"-"`
+
+	// TVBoxSourcesMode 决定该用户的 TVBox 配置接口列出哪些站点：
+	//   - "all"（默认）：可见站点全部开放。空串也按 all 处理，保证历史用户升级后行为不变。
+	//   - "selected"：只开放 UserTVBoxSource 里勾选的站点（仍受可见范围约束）。
+	// 这是用户对自己接口的选择，不影响登录态的可见站点范围。
+	TVBoxSourcesMode string `gorm:"column:tvbox_sources_mode;type:varchar(16);not null;default:'all'" json:"-"`
+
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
@@ -55,3 +62,19 @@ type UserSource struct {
 
 // TableName 指定关联表名。
 func (UserSource) TableName() string { return "user_sources" }
+
+// UserTVBoxSource 表示「某个用户在自己的 TVBox 接口里勾选开放了某个站点」。
+// 与 UserSource（管理员授予的可见范围）的区别：
+//   - UserSource 是访问控制的硬边界，决定用户能否看到某站点的数据；
+//   - UserTVBoxSource 是用户在该边界内对自己 TVBox 接口的软选择，只影响
+//     /tvbox/:key/config 列出哪些站点，不会放大可见范围。
+//
+// 只有在 User.TVBoxSourcesMode == "selected" 时这张表才参与过滤。
+type UserTVBoxSource struct {
+	UserID    uint      `gorm:"primaryKey;autoIncrement:false" json:"userId"`
+	SourceID  uint      `gorm:"primaryKey;autoIncrement:false;index" json:"sourceId"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// TableName 指定关联表名。
+func (UserTVBoxSource) TableName() string { return "user_tvbox_sources" }

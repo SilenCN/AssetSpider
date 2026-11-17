@@ -578,3 +578,86 @@ func (s *AuthService) ResolveByApiKey(key string) (Principal, error) {
 	// ApiKey 不写进 Principal.TokenHash（那是会话摘要）：这里只需要用户身份与可见范围。
 	return s.principalOfUser(u, "")
 }
+
+// ---------- TVBox 站点自选 ----------
+
+// TVBox 站点模式：all 开放全部可见站点；selected 只开放勾选的站点。
+const (
+	TVBoxSourcesAll      = "all"
+	TVBoxSourcesSelected = "selected"
+)
+
+// TVBoxSourcesView 是「我的接口」页展示 / 编辑的 TVBox 站点选择。
+//   - Mode：all / selected；
+//   - Selected：selected 模式下勾选开放的站点 ID；
+//   - Available：当前用户有权访问的站点 ID；管理员为 nil，表示"全部站点"。
+//
+// 前端用 Available 渲染可勾选范围，用自己已有的站点名称补全显示。
+type TVBoxSourcesView struct {
+	Mode      string `json:"mode"`
+	Selected  []uint `json:"selected"`
+	Available []uint `json:"available"`
+}
+
+// normalizeTVBoxMode 把历史空值 / 非法值收敛成 all，保证升级后老用户默认全开。
+func normalizeTVBoxMode(mode string) string {
+	if mode == TVBoxSourcesSelected {
+		return TVBoxSourcesSelected
+	}
+	return TVBoxSourcesAll
+}
+
+// GetTVBoxSources 返回当前用户的 TVBox 站点选择。
+// selected 模式下会剔除已不在可见范围内的残留勾选（管理员撤销授权后不会出现幽灵站点）。
+func (s *AuthService) GetTVBoxSources(p Principal) (TVBoxSourcesView, error) {
+	u, err := s.users.GetUser(p.UserID)
+	if err != nil {
+		return TVBoxSourcesView{}, wrapRepo(err)
+	}
+	mode := normalizeTVBoxMode(u.TVBoxSourcesMode)
+	selected := []uint{}
+	if mode == TVBoxSourcesSelected {
+		ids, err := s.users.ListTVBoxSourceIDsByUser(p.UserID)
+		if err != nil {
+			return TVBoxSourcesView{}, wrapRepo(err)
+		}
+		for _, id := range ids {
+			if p.CanSee(id) {
+				selected = append(selected, id)
+			}
+		}
+	}
+	available := []uint{}
+	if !p.IsAdmin {
+		available = append(available, p.SourceIDs...)
+	}
+	return TVBoxSourcesView{Mode: mode, Selected: selected, Available: available}, nil
+}
+
+// SetTVBoxSources 保存当前用户的 TVBox 站点选择。
+// 提交的站点必须在用户可见范围内（管理员可见全部），越界即拒绝，避免借接口放大权限。
+// all 模式会忽略并清空勾选列表。
+func (s *AuthService) SetTVBoxSources(p Principal, mode string, sourceIDs []uint) (TVBoxSourcesView, error) {
+	if mode != TVBoxSourcesAll && mode != TVBoxSourcesSelected {
+		return TVBoxSourcesView{}, invalid("站点模式只能是 all 或 selected")
+	}
+	clean := make([]uint, 0, len(sourceIDs))
+	seen := make(map[uint]bool, len(sourceIDs))
+	for _, id := range sourceIDs {
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if mode == TVBoxSourcesSelected && !p.CanSee(id) {
+			return TVBoxSourcesView{}, invalid("包含无权访问的站点")
+		}
+		clean = append(clean, id)
+	}
+	if mode == TVBoxSourcesAll {
+		clean = nil
+	}
+	if err := wrapRepo(s.users.SetUserTVBoxSources(p.UserID, mode, clean)); err != nil {
+		return TVBoxSourcesView{}, err
+	}
+	return s.GetTVBoxSources(p)
+}

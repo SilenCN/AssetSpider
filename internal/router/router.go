@@ -54,6 +54,9 @@ func registerV1(api *gin.RouterGroup, set controller.Set) {
 	auth.GET("/api-key", set.Auth.ApiKey)
 	auth.POST("/api-key", set.Auth.RegenerateApiKey)
 	auth.DELETE("/api-key", set.Auth.RevokeApiKey)
+	// TVBox 站点自选：查看 / 保存自己接口里开放的站点。
+	auth.GET("/tvbox-sources", set.Auth.TVBoxSources)
+	auth.PUT("/tvbox-sources", set.Auth.SetTVBoxSources)
 
 	// ---------- 需要管理员（在登录校验之上叠加） ----------
 	admin := api.Group("", set.Auth.RequireAuth(), set.Auth.RequireAdmin())

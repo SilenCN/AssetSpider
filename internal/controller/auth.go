@@ -151,6 +151,34 @@ func (a *AuthController) RevokeApiKey(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+// TVBoxSources 返回当前用户在自己 TVBox 接口里开放的站点选择。
+func (a *AuthController) TVBoxSources(c *gin.Context) {
+	out, err := a.svc.GetTVBoxSources(principalOf(c))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// SetTVBoxSources 保存当前用户的 TVBox 站点选择（all 全开 / selected 仅勾选）。
+func (a *AuthController) SetTVBoxSources(c *gin.Context) {
+	var in struct {
+		Mode     string `json:"mode"`
+		Selected []uint `json:"selected"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		badRequest(c, "请求格式错误: "+err.Error())
+		return
+	}
+	out, err := a.svc.SetTVBoxSources(principalOf(c), in.Mode, in.Selected)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
 // ChangePassword 修改当前账号密码，签发新令牌并作废旧会话。
 func (a *AuthController) ChangePassword(c *gin.Context) {
 	var in struct {
