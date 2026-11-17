@@ -128,6 +128,12 @@ type VodRequest struct {
 	IDs      string // ids：vod_id 列表（逗号分隔）
 	Page     int
 	Size     int
+	// 二次筛选参数：TVBoxOS 把筛选面板选中项的 key/value 原样作为 query 参数回传。
+	By    string // by：排序标识（id_desc/time_desc/score_desc/hits_desc…）
+	Year  string // year：年份
+	Area  string // area：地区（模糊）
+	Class string // class：类型（模糊，对应 vod_class）
+	State string // state：完结/连载
 }
 
 // vodMsgOK 是苹果CMS V10 provide/vod 成功响应里 msg 字段的标准值。
@@ -149,15 +155,43 @@ type VodResponse struct {
 	Limit     int        `json:"limit,omitempty"`
 	Total     int64      `json:"total,omitempty"`
 	Class     []VodClass `json:"class,omitempty"`
-	List      []VodItem  `json:"list"`
+	// Filters 是 TVBoxOS 等老版客户端的二次筛选面板定义：按分类 type_id 索引，
+	// 每个分类下有一组筛选项（key + name + 候选值 n/v）。客户端选中后把 key=n→v
+	// 作为 query 参数回传，服务端据此过滤。nil 表示不提供筛选面板。
+	Filters map[string][]VodFilter `json:"filters,omitempty"`
+	List    []VodItem              `json:"list"`
 }
 
-// VodClass 是 ac=list 返回的分类项。
+// VodClass 是 ac=list / 首页响应里的分类项，对应客户端 AbsSortJson.classes。
 type VodClass struct {
-	TypeID  string `json:"type_id"`
-	TypePID string `json:"type_pid,omitempty"`
-	Name    string `json:"type_name"`
+	TypeID   string `json:"type_id"`
+	TypePID  string `json:"type_pid,omitempty"`
+	Name     string `json:"type_name"`
+	TypeFlag string `json:"type_flag,omitempty"`
 }
+
+// VodFilter 是一个筛选项（如"年份"），对应客户端 getSortFilter 的结构：
+// key 会作为 query 参数名回传，value 里每个 n/v 是一个可选项（n=显示名，v=参数值）。
+type VodFilter struct {
+	Key   string            `json:"key"`
+	Name  string            `json:"name"`
+	Value []VodFilterOption `json:"value"`
+}
+
+// VodFilterOption 是筛选项的一个候选值。
+type VodFilterOption struct {
+	N string `json:"n"` // 显示名
+	V string `json:"v"` // 提交值
+}
+
+// 筛选面板的 key（与 VodRequest 字段对应，也是客户端回传的 query 参数名）。
+const (
+	filterBy    = "by"
+	filterYear  = "year"
+	filterArea  = "area"
+	filterClass = "class"
+	filterState = "state"
+)
 
 // Vod 处理一条 provide/vod 请求，并校验目标站点对当前主体可见。
 func (s *TVBoxService) Vod(req VodRequest, p Principal) (VodResponse, error) {
@@ -198,16 +232,105 @@ func (s *TVBoxService) Vod(req VodRequest, p Principal) (VodResponse, error) {
 }
 
 // vodListClasses 返回该站点的分类列表（ac=list）。
+// 同时带上 filters：TVBoxOS 的首页分类请求用同一份响应画分类 tab + 筛选面板，
+// 缺少 filters 时筛选面板是空的。
 func (s *TVBoxService) vodListClasses(req VodRequest) (VodResponse, error) {
-	cats, err := s.categories.List(req.SourceID)
+	classes := s.classListOf(req.SourceID)
+	filters := s.sortFiltersOf(req.SourceID, classes)
+	return VodResponse{
+		Code: 1, Msg: vodMsgOK,
+		Class: classes, Filters: filters, List: []VodItem{},
+	}, nil
+}
+
+// classListOf 把本站分类映射成苹果CMS class 数组。
+// 只列有 type_id 的分类：客户端把 type_id 当 t 参数回传，无 id 的分类点不动。
+// 二级分类一并列出（苹果CMS 本就支持扁平分类列表），父级信息放 type_pid。
+func (s *TVBoxService) classListOf(sourceID uint) []VodClass {
+	cats, err := s.categories.List(sourceID)
 	if err != nil {
-		return VodResponse{}, err
+		return []VodClass{}
 	}
 	out := make([]VodClass, 0, len(cats))
 	for _, c := range cats {
-		out = append(out, VodClass{TypeID: c.TypeID, TypePID: c.TypePID, Name: c.Name})
+		if strings.TrimSpace(c.TypeID) == "" {
+			continue
+		}
+		out = append(out, VodClass{
+			TypeID: c.TypeID, TypePID: c.TypePID,
+			Name: c.Name, TypeFlag: c.TypeID,
+		})
 	}
-	return VodResponse{Code: 1, Msg: vodMsgOK, Class: out, List: []VodItem{}}, nil
+	return out
+}
+
+// sortFiltersOf 从本站已入库影片聚合出筛选面板。
+// 每个分类挂同一套筛选（排序 + 年份 + 地区 + 类型 + 状态）；候选值来自库内真实数据，
+// 避免列出选了没结果的选项。聚合失败时降级为只有排序档位，不影响分类展示。
+func (s *TVBoxService) sortFiltersOf(sourceID uint, classes []VodClass) map[string][]VodFilter {
+	// 排序档位对所有分类通用，客户端选中后以 by=<sort> 回传。
+	base := []VodFilter{{
+		Key: filterBy, Name: "排序",
+		Value: []VodFilterOption{
+			{N: "最新", V: "id_desc"},
+			{N: "最近更新", V: "time_desc"},
+			{N: "评分", V: "score_desc"},
+			{N: "热度", V: "hits_desc"},
+		},
+	}}
+	dynamic := s.dynamicFiltersOf(sourceID)
+	all := append(base, dynamic...)
+	// 客户端按分类 type_id 索引 filters；另外给一个 "*" 兜底（部分客户端首页
+	// 用固定 key 取筛选）。无分类时仍能显示一套通用筛选。
+	filters := map[string][]VodFilter{"*": all}
+	for _, c := range classes {
+		filters[c.TypeID] = all
+	}
+	return filters
+}
+
+// dynamicFiltersOf 聚合年份 / 地区 / 类型 / 状态候选值。
+// vod_class 是多值串（逗号分隔），这里拆开后去重，保证筛选项与单值字段一致。
+func (s *TVBoxService) dynamicFiltersOf(sourceID uint) []VodFilter {
+	out := make([]VodFilter, 0, 4)
+	defs := []struct {
+		column string
+		key    string
+		name   string
+		split  bool
+	}{
+		{"vod_year", filterYear, "年份", false},
+		{"vod_area", filterArea, "地区", false},
+		{"vod_class", filterClass, "类型", true},
+		{"vod_state", filterState, "状态", false},
+	}
+	for _, d := range defs {
+		values, err := s.videos.DistinctFieldValues(sourceID, d.column, 200)
+		if err != nil || len(values) == 0 {
+			continue
+		}
+		var opts []VodFilterOption
+		seen := map[string]bool{}
+		for _, raw := range values {
+			parts := []string{raw}
+			if d.split {
+				parts = strings.Split(raw, ",")
+			}
+			for _, p := range parts {
+				v := strings.TrimSpace(p)
+				if v == "" || seen[v] {
+					continue
+				}
+				seen[v] = true
+				opts = append(opts, VodFilterOption{N: v, V: v})
+			}
+		}
+		if len(opts) == 0 {
+			continue
+		}
+		out = append(out, VodFilter{Key: d.key, Name: d.name, Value: opts})
+	}
+	return out
 }
 
 // vodVideoList 按分类 / 关键词分页返回影片（ac=videolist）。
@@ -218,6 +341,17 @@ func (s *TVBoxService) vodVideoList(req VodRequest) (VodResponse, error) {
 		Page:     req.Page,
 		Size:     req.Size,
 		Sort:     "id_desc",
+		Year:     strings.TrimSpace(req.Year),
+		Area:     strings.TrimSpace(req.Area),
+		Class:    strings.TrimSpace(req.Class),
+		State:    strings.TrimSpace(req.State),
+	}
+	// by=<排序标识>：仅接受白名单内的值，未知值回退默认 id_desc。
+	if by := strings.TrimSpace(req.By); by != "" {
+		switch by {
+		case "id_desc", "time_desc", "time_asc", "score_desc", "hits_desc":
+			query.Sort = by
+		}
 	}
 	// t=type_id → 本地 category_id（按苹果CMS type_id 精确匹配本站分类）。
 	if tid := strings.TrimSpace(req.TypeID); tid != "" && tid != "0" {
@@ -242,10 +376,18 @@ func (s *TVBoxService) vodVideoList(req VodRequest) (VodResponse, error) {
 	if query.Size > 0 {
 		pageCount = int((total + int64(query.Size) - 1) / int64(query.Size))
 	}
-	return VodResponse{
+	resp := VodResponse{
 		Code: 1, Msg: vodMsgOK, Page: query.Page, PageCount: pageCount,
 		Limit: query.Size, Total: total, List: items,
-	}, nil
+	}
+	// TVBoxOS 对 type=1 站点用「裸 GET api」一次性取分类 tab + 筛选面板 + 首页
+	// 推荐，缺 class/filters 首页就没有分类和筛选。只在第 1 页附带：翻页不需要
+	// 面板，也避开每页重复做 DISTINCT 聚合的开销。
+	if req.Page <= 1 {
+		resp.Class = s.classListOf(req.SourceID)
+		resp.Filters = s.sortFiltersOf(req.SourceID, resp.Class)
+	}
+	return resp, nil
 }
 
 // vodDetail 按 ids（苹果CMS vod_id，逗号分隔）返回完整影片（ac=detail）。
