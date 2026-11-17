@@ -228,7 +228,19 @@ func (s *TVBoxService) vodDetail(req VodRequest) (VodResponse, error) {
 	for i := range videos {
 		items = append(items, vodItemOf(videos[i], names[videos[i].CategoryID]))
 	}
-	return VodResponse{Code: 1, Msg: "ok", List: items}, nil
+	// 苹果CMS 的 detail 响应与列表共用同一套解析：部分 TVBox / 影视仓修改版
+	// 会用统一的分页解析器读取 page / pagecount / limit / total，缺失时把响应
+	// 判为无效并显示「没找到数据」。这里补齐这些字段，使 detail 与 videolist
+	// 顶层结构完全一致（detail 只有一页、条数即命中数）。
+	size := req.Size
+	if size < 1 {
+		size = 20
+	}
+	return VodResponse{
+		Code: 1, Msg: "ok",
+		Page: 1, PageCount: 1, Limit: size, Total: int64(len(items)),
+		List: items,
+	}, nil
 }
 
 // orderVideosByIDs 把查回的影片按 ids 给定顺序重排；ids 里查不到的直接忽略。

@@ -142,13 +142,22 @@ func TestTVBoxConfigAndVodProtocol(t *testing.T) {
 	// 5) ac=detail&ids：按 vod_id 取详情。
 	w = tvboxReq(r, http.MethodGet, fmt.Sprintf("/tvbox/%s/vod/%d?ac=detail&ids=vod-2", key, sourceID))
 	var detail struct {
-		List []struct {
+		Page      int `json:"page"`
+		PageCount int `json:"pagecount"`
+		Limit     int `json:"limit"`
+		Total     int `json:"total"`
+		List      []struct {
 			VodID      string `json:"vod_id"`
 			VodPlayURL string `json:"vod_play_url"`
 		} `json:"list"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil || len(detail.List) != 1 || detail.List[0].VodID != "vod-2" {
 		t.Fatalf("ac=detail 异常: %s", w.Body.String())
+	}
+	// 部分 TVBox / 影视仓修改版用统一分页解析器读取这些字段，缺失会把详情
+	// 判为无效并显示「没找到数据」。detail 必须与 videolist 顶层结构一致。
+	if detail.Page != 1 || detail.PageCount != 1 || detail.Limit < 1 || detail.Total != 1 {
+		t.Fatalf("ac=detail 缺少完整分页字段: %s", w.Body.String())
 	}
 
 	// 6) 客户端点播详情的写法并不统一：ids 搭配任意 ac、仅 ids、单数 id、
