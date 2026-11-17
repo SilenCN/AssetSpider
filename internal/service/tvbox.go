@@ -90,7 +90,7 @@ type VodRequest struct {
 	Action   string // list / videolist / detail；空按 videolist
 	TypeID   string // t：苹果CMS type_id
 	Keyword  string // wd：搜索关键词
-	IDs      string // ids：detail 查询的 vod_id 列表（逗号分隔）
+	IDs      string // ids：vod_id 列表（逗号分隔）
 	Page     int
 	Size     int
 }
@@ -122,6 +122,15 @@ func (s *TVBoxService) Vod(req VodRequest, p Principal) (VodResponse, error) {
 	}
 	if _, err := s.sources.GetSource(req.SourceID, p.Visible()); err != nil {
 		return VodResponse{}, wrapRepo(err)
+	}
+
+	// ids 在苹果CMS 语义里是「按影片 ID 精确取回」，与其搭配的 ac 并不固定：
+	// 官方 detail 用 ac=detail&ids=，但 TVBox / 影视仓等客户端点开影片时，
+	// 常见实现还有 ac=videolist&ids=、仅 ids=、甚至 ac=list&ids=。
+	// 只要带了 ids 就优先按详情处理，否则客户端拼的 ac 稍有差异就会退化成
+	// 整页列表，导致拿不到目标影片的播放组 / 播放列表。
+	if len(splitIDs(req.IDs, 200)) > 0 || strings.TrimSpace(req.Keyword) != "" {
+		return s.vodDetail(req)
 	}
 	switch req.Action {
 	case "list":
@@ -189,22 +198,30 @@ func (s *TVBoxService) vodVideoList(req VodRequest) (VodResponse, error) {
 
 // vodDetail 按 ids（苹果CMS vod_id，逗号分隔）返回完整影片（ac=detail）。
 // 也兼容 wd 搜索：有 ids 优先 ids，否则退化为关键词检索的首页结果。
+// 既无 ids 也无关键词时按苹果CMS 语义返回含播放字段的首页详情列表。
 func (s *TVBoxService) vodDetail(req VodRequest) (VodResponse, error) {
 	ids := splitIDs(req.IDs, 200)
 	var videos []model.Video
 	var err error
-	if len(ids) > 0 {
+	switch {
+	case len(ids) > 0:
 		videos, err = s.videos.GetVideosByVodIDs(req.SourceID, ids)
 		if err != nil {
 			return VodResponse{}, err
 		}
-	} else if kw := strings.TrimSpace(req.Keyword); kw != "" {
+		// GetVideosByVodIDs 用 IN 查询，返回顺序与数据库行序一致、与 ids 入参
+		// 顺序无关；这里按 ids 顺序重排，保证客户端点哪部就能先拿到哪部。
+		videos = orderVideosByIDs(videos, ids)
+	case strings.TrimSpace(req.Keyword) != "":
 		videos, _, err = s.videos.ListVideosForFeed(repository.VideoQuery{
-			SourceID: req.SourceID, Keyword: kw, Page: 1, Size: 50, Sort: "id_desc",
+			SourceID: req.SourceID, Keyword: strings.TrimSpace(req.Keyword), Page: 1, Size: 50, Sort: "id_desc",
 		})
 		if err != nil {
 			return VodResponse{}, err
 		}
+	default:
+		// ac=detail 不带 ids：苹果CMS 返回全字段详情列表，供客户端确认播放源。
+		return s.vodVideoList(req)
 	}
 	names := s.typeNamesOf(req.SourceID)
 	items := make([]VodItem, 0, len(videos))
@@ -212,6 +229,21 @@ func (s *TVBoxService) vodDetail(req VodRequest) (VodResponse, error) {
 		items = append(items, vodItemOf(videos[i], names[videos[i].CategoryID]))
 	}
 	return VodResponse{Code: 1, Msg: "ok", List: items}, nil
+}
+
+// orderVideosByIDs 把查回的影片按 ids 给定顺序重排；ids 里查不到的直接忽略。
+func orderVideosByIDs(videos []model.Video, ids []string) []model.Video {
+	byID := make(map[string]model.Video, len(videos))
+	for _, v := range videos {
+		byID[v.VodID] = v
+	}
+	out := make([]model.Video, 0, len(ids))
+	for _, id := range ids {
+		if v, ok := byID[id]; ok {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // categoryByTypeID 按本站苹果CMS type_id 找分类。

@@ -143,11 +143,65 @@ func TestTVBoxConfigAndVodProtocol(t *testing.T) {
 	w = tvboxReq(r, http.MethodGet, fmt.Sprintf("/tvbox/%s/vod/%d?ac=detail&ids=vod-2", key, sourceID))
 	var detail struct {
 		List []struct {
-			VodID string `json:"vod_id"`
+			VodID      string `json:"vod_id"`
+			VodPlayURL string `json:"vod_play_url"`
 		} `json:"list"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil || len(detail.List) != 1 || detail.List[0].VodID != "vod-2" {
 		t.Fatalf("ac=detail 异常: %s", w.Body.String())
+	}
+
+	// 6) 客户端点播详情的写法并不统一：ids 搭配任意 ac、仅 ids、单数 id、
+	//    pagesize 等，都必须精确返回目标影片并带播放字段，否则点击影片后
+	//    拿不到播放组 / 播放列表。这些是协议兼容回归用例。
+	detailPaths := []string{
+		fmt.Sprintf("/tvbox/%s/vod/%d?ac=videolist&ids=vod-2", key, sourceID),
+		fmt.Sprintf("/tvbox/%s/vod/%d?ids=vod-2", key, sourceID),
+		fmt.Sprintf("/tvbox/%s/vod/%d?ac=detail&id=vod-2", key, sourceID),
+		fmt.Sprintf("/tvbox/%s/vod/%d?ac=list&ids=vod-2&pagesize=5", key, sourceID),
+	}
+	for _, path := range detailPaths {
+		w = tvboxReq(r, http.MethodGet, path)
+		var got struct {
+			List []struct {
+				VodID       string `json:"vod_id"`
+				VodPlayFrom string `json:"vod_play_from"`
+				VodPlayURL  string `json:"vod_play_url"`
+			} `json:"list"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("%s 响应非法: %v | %s", path, err, w.Body.String())
+		}
+		if len(got.List) != 1 || got.List[0].VodID != "vod-2" {
+			t.Fatalf("%s 未按 ids 精确返回: %s", path, w.Body.String())
+		}
+		if !strings.Contains(got.List[0].VodPlayURL, "第1集$") || got.List[0].VodPlayFrom == "" {
+			t.Fatalf("%s 播放组 / 播放列表缺失: %s", path, w.Body.String())
+		}
+	}
+
+	// 7) ids 顺序：传入多个时按 ids 顺序返回，客户端点哪部哪部在前。
+	w = tvboxReq(r, http.MethodGet, fmt.Sprintf("/tvbox/%s/vod/%d?ac=detail&ids=vod-3,vod-1", key, sourceID))
+	var ordered struct {
+		List []struct {
+			VodID string `json:"vod_id"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &ordered); err != nil || len(ordered.List) != 2 ||
+		ordered.List[0].VodID != "vod-3" || ordered.List[1].VodID != "vod-1" {
+		t.Fatalf("ids 顺序未按入参返回: %s", w.Body.String())
+	}
+
+	// 8) ac=detail 不带 ids：按苹果CMS 语义返回含播放字段的详情列表（非空）。
+	w = tvboxReq(r, http.MethodGet, fmt.Sprintf("/tvbox/%s/vod/%d?ac=detail", key, sourceID))
+	var bareDetail struct {
+		List []struct {
+			VodPlayURL string `json:"vod_play_url"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &bareDetail); err != nil || len(bareDetail.List) == 0 ||
+		!strings.Contains(bareDetail.List[0].VodPlayURL, "第1集$") {
+		t.Fatalf("ac=detail 无 ids 应返回详情列表: %s", w.Body.String())
 	}
 }
 

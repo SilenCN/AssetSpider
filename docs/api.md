@@ -70,7 +70,9 @@
 | GET | `/tvbox/:key/config` | TVBox 配置文件：`sites[]` 列出可见站点，每条 `type:1`，`api` 内嵌密钥与站点 ID；`lives` / `parses` 为空 |
 | GET | `/tvbox/:key/vod/:sourceID?ac=list` | 苹果CMS 分类：`class[]`（`type_id` / `type_name`） |
 | GET | `/tvbox/:key/vod/:sourceID?ac=videolist&pg=&limit=&t=&wd=` | 苹果CMS 影片列表：`total` / `pagecount` / `list[]`（含播放字段），`t` 为 `type_id`、`wd` 为搜索词 |
-| GET | `/tvbox/:key/vod/:sourceID?ac=detail&ids=` | 苹果CMS 详情：`ids` 为逗号分隔的 `vod_id`；无 `ids` 时按 `wd` 搜索 |
+| GET | `/tvbox/:key/vod/:sourceID?ac=detail&ids=` | 苹果CMS 详情：`ids` 为逗号分隔的 `vod_id`；无 `ids` 时按 `wd` 搜索，两者都无则返回含播放字段的首页列表 |
+
+点开影片取播放地址时，`ids` 是**通用参数**：`ac=videolist&ids=...`、仅 `ids=...`、单数 `id=...` 都会按影片 ID 精确返回带播放组 / 播放列表的详情（TVBox / 影视仓各版本拼法不同，均已兼容）；`limit` 也兼容苹果CMS 的 `pagesize` 别名。多 `ids` 时按传入顺序返回。
 
 采集任务用 `POST` 创建，参数 `mode`（`full` / `incremental`，缺省 `incremental`）放在 **JSON body**，同时也兼容 query：
 

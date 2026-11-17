@@ -58,14 +58,24 @@ func (t *TVBoxController) Vod(c *gin.Context) {
 		badRequest(c, "站点编号非法")
 		return
 	}
+	// ids 是苹果CMS 标准参数；少数客户端点播详情用单数 id，兼容之。
+	ids := c.Query("ids")
+	if strings.TrimSpace(ids) == "" {
+		ids = c.Query("id")
+	}
+	// limit 是苹果CMS 参数；影视仓等也常用 pagesize，兼容之。
+	limit := c.Query("limit")
+	if strings.TrimSpace(limit) == "" {
+		limit = c.Query("pagesize")
+	}
 	req := service.VodRequest{
 		SourceID: sourceID,
 		Action:   strings.TrimSpace(c.Query("ac")),
 		TypeID:   c.Query("t"),
 		Keyword:  c.Query("wd"),
-		IDs:      c.Query("ids"),
+		IDs:      ids,
 		Page:     clampQueryInt(c.Query("pg"), 1),
-		Size:     clampQueryInt(c.Query("limit"), 20),
+		Size:     clampQueryInt(limit, 20),
 	}
 	out, err := t.tvbox.Vod(req, p)
 	if err != nil {
