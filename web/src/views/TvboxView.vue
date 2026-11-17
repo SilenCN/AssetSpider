@@ -6,7 +6,7 @@ const {
   apiKey, apiKeyBusy, tvboxConfigURL, tvboxSources, tvboxSourcesBusy,
   tvboxAvailableSites,
   loadApiKey, regenerateApiKey, revokeApiKey, copyText,
-  loadTVBoxSources, saveTVBoxSources,
+  loadTVBoxSources, saveTVBoxSources, loadSources,
 } = inject('app')
 
 // 编辑中的选择（与服务端值解耦，保存后才写回）。
@@ -45,8 +45,9 @@ function clearAll() {
 }
 
 onMounted(() => {
-  loadApiKey()
-  loadTVBoxSources()
+  // 站点勾选列表来自 ctx.sources，这里兜底再加载一次，避免全局 refresh
+  // 尚未完成 / 失败时页面出现"没有可选择的站点"的假空态。
+  Promise.allSettled([loadApiKey(), loadTVBoxSources(), loadSources()])
 })
 </script>
 

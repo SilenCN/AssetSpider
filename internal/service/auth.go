@@ -627,9 +627,13 @@ func (s *AuthService) GetTVBoxSources(p Principal) (TVBoxSourcesView, error) {
 			}
 		}
 	}
-	available := []uint{}
+	// 管理员用 nil（JSON null）表示"全部站点"，前端据此回退到自己的全部站点列表；
+	// 普通用户保留非 nil 切片（哪怕是空切片），表示明确的可见 ID 集合。
+	// 注意不能用 []uint{} 初始化后直接返回：那样管理员会得到 []，前端把它当成
+	// "无站点"而非"全部"，导致「我的接口」页的站点勾选列表为空。
+	var available []uint
 	if !p.IsAdmin {
-		available = append(available, p.SourceIDs...)
+		available = append([]uint{}, p.SourceIDs...)
 	}
 	return TVBoxSourcesView{Mode: mode, Selected: selected, Available: available}, nil
 }

@@ -1,11 +1,34 @@
 package router_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 )
+
+// TestTVBoxSourcesAdminAvailableNull 保护管理员场景：available 必须是 JSON null
+// （表示"全部站点"），不能是 []，否则前端会把它当"无站点"，「我的接口」页
+// 的站点勾选列表为空。
+func TestTVBoxSourcesAdminAvailableNull(t *testing.T) {
+	r, _ := newTestRouter(t)
+	w := authCall(r, http.MethodGet, "/api/auth/v1/tvbox-sources", testToken, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("管理员 GET tvbox-sources 失败: %d %s", w.Code, w.Body.String())
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("解析响应失败: %v; body=%s", err, w.Body.String())
+	}
+	avail, ok := raw["available"]
+	if !ok {
+		t.Fatalf("响应缺少 available 字段: %s", w.Body.String())
+	}
+	if string(avail) != "null" {
+		t.Fatalf("管理员 available 应为 null, 实际为 %s; body=%s", string(avail), w.Body.String())
+	}
+}
 
 // TestTVBoxSourcesSelection 覆盖 TVBox 站点自选的完整链路：
 // 默认全开 → selected 只列勾选站点 → 屏蔽站点无法经 vod 绕过 → 越权勾选被拒 → 切回全开。
