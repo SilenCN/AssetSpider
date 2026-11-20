@@ -183,3 +183,44 @@ func TestUserSourceRepository(t *testing.T) {
 		t.Fatalf("删除站点后应清理对应授权，实际 %v", got)
 	}
 }
+
+// TestUserTVBoxSourcesRepository 覆盖 TVBox 勾选的写入：模式更新、去重、
+// 过滤不存在的站点、以及全量替换。与 SetUserSources 共用 validSourceIDs，
+// 一并锁定 N+1 优化后「一次 IN 查询」的行为与旧实现一致。
+func TestUserTVBoxSourcesRepository(t *testing.T) {
+	r := newTestRepos(t)
+	u := newUser(t, r, "tvbox-user", model.RoleUser, true)
+	var ids []uint
+	for _, name := range []string{"甲站", "乙站"} {
+		src := &model.Source{Name: name, APIBase: "https://example.com/api", Enabled: true}
+		if err := r.Sources.CreateSource(src); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, src.ID)
+	}
+
+	// 去重、忽略 0 与不存在的站点；模式置为 selected。
+	if err := r.Users.SetUserTVBoxSources(u.ID, "selected", []uint{ids[0], ids[0], ids[1], 99999, 0}); err != nil {
+		t.Fatal(err)
+	}
+	gotUser, err := r.Users.GetUser(u.ID)
+	if err != nil || gotUser.TVBoxSourcesMode != "selected" {
+		t.Fatalf("模式未更新: %+v %v", gotUser, err)
+	}
+	got, err := r.Users.ListTVBoxSourceIDsByUser(u.ID)
+	if err != nil || len(got) != 2 || got[0] != ids[0] || got[1] != ids[1] {
+		t.Fatalf("勾选列表异常（应按 source_id 升序去重）: %v %v", got, err)
+	}
+
+	// 切回 all 应清空勾选列表，但保留模式字段。
+	if err := r.Users.SetUserTVBoxSources(u.ID, "all", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Users.ListTVBoxSourceIDsByUser(u.ID); len(got) != 0 {
+		t.Fatalf("all 模式应清空勾选列表，实际 %v", got)
+	}
+	gotUser, _ = r.Users.GetUser(u.ID)
+	if gotUser.TVBoxSourcesMode != "all" {
+		t.Fatalf("模式应更新为 all，实际 %q", gotUser.TVBoxSourcesMode)
+	}
+}

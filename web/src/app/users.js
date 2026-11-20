@@ -76,7 +76,8 @@ export function createUsers(ctx) {
     if (u.role === 'admin') return '全部站点（管理员）'
     const ids = u.sourceIds || []
     if (!ids.length) return '未授权任何站点'
-    return ids.map(id => ctx.sources.value.find(s => s.id === id)?.name || `#${id}`).join('、')
+    // 复用统一的站点名查找，避免在此重复一份带不同兜底文案的实现。
+    return ids.map(id => ctx.siteNameOf(id)).join('、')
   }
 
   return {

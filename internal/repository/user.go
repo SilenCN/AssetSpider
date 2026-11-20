@@ -213,6 +213,40 @@ func (r *userRepository) ListSourceIDsByUsers() (map[uint][]uint, error) {
 	return out, nil
 }
 
+// validSourceIDs 把调用方传入的站点 ID 归一化：忽略 0 与重复值（保留首次出现
+// 的顺序），并用一次 WHERE id IN (?) 查询剔除库中不存在的站点——历史实现逐条
+// Count，N 个 ID 要发 N 条 SQL。返回值可直接用于构造关联行。
+func validSourceIDs(tx *gorm.DB, ids []uint) ([]uint, error) {
+	candidates := make([]uint, 0, len(ids))
+	seen := make(map[uint]bool, len(ids))
+	for _, id := range ids {
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		candidates = append(candidates, id)
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	var existing []uint
+	if err := tx.Model(&model.Source{}).Where("id IN ?", candidates).
+		Pluck("id", &existing).Error; err != nil {
+		return nil, err
+	}
+	exists := make(map[uint]bool, len(existing))
+	for _, id := range existing {
+		exists[id] = true
+	}
+	valid := make([]uint, 0, len(existing))
+	for _, id := range candidates {
+		if exists[id] {
+			valid = append(valid, id)
+		}
+	}
+	return valid, nil
+}
+
 // SetUserSources 全量替换某账号的可见站点授权。
 // 不存在的站点 ID 会被忽略，重复 ID 会去重，空列表表示不授权任何站点。
 func (r *userRepository) SetUserSources(userID uint, sourceIDs []uint) error {
@@ -220,24 +254,16 @@ func (r *userRepository) SetUserSources(userID uint, sourceIDs []uint) error {
 		if err := tx.Where("user_id = ?", userID).Delete(&model.UserSource{}).Error; err != nil {
 			return err
 		}
-		seen := make(map[uint]bool, len(sourceIDs))
-		rows := make([]model.UserSource, 0, len(sourceIDs))
-		for _, id := range sourceIDs {
-			if id == 0 || seen[id] {
-				continue
-			}
-			seen[id] = true
-			var cnt int64
-			if err := tx.Model(&model.Source{}).Where("id = ?", id).Count(&cnt).Error; err != nil {
-				return err
-			}
-			if cnt == 0 {
-				continue
-			}
-			rows = append(rows, model.UserSource{UserID: userID, SourceID: id})
+		valid, err := validSourceIDs(tx, sourceIDs)
+		if err != nil {
+			return err
 		}
-		if len(rows) == 0 {
+		if len(valid) == 0 {
 			return nil
+		}
+		rows := make([]model.UserSource, 0, len(valid))
+		for _, id := range valid {
+			rows = append(rows, model.UserSource{UserID: userID, SourceID: id})
 		}
 		return tx.Create(&rows).Error
 	})
@@ -264,24 +290,16 @@ func (r *userRepository) SetUserTVBoxSources(userID uint, mode string, sourceIDs
 		if err := tx.Where("user_id = ?", userID).Delete(&model.UserTVBoxSource{}).Error; err != nil {
 			return err
 		}
-		seen := make(map[uint]bool, len(sourceIDs))
-		rows := make([]model.UserTVBoxSource, 0, len(sourceIDs))
-		for _, id := range sourceIDs {
-			if id == 0 || seen[id] {
-				continue
-			}
-			seen[id] = true
-			var cnt int64
-			if err := tx.Model(&model.Source{}).Where("id = ?", id).Count(&cnt).Error; err != nil {
-				return err
-			}
-			if cnt == 0 {
-				continue
-			}
-			rows = append(rows, model.UserTVBoxSource{UserID: userID, SourceID: id})
+		valid, err := validSourceIDs(tx, sourceIDs)
+		if err != nil {
+			return err
 		}
-		if len(rows) == 0 {
+		if len(valid) == 0 {
 			return nil
+		}
+		rows := make([]model.UserTVBoxSource, 0, len(valid))
+		for _, id := range valid {
+			rows = append(rows, model.UserTVBoxSource{UserID: userID, SourceID: id})
 		}
 		return tx.Create(&rows).Error
 	})
