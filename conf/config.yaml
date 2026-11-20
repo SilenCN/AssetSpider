@@ -44,7 +44,7 @@ auth:
 
 log:
   # 日志同时输出到控制台与本目录下的日志文件；单文件写满 max_size_mb 后自动滚动，
-  # 旧日志按 app.1.log / app.2.log ... 保留 max_backups 份，序号越小越新。
+  # 旧日志按 assetspider.1.log / assetspider.2.log ... 保留 max_backups 份，序号越小越新。
   # 修改后需重启服务生效；也可用环境变量覆盖：
   #   ASSETSPIDER_LOG_DIR / ASSETSPIDER_LOG_MAX_SIZE_MB / ASSETSPIDER_LOG_MAX_BACKUPS
   dir: "logs"                  # 日志目录，相对工作目录或绝对路径
