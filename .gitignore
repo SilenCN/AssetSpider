@@ -28,6 +28,10 @@ coverage.*
 *.db-shm
 *.db-wal
 
+# 运行时日志（按大小滚动写入）
+/logs/
+*.log
+
 # 前端依赖
 /web/node_modules/
 /.workbuddy/

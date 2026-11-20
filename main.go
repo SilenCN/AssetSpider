@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/SilenCN/AssetSpider/internal/app"
 	"github.com/SilenCN/AssetSpider/internal/config"
 	"github.com/SilenCN/AssetSpider/internal/utils"
+	"github.com/gin-gonic/gin"
 )
 
 const version = "0.3.0"
@@ -38,6 +40,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("加载配置失败: %v", err)
 	}
+	// 日志必须在 app.New（内部调用 gin.Default 创建访问日志中间件）之前接管，
+	// 否则 Gin 会继续写 stdout。进程退出时关闭文件句柄。
+	logWriter, err := setupLogging(cfg.Log)
+	if err != nil {
+		log.Fatalf("初始化日志失败: %v", err)
+	}
+	defer logWriter.Close()
 	application, err := app.New(cfg)
 	if err != nil {
 		log.Fatalf("%v", err)
@@ -87,8 +96,25 @@ func main() {
 	// 原地重建：Exec 成功则不返回；失败说明无法自重启，退出进程交给外部监督者拉起。
 	if err := utils.RestartProcess(); err != nil {
 		log.Printf("在线重启失败: %v（退出进程，交由 systemd 重新拉起）", err)
+		_ = logWriter.Close()
 		os.Exit(1)
 	}
+}
+
+// setupLogging 让标准库 log 与 Gin 的日志同时写控制台和按大小滚动的文件。
+// 单文件写满 cfg.MaxSizeMB 后滚动，最多保留 cfg.MaxBackups 份历史备份。
+func setupLogging(cfg config.LogConfig) (*utils.RollingWriter, error) {
+	const logFileName = "assetspider.log"
+	w, err := utils.NewRollingWriter(cfg.Dir, logFileName, int64(cfg.MaxSizeMB)*1024*1024, cfg.MaxBackups)
+	if err != nil {
+		return nil, err
+	}
+	out := io.MultiWriter(os.Stdout, w)
+	log.SetOutput(out)
+	gin.DefaultWriter = out
+	gin.DefaultErrorWriter = out
+	log.Printf("日志输出：控制台 + %s（单文件上限 %dMB，保留 %d 份备份）", w.Path(), cfg.MaxSizeMB, cfg.MaxBackups)
+	return w, nil
 }
 
 // closeApp 释放连接与后台任务；收尾失败只记日志，不能阻断后面的进程重建。

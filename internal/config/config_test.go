@@ -156,3 +156,29 @@ func TestLoadMissingFile(t *testing.T) {
 		t.Fatal("配置文件不存在时应返回错误")
 	}
 }
+
+func TestLogConfigDefaultEnvAndValidation(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Log.Dir != "logs" || cfg.Log.MaxSizeMB != 5 || cfg.Log.MaxBackups != 5 {
+		t.Fatalf("日志配置默认值异常: %+v", cfg.Log)
+	}
+
+	t.Setenv("ASSETSPIDER_LOG_DIR", "custom-logs")
+	t.Setenv("ASSETSPIDER_LOG_MAX_SIZE_MB", "2")
+	t.Setenv("ASSETSPIDER_LOG_MAX_BACKUPS", "3")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Log.Dir != "custom-logs" || cfg.Log.MaxSizeMB != 2 || cfg.Log.MaxBackups != 3 {
+		t.Fatalf("日志配置环境变量未生效: %+v", cfg.Log)
+	}
+
+	t.Setenv("ASSETSPIDER_LOG_MAX_SIZE_MB", "0")
+	if _, err := Load(""); err == nil {
+		t.Fatal("log.max_size_mb=0 应校验失败")
+	}
+}

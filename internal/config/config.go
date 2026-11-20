@@ -17,6 +17,7 @@ type Config struct {
 	Web       WebConfig       `yaml:"web"`
 	Collector CollectorConfig `yaml:"collector"`
 	Auth      AuthConfig      `yaml:"auth"`
+	Log       LogConfig       `yaml:"log"`
 
 	// 以下为非导出元数据，不参与 YAML 序列化：仅服务于运行时的「在线改配置」。
 	path    string          // 配置文件路径，写回用；空表示不持久化
@@ -32,6 +33,14 @@ type AuthConfig struct {
 // ServerConfig 描述 HTTP 服务。
 type ServerConfig struct {
 	Addr string `yaml:"addr"`
+}
+
+// LogConfig 描述日志文件与滚动策略。日志同时写控制台和 logs 目录下的文件，
+// 单文件写满 maxSizeMB 后滚动，最多保留 maxBackups 份历史备份。
+type LogConfig struct {
+	Dir        string `yaml:"dir"`         // 日志目录，相对工作目录；默认 logs
+	MaxSizeMB  int    `yaml:"max_size_mb"` // 单个日志文件大小上限（MB），默认 5
+	MaxBackups int    `yaml:"max_backups"` // 保留的历史日志份数，默认 5
 }
 
 // DatabaseConfig 描述数据存储后端。默认 SQLite（沿用 path 文件路径）；
@@ -128,6 +137,7 @@ func Default() *Config {
 			PageIntervalMs:      0,
 		},
 		Auth: AuthConfig{TokenTTLHours: 168, BCryptCost: 10},
+		Log:  LogConfig{Dir: "logs", MaxSizeMB: 5, MaxBackups: 5},
 	}
 }
 
@@ -237,6 +247,20 @@ func Load(path string) (*Config, error) {
 			return nil, err
 		}
 	}
+	if v := os.Getenv("ASSETSPIDER_LOG_DIR"); v != "" {
+		cfg.Log.Dir = v
+	}
+	for _, item := range []struct {
+		name string
+		dst  *int
+	}{
+		{"ASSETSPIDER_LOG_MAX_SIZE_MB", &cfg.Log.MaxSizeMB},
+		{"ASSETSPIDER_LOG_MAX_BACKUPS", &cfg.Log.MaxBackups},
+	} {
+		if err := utils.EnvInt(item.name, item.dst); err != nil {
+			return nil, err
+		}
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -306,6 +330,15 @@ func (c *Config) Validate() error {
 	// bcrypt 的合法强度区间为 4..31（bcrypt.MinCost / bcrypt.MaxCost）。
 	if c.Auth.BCryptCost < 4 || c.Auth.BCryptCost > 31 {
 		return fmt.Errorf("auth.bcrypt_cost 需在 4..31 之间")
+	}
+	if strings.TrimSpace(c.Log.Dir) == "" {
+		return fmt.Errorf("log.dir 不能为空")
+	}
+	if c.Log.MaxSizeMB <= 0 {
+		return fmt.Errorf("log.max_size_mb 必须大于 0")
+	}
+	if c.Log.MaxBackups < 0 {
+		return fmt.Errorf("log.max_backups 不能为负")
 	}
 	return nil
 }
