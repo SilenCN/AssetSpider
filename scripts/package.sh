@@ -62,6 +62,9 @@ package_one() {
   local name="assetspider-${goos}-${goarch}${suffix}"
   local stage="$OUT_DIR/$name"
   local archive="$OUT_DIR/$name.$archive_fmt"
+  # 裸二进制单独命名，供 GitHub Release 直接下载（无需解压整个包）。
+  local bare="assetspider-${goos}-${goarch}"
+  [[ "$goos" == "windows" ]] && bare="${bare}.exe"
 
   log "编译 $target → $name.$archive_fmt"
   rm -rf "$stage"
@@ -86,6 +89,12 @@ AssetSpider $VERSION ($target)
 完整配置说明见 conf/config.yaml 注释。
 EOF
 
+  # 压缩包内保留一份二进制；同时在 OUT_DIR 根目录单独留一份裸二进制。
+  # 裸二进制与 stage 目录可能同名（Linux），先存临时名，等 stage 删除后再改名。
+  local tmp_bin="$OUT_DIR/.$bare.tmp"
+  cp "$stage/$exe" "$tmp_bin"
+  chmod 0755 "$tmp_bin"
+
   rm -f "$archive"
   if [[ "$archive_fmt" == "zip" ]]; then
     (cd "$OUT_DIR" && zip -qr "$name.zip" "$name")
@@ -93,7 +102,8 @@ EOF
     tar -czf "$archive" -C "$OUT_DIR" "$name"
   fi
   rm -rf "$stage"
-  log "完成: $archive ($(du -h "$archive" | cut -f1))"
+  mv -f "$tmp_bin" "$OUT_DIR/$bare"
+  log "完成: $archive ($(du -h "$archive" | cut -f1)) + 裸二进制 $bare"
 }
 
 main() {

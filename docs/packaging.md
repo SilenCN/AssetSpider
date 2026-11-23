@@ -1,11 +1,16 @@
 # 多平台打包与镜像发布
 
-推送到 `main`（或在 Actions 页面手动触发 `workflow_dispatch`）会运行 `.github/workflows/package.yml`，一次性产出：
+`.github/workflows/package.yml` 有两种触发方式，产出不同：
 
-1. **4 个平台的可执行包**，上传到本次 Actions 运行的 Artifacts（保留 14 天）；
-2. **amd64 + arm64 多架构 Docker 镜像**，推送到 GHCR（GitHub Container Registry）。
+- **推送到 `main`**（或 Actions 页面手动触发 `workflow_dispatch`）：
+  1. **4 个平台的可执行包**（压缩包 + 裸二进制），上传为本次运行的 Artifacts（保留 14 天）；
+  2. **amd64 + arm64 多架构 Docker 镜像**，推送到 GHCR（GitHub Container Registry）。
+
+- **推送 `v*` 标签**（如 `v0.4.0`）：在上面基础上额外创建 **GitHub Release**，把 4 个平台的压缩包、裸二进制以及 `SHA256SUMS.txt` 校验和作为资产上传，公开可下载。
 
 它与现有 `[自动部署](deployment.md)` 流水线互不干扰：一个负责发版产物，一个负责更新生产服务器。
+
+> 裸二进制（如 `assetspider-linux-amd64`、`assetspider-windows-amd64.exe`）是不带前端/配置的单个可执行文件，适合已有部署目录时只替换主程序；压缩包则自包含前端与配置模板，适合全新部署。
 
 ## 平台矩阵
 
@@ -44,6 +49,17 @@ assetspider.exe -config conf\config.yaml   # Windows
 ```
 
 数据库默认生成在 `data/assetspider.db`，日志写入 `logs/`（见[配置](configuration.md) 的 `log` 段）。首次访问 `http://<主机>:8080`，第一个注册的账号自动成为管理员。
+
+除压缩包外，每个平台还单独提供裸二进制，位于发布目录 / Release 资产中：
+
+```
+assetspider-linux-amd64      # Linux 64 位
+assetspider-linux-arm64      # 飞牛 ARM
+assetspider-linux-386        # Linux 32 位
+assetspider-windows-amd64.exe
+```
+
+裸二进制可直接替换已有部署目录里的同名主程序，需自备 `conf/config.yaml` 与 `web/dist`；全新部署请用上面的压缩包。
 
 ## Docker 镜像（飞牛应用中心）
 
