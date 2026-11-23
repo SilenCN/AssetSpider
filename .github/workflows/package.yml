@@ -147,6 +147,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # gh release create 要在 git 仓库里创建/定位 latest tag，必须先检出。
+      - name: 检出代码
+        uses: actions/checkout@v4
+
       - name: 下载全部平台产物
         uses: actions/download-artifact@v4
         with:
