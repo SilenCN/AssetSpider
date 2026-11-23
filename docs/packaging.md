@@ -1,16 +1,16 @@
 # 多平台打包与镜像发布
 
-`.github/workflows/package.yml` 有两种触发方式，产出不同：
+**任意分支 push**（或 Actions 页面手动触发 `workflow_dispatch`）都会运行 `.github/workflows/package.yml`，一次性产出：
 
-- **推送到 `main`**（或 Actions 页面手动触发 `workflow_dispatch`）：
-  1. **4 个平台的可执行包**（压缩包 + 裸二进制），上传为本次运行的 Artifacts（保留 14 天）；
-  2. **amd64 + arm64 多架构 Docker 镜像**，推送到 GHCR（GitHub Container Registry）。
-
-- **推送 `v*` 标签**（如 `v0.4.0`）：在上面基础上额外创建 **GitHub Release**，把 4 个平台的压缩包、裸二进制以及 `SHA256SUMS.txt` 校验和作为资产上传，公开可下载。
+1. **4 个平台的可执行包**（压缩包 + 裸二进制），上传为本次运行的 Artifacts（保留 14 天）；
+2. **amd64 + arm64 多架构 Docker 镜像**，推送到 GHCR（GitHub Container Registry）；
+3. **滚动更新的 `latest` Release**：把 4 个平台的压缩包、裸二进制以及 `SHA256SUMS.txt` 校验和作为资产上传，公开可下载。每次 push 删除旧 Release 及其 `latest` tag 后重建，资产始终指向最新构建，不会堆积历史版本。
 
 它与现有 `[自动部署](deployment.md)` 流水线互不干扰：一个负责发版产物，一个负责更新生产服务器。
 
 > 裸二进制（如 `assetspider-linux-amd64`、`assetspider-windows-amd64.exe`）是不带前端/配置的单个可执行文件，适合已有部署目录时只替换主程序；压缩包则自包含前端与配置模板，适合全新部署。
+
+> 下载固定地址：`https://github.com/<owner>/AssetSpider/releases/latest`，每次 push 后其中的资产自动更新为最新版本；如需按提交追溯，资产标题里带有 commit 短哈希。
 
 ## 平台矩阵
 

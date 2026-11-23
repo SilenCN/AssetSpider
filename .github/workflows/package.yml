@@ -1,13 +1,10 @@
 name: 多平台打包与镜像发布
 
-# 推送到 main：交叉编译 4 个平台的可执行包（飞牛 x86-64 / ARM64、Linux 32 位、
-# Windows 64 位）上传到 Actions 产物，并发布 amd64+arm64 多架构 Docker 镜像到 GHCR。
-# 推送 v* 标签：在上面基础上额外创建 GitHub Release，把压缩包与裸二进制作为
-# 可公开下载的资产，方便飞牛等场景直接取可执行文件。
+# 任意 push 都构建：交叉编译 4 个平台的可执行包（飞牛 x86-64 / ARM64、Linux 32 位、
+# Windows 64 位）上传到 Actions 产物，发布 amd64+arm64 多架构 Docker 镜像到 GHCR，
+# 并滚动更新固定的 latest Release（压缩包 + 裸二进制 + 校验和），始终指向最新构建。
 on:
   push:
-    branches: [main]
-    tags: ['v*']
   workflow_dispatch:
 
 # 与部署流水线并存、互不阻塞；后到的 push 排队而不是取消进行中的发布。
@@ -142,10 +139,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # 仅 v* 标签触发：把各平台压缩包与裸二进制发布为 GitHub Release 资产。
+  # 每次 push 都滚动更新固定 tag 的 latest Release：资产只有最新一批，不堆积版本。
   release:
-    name: 创建 GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    name: 更新 latest Release
     needs: [packages, docker]
     runs-on: ubuntu-latest
     permissions:
@@ -164,13 +160,18 @@ jobs:
           sha256sum assetspider-* > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: 创建 Release 并上传资产
+      - name: 滚动更新 latest Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          gh release create "$TAG" \
-            --title "AssetSpider $TAG" \
-            --generate-notes \
+          # 固定 tag：已存在则先删（连带旧资产），再重建，保证只有最新构建。
+          if gh release view latest >/dev/null 2>&1; then
+            gh release delete latest --yes --cleanup-tag
+          fi
+          gh release create latest \
+            --title "AssetSpider latest (${REF}@${SHA:0:7})" \
+            --notes "自动构建自 ${REF} 分支，提交 ${SHA}。含 4 平台压缩包、裸二进制与 SHA256SUMS.txt。" \
             release-assets/assetspider-* release-assets/SHA256SUMS.txt
