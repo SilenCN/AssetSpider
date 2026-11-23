@@ -46,6 +46,7 @@ go build -o bin/assetspider .
 | 页面 | 资源库、站点配置、视频分类、采集记录、系统设置、用户管理（角色与站点白名单）、我的接口（TVBox 专属配置地址） | [前端](docs/frontend.md) |
 | TVBox | 每个用户自助生成带鉴权的 TVBox / 影视仓配置地址，苹果CMS V10 协议，可见站点与登录态一致 | [配置](docs/configuration.md#tvbox--影视仓专属接口) |
 | 运维 | 系统设置在线热更并写回 YAML；设置页一键重启（优雅停止后原地重建进程）；推送 `main` 自动部署，健康检查失败自动回滚 | [配置](docs/configuration.md) · [部署](docs/deployment.md) |
+| 打包 | 推送 `main` 自动交叉编译 4 平台可执行包（飞牛 x86-64 / ARM64、Linux 32 位、Windows 64 位）并发布 amd64+arm64 Docker 镜像到 GHCR | [打包](docs/packaging.md) |
 
 ## 文档
 
@@ -58,6 +59,7 @@ go build -o bin/assetspider .
 | [前端](docs/frontend.md) | 页面结构、交互约定、样式变量与移动端适配 |
 | [测试](docs/testing.md) | 测试覆盖范围与运行方式 |
 | [部署](docs/deployment.md) | GitHub Actions 自动部署、密钥与变量、首次部署、日常运维、故障排查 |
+| [打包](docs/packaging.md) | 多平台可执行包、飞牛 ARM/x86-64、Docker 多架构镜像、本地打包脚本 |
 
 ## 计划
 

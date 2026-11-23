@@ -1,6 +1,7 @@
 # 编译产物
 /bin/
 /dist/
+/release/          # scripts/package.sh 多平台打包输出
 *.exe
 *.exe~
 *.dll

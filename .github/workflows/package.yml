@@ -1,0 +1,137 @@
+name: 多平台打包与镜像发布
+
+# 推送到 main 即构建：交叉编译 4 个平台的可执行包（飞牛 x86-64 / ARM64、
+# Linux 32 位、Windows 64 位）上传到 Actions 产物，并发布 amd64+arm64
+# 多架构 Docker 镜像到 GHCR，飞牛应用中心可直接拉取部署。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 与部署流水线并存、互不阻塞；后到的 push 排队而不是取消进行中的发布。
+concurrency:
+  group: assetspider-package
+  cancel-in-progress: false
+
+# 推 GHCR 需要 packages:write；contents:read 用于检出代码。
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # 前端只构建一次，作为产物供各平台打包复用，避免 matrix 里重复 npm ci。
+  frontend:
+    name: 构建前端
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 构建 Vue 前端
+        run: cd web && npm ci --no-audit --no-fund && npm run build
+
+      - name: 上传前端产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist/
+          retention-days: 1
+
+  # 交叉编译矩阵：纯 Go 驱动无需 CGO，CGO_ENABLED=0 静态编译。
+  packages:
+    name: 打包 ${{ matrix.label }}
+    needs: frontend
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64    # 飞牛 x86-64 / 通用 Linux 64 位
+            label: linux-amd64
+          - platform: linux/arm64    # 飞牛 ARM（aarch64）
+            label: linux-arm64
+          - platform: linux/386      # Linux 32 位
+            label: linux-386
+          - platform: windows/amd64  # Windows 64 位
+            label: windows-amd64
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 下载前端产物
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+      - name: 交叉编译并打包
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          SKIP_WEB: '1'
+          VERSION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          bash scripts/package.sh
+
+      - name: 上传发布包
+        uses: actions/upload-artifact@v4
+        with:
+          name: assetspider-${{ matrix.label }}
+          path: release/assetspider-${{ matrix.label }}.*
+          if-no-files-found: error
+          retention-days: 14
+
+  # buildx + QEMU 构建 amd64/arm64 镜像，构建阶段跑在原生架构、仅运行层模拟。
+  docker:
+    name: 发布 Docker 镜像到 GHCR
+    needs: packages
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: 设置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: 构建并推送多架构镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

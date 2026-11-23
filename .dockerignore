@@ -1,0 +1,22 @@
+# 版本控制与 CI
+.git
+.github
+
+# 本地产物与运行时数据（镜像内重新构建 / 由卷挂载）
+release
+data
+logs
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# 前端依赖与构建产物（镜像内由 npm ci && npm run build 重新生成）
+web/node_modules
+web/dist
+
+# 编辑器与系统
+.vscode
+.idea
+.DS_Store
+*.md
